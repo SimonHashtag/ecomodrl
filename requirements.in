@@ -1,0 +1,7 @@
+gymnasium
+gymnasium[mujoco]
+matplotlib
+numpy
+pre-commit
+tensorboard
+torch
