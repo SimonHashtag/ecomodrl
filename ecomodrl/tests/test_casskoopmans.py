@@ -1,6 +1,16 @@
 import numpy as np
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 
+import subprocess
+
+
+def test_ppo():
+    subprocess.run(
+        "python ecomodrl/algorithms/casskoopmans_ppo.py --num-envs 1 --num-steps 64 --total-timesteps 256",
+        shell=True,
+        check=True,
+    )
+
 def test_casskoopmans():
     capital_0 = 10.0
     env = CassKoopmansEnv(max_episode_steps=10, RESETSTATE=capital_0, finite=True)
@@ -19,3 +29,4 @@ def test_casskoopmans():
     assert type(reward)==np.float32, f"Incorrect type of reward: {type(reward)}"
     
 test_casskoopmans()
+test_ppo()
