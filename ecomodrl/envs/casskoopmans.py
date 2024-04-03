@@ -35,7 +35,7 @@ class CassKoopmansEnv(gym.Env):
         self.RESETSTATE = RESETSTATE
         
         # action (consumption)
-        self.action_space = Box(0.0, 1.0, shape=(1,), dtype=np.float32)
+        self.action_space = Box(1e-6, 1.0, shape=(1,), dtype=np.float32)
 
         # states (capital)
         self.observation_space = Box(low=0.0, high=np.inf, shape=(1,), dtype=np.float32)
