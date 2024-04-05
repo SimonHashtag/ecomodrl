@@ -14,7 +14,7 @@ GAMMA = 2 # coefficient of relative risk aversion
 DELTA = 0.02 # depreciation rate of capital
 ALPHA = 0.33  # return to capital per capita
 RESETSTATE = 5.0  # Capital in first period
-TOL = 0.00001  # Minimum capital level
+TOL = 1e-6  # Minimum distance to no/complete consumption 
 
 
 class CassKoopmansEnv(gym.Env):
@@ -35,7 +35,7 @@ class CassKoopmansEnv(gym.Env):
         self.RESETSTATE = RESETSTATE
         
         # action (consumption)
-        self.action_space = Box(1e-6, 1.0, shape=(1,), dtype=np.float32)
+        self.action_space = Box(TOL, 1.0-TOL, shape=(1,), dtype=np.float32)
 
         # states (capital)
         self.observation_space = Box(low=0.0, high=np.inf, shape=(1,), dtype=np.float32)
@@ -92,7 +92,7 @@ class CassKoopmansEnv(gym.Env):
 
         observations = self._get_obs()
         terminated = self._finite and self.period_iter >= self.max_episode_steps
-        truncated = not self._finite and self.period_iter >= self.max_episode_steps or self._capital <= TOL
+        truncated = not self._finite and self.period_iter >= self.max_episode_steps
         info = self._get_info()
         info["consumption_frac"] = action[0]
         info["consumption"] = consumption
