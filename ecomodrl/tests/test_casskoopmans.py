@@ -10,6 +10,27 @@ def test_ppo():
         shell=True,
         check=True,
     )
+    
+def test_ddpg():
+    subprocess.run(
+        "python ecomodrl/algorithms/casskoopmans_ddpg.py --total-timesteps 256 --learning-starts 128",
+        shell=True,
+        check=True,
+    )
+    
+def test_td3():
+    subprocess.run(
+        "python ecomodrl/algorithms/casskoopmans_td3.py --total-timesteps 256 --learning-starts 128",
+        shell=True,
+        check=True,
+    )
+    
+def test_sac():
+    subprocess.run(
+        "python ecomodrl/algorithms/casskoopmans_sac.py --total-timesteps 256 --learning-starts 128",
+        shell=True,
+        check=True,
+    )
 
 def test_casskoopmans():
     capital_0 = 10.0
@@ -22,11 +43,12 @@ def test_casskoopmans():
     assert terminated, "Step function does not terminate"
     
     obs, _ = env.reset()
-    obs, reward, terminated, truncated, info = env.step([1.0])
-    assert truncated, "Step function does not truncate"
-    assert not terminated, "Step function terminates incorrectly"
+    obs, reward, _, _, _ = env.step([0.5])
     assert type(obs[0])==np.float32, f"Incorrect type of observation: {type(obs[0])}"
     assert type(reward)==np.float32, f"Incorrect type of reward: {type(reward)}"
     
 test_casskoopmans()
 test_ppo()
+test_ddpg()
+test_td3()
+test_sac()

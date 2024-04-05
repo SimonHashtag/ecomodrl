@@ -180,12 +180,12 @@ if __name__ == "__main__":
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device, dtype=floattype)
+    real_obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device, dtype=floattype)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device, dtype=floattype)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device, dtype=floattype)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device, dtype=floattype)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     truncs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    obs_truncs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device, dtype=floattype)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device, dtype=floattype)
 
     # TRY NOT TO MODIFY: start the game
@@ -193,6 +193,7 @@ if __name__ == "__main__":
     start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device, dtype=floattype)
+    real_next_obs = next_obs.detach().clone()
     next_done = torch.zeros(args.num_envs).to(device)
     next_trunc = torch.zeros(args.num_envs).to(device)
 
@@ -206,6 +207,7 @@ if __name__ == "__main__":
         for step in range(0, args.num_steps):
             global_step += args.num_envs
             obs[step] = next_obs
+            real_obs[step] = real_next_obs
             dones[step] = next_done
             truncs[step] = next_trunc
 
@@ -218,8 +220,15 @@ if __name__ == "__main__":
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+            
+            # Deal with truncated observations
+            real_next_obs = next_obs.copy()
+            for idx, trunc in enumerate(truncations):
+                if trunc:
+                    real_next_obs[idx] = infos["final_observation"][idx]
+            
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done, next_trunc = torch.Tensor(next_obs).to(device, dtype=floattype), torch.Tensor(terminations).to(device), torch.Tensor(truncations).to(device)      
+            next_obs, real_next_obs, next_done, next_trunc = torch.Tensor(next_obs).to(device, dtype=floattype), torch.Tensor(real_next_obs).to(device, dtype=floattype), torch.Tensor(terminations).to(device), torch.Tensor(truncations).to(device)      
             
             if "final_info" in infos:
                 for info in infos["final_info"]:
@@ -227,14 +236,12 @@ if __name__ == "__main__":
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                obs_truncs[step] = torch.where(next_trunc==1.0, torch.tensor(np.array(infos["final_observation"][0]), dtype=floattype), 0.)
             else:
                 writer.add_scalar("charts/mean_consumption_frac", infos["consumption_frac"].mean(), global_step)
                 writer.add_scalar("charts/mean_next_capital", infos["capital"].mean(), global_step)
                 writer.add_scalar("charts/mean_consumption", infos["consumption"].mean(), global_step)
                 writer.add_scalar("charts/mean_reward", infos["reward"].mean(), global_step)
-                obs_truncs[step] = torch.zeros(args.num_envs).to(device, dtype=floattype)
-
+            
         # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -248,7 +255,7 @@ if __name__ == "__main__":
                 else:
                     nextnonterminated = 1.0 - dones[t + 1]
                     nextnontruncated = 1.0 - truncs[t + 1]
-                    nextvalues = torch.where(truncs[t + 1] == 1.0, agent.get_value(obs_truncs[t]), values[t + 1])
+                    nextvalues = torch.where(truncs[t + 1] == 1.0, agent.get_value(real_obs[t + 1]), values[t + 1])
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminated - values[t]
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * torch.logical_and(nextnonterminated, nextnontruncated) * lastgaelam
             returns = advantages + values
