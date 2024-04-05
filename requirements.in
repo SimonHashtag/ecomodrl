@@ -5,3 +5,5 @@ numpy
 pre-commit
 tensorboard
 torch
+tyro
+stable_baselines3
