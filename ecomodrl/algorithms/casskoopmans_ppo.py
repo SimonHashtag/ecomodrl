@@ -51,7 +51,7 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 1/(1+0.05)
+    gamma: float = 0.95
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""

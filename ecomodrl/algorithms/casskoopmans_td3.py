@@ -48,7 +48,7 @@ class Args:
     """the learning rate of the optimizer"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
-    gamma: float = 0.99
+    gamma: float = 0.95
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
