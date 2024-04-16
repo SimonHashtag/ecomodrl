@@ -225,14 +225,17 @@ if __name__ == "__main__":
         if "final_info" in infos:
             for info in infos["final_info"]:
                 print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                break
+                writer.add_scalar("eps_stats/episodic_return", info["episode"]["r"], global_step)
+                writer.add_scalar("eps_stats/episodic_length", info["episode"]["l"], global_step)
+                writer.add_scalar("period_stats/mean_consumption_frac", info["consumption_frac"], global_step)
+                writer.add_scalar("period_stats/mean_next_capital", info["capital"], global_step)
+                writer.add_scalar("period_stats/mean_consumption", info["consumption"], global_step)
+                writer.add_scalar("period_stats/mean_reward", info["reward"], global_step)
         else:
-            writer.add_scalar("charts/mean_consumption_frac", infos["consumption_frac"].mean(), global_step)
-            writer.add_scalar("charts/mean_next_capital", infos["capital"].mean(), global_step)
-            writer.add_scalar("charts/mean_consumption", infos["consumption"].mean(), global_step)
-            writer.add_scalar("charts/mean_reward", infos["reward"].mean(), global_step)
+            writer.add_scalar("period_stats/mean_consumption_frac", infos["consumption_frac"].mean(), global_step)
+            writer.add_scalar("period_stats/mean_next_capital", infos["capital"].mean(), global_step)
+            writer.add_scalar("period_stats/mean_consumption", infos["consumption"].mean(), global_step)
+            writer.add_scalar("period_stats/mean_reward", infos["reward"].mean(), global_step)
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
@@ -297,17 +300,17 @@ if __name__ == "__main__":
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
             if global_step % 100 == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
-                writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                writer.add_scalar("losses/alpha", alpha, global_step)
+                writer.add_scalar("performance/qf1_values", qf1_a_values.mean().item(), global_step)
+                writer.add_scalar("performance/qf2_values", qf2_a_values.mean().item(), global_step)
+                writer.add_scalar("performance/qf1_loss", qf1_loss.item(), global_step)
+                writer.add_scalar("performance/qf2_loss", qf2_loss.item(), global_step)
+                writer.add_scalar("performance/qf_loss", qf_loss.item() / 2.0, global_step)
+                writer.add_scalar("performance/actor_loss", actor_loss.item(), global_step)
+                writer.add_scalar("performance/alpha", alpha, global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                writer.add_scalar("performance/SPS", int(global_step / (time.time() - start_time)), global_step)
                 if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
+                    writer.add_scalar("performance/alpha_loss", alpha_loss.item(), global_step)
 
     envs.close()
     writer.close()
