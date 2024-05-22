@@ -7,8 +7,6 @@ import numpy as np
 
 __all__ = ["CassKoopmansEnv"]
 
-logger = logging.getLogger(__name__)
-
 A = 1 # technology factor
 GAMMA = 2 # coefficient of relative risk aversion
 DELTA = 0.02 # depreciation rate of capital
@@ -75,17 +73,16 @@ class CassKoopmansEnv(gym.Env):
 
         self.period_iter += 1
         
+        # get consumption and reward
+        consumption = self._capital * action[0]
+        reward = crra_utility(consumption, gamma=self.GAMMA)
+        
         # get production
         y = self.A * self._capital ** self.ALPHA
 
         # update capital
         self._capital *= 1 - self.DELTA
         self._capital += y
-        
-        # get reward
-        consumption = self._capital * action[0]
-        reward = crra_utility(consumption, gamma=self.GAMMA)
-        
         self._capital -= consumption
         
         assert self._capital >= 0.0, f"capital is not allowed to be smaller than {0.0} but is {self._capital} " f"A {A} " f"DELTA {DELTA} " f"consumption {consumption} " f"reward {reward} "

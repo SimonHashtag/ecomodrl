@@ -45,13 +45,13 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 1
+    num_envs: int = 5
     """the number of parallel game environments"""
     num_steps: int = 2048
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 1/(1+0.05)
+    gamma: float = 0.95
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
@@ -232,15 +232,19 @@ if __name__ == "__main__":
             
             if "final_info" in infos:
                 for info in infos["final_info"]:
-                    if info and "episode" in info:
+                    if "episode" in info:
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-            else:
-                writer.add_scalar("charts/mean_consumption_frac", infos["consumption_frac"].mean(), global_step)
-                writer.add_scalar("charts/mean_next_capital", infos["capital"].mean(), global_step)
-                writer.add_scalar("charts/mean_consumption", infos["consumption"].mean(), global_step)
-                writer.add_scalar("charts/mean_reward", infos["reward"].mean(), global_step)
+                        writer.add_scalar("eps_stats/episodic_return", info["episode"]["r"], global_step)
+                        writer.add_scalar("eps_stats/episodic_length", info["episode"]["l"], global_step)
+                        writer.add_scalar("period_stats/mean_consumption_frac", info["consumption_frac"], global_step)
+                        writer.add_scalar("period_stats/mean_next_capital", info["capital"], global_step)
+                        writer.add_scalar("period_stats/mean_consumption", info["consumption"], global_step)
+                        writer.add_scalar("period_stats/mean_reward", info["reward"], global_step)
+            else:       
+                writer.add_scalar("period_stats/mean_consumption_frac", infos["consumption_frac"].mean(), global_step)
+                writer.add_scalar("period_stats/mean_next_capital", infos["capital"].mean(), global_step)
+                writer.add_scalar("period_stats/mean_consumption", infos["consumption"].mean(), global_step)
+                writer.add_scalar("period_stats/mean_reward", infos["reward"].mean(), global_step)
             
         # bootstrap value if not done
         with torch.no_grad():
@@ -255,7 +259,7 @@ if __name__ == "__main__":
                 else:
                     nextnonterminated = 1.0 - dones[t + 1]
                     nextnontruncated = 1.0 - truncs[t + 1]
-                    nextvalues = torch.where(truncs[t + 1] == 1.0, agent.get_value(real_obs[t + 1]), values[t + 1])
+                    nextvalues = torch.where(truncs[t + 1] == 1.0, agent.get_value(real_obs[t + 1]).flatten(), values[t + 1])
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminated - values[t]
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * torch.logical_and(nextnonterminated, nextnontruncated) * lastgaelam
             returns = advantages + values
@@ -327,16 +331,16 @@ if __name__ == "__main__":
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        writer.add_scalar("period_stats/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("performance/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("performance/entropy", entropy_loss.item(), global_step)
+        writer.add_scalar("performance/old_approx_kl", old_approx_kl.item(), global_step)
+        writer.add_scalar("performance/approx_kl", approx_kl.item(), global_step)
+        writer.add_scalar("performance/clipfrac", np.mean(clipfracs), global_step)
+        writer.add_scalar("performance/explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("performance/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("performance/learning_rate", optimizer.param_groups[0]["lr"], global_step)
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.ecomodrl_model"
