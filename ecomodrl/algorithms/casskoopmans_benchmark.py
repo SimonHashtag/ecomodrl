@@ -168,23 +168,23 @@ def plot_paths(pp, c0, k0, T, k_ter=0, c_ss=None, k_ss=None, s_ss=None):
     
     paths = [c_vec, k_vec, s_vec, μ_vec]
     for i in range(4):
-        axs[i].plot(paths[i])
+        axs[i].plot(paths[i], color="#333F48")
         axs[i].set(xlabel='t', ylabel=ylabels[i], title=titles[i])
         
         # Plot steady state value of consumption rate
         if c_ss is not None:
-            axs[0].hlines(c_ss, 0, np.max(T), linestyle='--')
+            axs[0].hlines(c_ss, 0, np.max(T), linestyle='--', color="#333F48")
         
         # Plot steady state value of capital
         if k_ss is not None:
-            axs[1].axhline(k_ss, c='k', ls='--', lw=1)
+            axs[1].axhline(k_ss, c='k', ls='--', lw=1, color="#333F48")
         
         # Plot steady state value of savings rate
         if s_ss is not None:
-            axs[2].hlines(s_ss, 0, np.max(T), linestyle='--')
+            axs[2].hlines(s_ss, 0, np.max(T), linestyle='--', color="#333F48")
 
-        axs[1].axvline(T+1, c='k', ls='--', lw=1)
-        axs[1].scatter(T+1, paths[1][-1], s=80)
+        axs[1].axvline(T+1, c='k', ls='--', lw=1, color="#333F48")
+        axs[1].scatter(T+1, paths[1][-1], s=80, color="#AF0078")
 
 pp = PlanningProblem()
 

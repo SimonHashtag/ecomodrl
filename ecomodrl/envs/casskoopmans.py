@@ -7,8 +7,6 @@ import numpy as np
 
 __all__ = ["CassKoopmansEnv"]
 
-logger = logging.getLogger(__name__)
-
 A = 1 # technology factor
 GAMMA = 2 # coefficient of relative risk aversion
 DELTA = 0.02 # depreciation rate of capital
