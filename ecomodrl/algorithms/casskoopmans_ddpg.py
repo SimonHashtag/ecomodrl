@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from collections import defaultdict
 
 import gymnasium as gym
 import numpy as np
@@ -15,6 +16,7 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
+from ecomodrl.utils.stopper import Stopper
 
 @dataclass
 class Args:
@@ -42,7 +44,9 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CassKoopmans-v0"
     """the environment id of the Atari game"""
-    total_timesteps: int = 1000000
+    max_episode_steps: str = 100
+    """The number of steps run in each env instance before resetting"""
+    total_timesteps: int = 200000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
@@ -64,9 +68,9 @@ class Args:
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
 
-def make_env(env_id, seed):
+def make_env(env_id, max_episode_steps, seed):
     def thunk():
-        env = gym.make(env_id)
+        env = gym.make(env_id, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
         return env
@@ -122,157 +126,176 @@ if __name__ == "__main__":
             """
         )
     args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-        import wandb
+    for s in range(10):
+        args.seed = s
+        run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+        if args.track:
+            import wandb
 
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
+            wandb.init(
+                project=args.wandb_project_name,
+                entity=args.wandb_entity,
+                sync_tensorboard=True,
+                config=vars(args),
+                name=run_name,
+                monitor_gym=True,
+                save_code=True,
+            )
+        writer = SummaryWriter(f"runs/{run_name}")
+        writer.add_text(
+            "hyperparameters",
+            "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
         )
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+        # TRY NOT TO MODIFY: seeding
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+        device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed)])
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+        # env setup
+        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed)])
+        assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    actor = Actor(envs).to(device)
-    qf1 = QNetwork(envs).to(device)
-    qf1_target = QNetwork(envs).to(device)
-    target_actor = Actor(envs).to(device)
-    target_actor.load_state_dict(actor.state_dict())
-    qf1_target.load_state_dict(qf1.state_dict())
-    q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
+        actor = Actor(envs).to(device)
+        qf1 = QNetwork(envs).to(device)
+        qf1_target = QNetwork(envs).to(device)
+        target_actor = Actor(envs).to(device)
+        target_actor.load_state_dict(actor.state_dict())
+        qf1_target.load_state_dict(qf1.state_dict())
+        q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
+        actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
 
-    envs.single_observation_space.dtype = np.float32
-    rb = ReplayBuffer(
-        args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
-        device,
-        handle_timeout_termination=False,
-    )
-    start_time = time.time()
-
-    # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
-        # ALGO LOGIC: put action logic here
-        if global_step < args.learning_starts:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        else:
-            with torch.no_grad():
-                actions = actor(torch.Tensor(obs).to(device))
-                actions += torch.normal(0, actor.action_scale * args.exploration_noise)
-                actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
-
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("eps_stats/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("eps_stats/episodic_length", info["episode"]["l"], global_step)
-                writer.add_scalar("period_stats/mean_consumption_frac", info["consumption_frac"], global_step)
-                writer.add_scalar("period_stats/mean_next_capital", info["capital"], global_step)
-                writer.add_scalar("period_stats/mean_consumption", info["consumption"], global_step)
-                writer.add_scalar("period_stats/mean_reward", info["reward"], global_step)
-        else:
-            writer.add_scalar("period_stats/mean_consumption_frac", infos["consumption_frac"].mean(), global_step)
-            writer.add_scalar("period_stats/mean_next_capital", infos["capital"].mean(), global_step)
-            writer.add_scalar("period_stats/mean_consumption", infos["consumption"].mean(), global_step)
-            writer.add_scalar("period_stats/mean_reward", infos["reward"].mean(), global_step)
-
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
-
-        # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
-            with torch.no_grad():
-                next_state_actions = target_actor(data.next_observations)
-                qf1_next_target = qf1_target(data.next_observations, next_state_actions)
-                next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (qf1_next_target).view(-1)
-
-            qf1_a_values = qf1(data.observations, data.actions).view(-1)
-            qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-
-            # optimize the model
-            q_optimizer.zero_grad()
-            qf1_loss.backward()
-            q_optimizer.step()
-
-            if global_step % args.policy_frequency == 0:
-                actor_loss = -qf1(data.observations, actor(data.observations)).mean()
-                actor_optimizer.zero_grad()
-                actor_loss.backward()
-                actor_optimizer.step()
-
-                # update the target network
-                for param, target_param in zip(actor.parameters(), target_actor.parameters()):
-                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
-            if global_step % 100 == 0:
-                writer.add_scalar("performance/qf1_values", qf1_a_values.mean().item(), global_step)
-                writer.add_scalar("performance/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("performance/actor_loss", actor_loss.item(), global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
-                writer.add_scalar("performance/SPS", int(global_step / (time.time() - start_time)), global_step)
-
-    if args.save_model:
-        model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
-        torch.save((actor.state_dict(), qf1.state_dict()), model_path)
-        print(f"model saved to {model_path}")
-        from cleanrl_utils.evals.ddpg_eval import evaluate
-
-        episodic_returns = evaluate(
-            model_path,
-            make_env,
-            args.env_id,
-            eval_episodes=10,
-            run_name=f"{run_name}-eval",
-            Model=(Actor, QNetwork),
-            device=device,
-            exploration_noise=args.exploration_noise,
+        envs.single_observation_space.dtype = np.float32
+        rb = ReplayBuffer(
+            args.buffer_size,
+            envs.single_observation_space,
+            envs.single_action_space,
+            device,
+            handle_timeout_termination=False,
         )
-        for idx, episodic_return in enumerate(episodic_returns):
-            writer.add_scalar("eval/episodic_return", episodic_return, idx)
+        
+        # Early stopping mechanism
+        min_iter_esm = args.total_timesteps//(10*args.max_episode_steps)
+        stopper = Stopper(
+            max_iter=args.total_timesteps, 
+            min_iter=min_iter_esm,
+            early_stopping=50,
+            min_episode_length=args.max_episode_steps*(1-0.03),
+            max_deviation=0.03,
+            )
+        eps_results = defaultdict(list)
+        
+        start_time = time.time()
 
-        if args.upload_model:
-            from cleanrl_utils.huggingface import push_to_hub
+        # TRY NOT TO MODIFY: start the game
+        obs, _ = envs.reset(seed=args.seed)
+        for global_step in range(args.total_timesteps):
+            # ALGO LOGIC: put action logic here
+            if global_step < args.learning_starts:
+                actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+            else:
+                with torch.no_grad():
+                    actions = actor(torch.Tensor(obs).to(device))
+                    actions += torch.normal(0, actor.action_scale * args.exploration_noise)
+                    actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
 
-            repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
-            repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
+            # TRY NOT TO MODIFY: execute the game and log data.
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-    envs.close()
-    writer.close()
+            # TRY NOT TO MODIFY: record rewards for plotting purposes
+            if "final_info" in infos:
+                for info in infos["final_info"]:
+                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                    writer.add_scalar("eps_stats/episodic_return", info["episode"]["r"], global_step)
+                    writer.add_scalar("eps_stats/episodic_length", info["episode"]["l"], global_step)
+                    writer.add_scalar("period_stats/mean_consumption_frac", info["consumption_frac"], global_step)
+                    writer.add_scalar("period_stats/mean_next_capital", info["capital"], global_step)
+                    writer.add_scalar("period_stats/mean_consumption", info["consumption"], global_step)
+                    writer.add_scalar("period_stats/mean_reward", info["reward"], global_step)
+                    eps_results["episode_returns"].append(info["episode"]["r"])
+                    eps_results["episode_lens"].append(info["episode"]["l"])
+                if stopper(eps_results):
+                    break
+                eps_results.clear()
+            else:
+                writer.add_scalar("period_stats/mean_consumption_frac", infos["consumption_frac"].mean(), global_step)
+                writer.add_scalar("period_stats/mean_next_capital", infos["capital"].mean(), global_step)
+                writer.add_scalar("period_stats/mean_consumption", infos["consumption"].mean(), global_step)
+                writer.add_scalar("period_stats/mean_reward", infos["reward"].mean(), global_step)
+
+            # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+            real_next_obs = next_obs.copy()
+            for idx, trunc in enumerate(truncations):
+                if trunc:
+                    real_next_obs[idx] = infos["final_observation"][idx]
+            rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+
+            # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
+            obs = next_obs
+
+            # ALGO LOGIC: training.
+            if global_step > args.learning_starts:
+                data = rb.sample(args.batch_size)
+                with torch.no_grad():
+                    next_state_actions = target_actor(data.next_observations)
+                    qf1_next_target = qf1_target(data.next_observations, next_state_actions)
+                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (qf1_next_target).view(-1)
+
+                qf1_a_values = qf1(data.observations, data.actions).view(-1)
+                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+
+                # optimize the model
+                q_optimizer.zero_grad()
+                qf1_loss.backward()
+                q_optimizer.step()
+
+                if global_step % args.policy_frequency == 0:
+                    actor_loss = -qf1(data.observations, actor(data.observations)).mean()
+                    actor_optimizer.zero_grad()
+                    actor_loss.backward()
+                    actor_optimizer.step()
+
+                    # update the target network
+                    for param, target_param in zip(actor.parameters(), target_actor.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+
+                if global_step % 100 == 0:
+                    writer.add_scalar("performance/qf1_values", qf1_a_values.mean().item(), global_step)
+                    writer.add_scalar("performance/qf1_loss", qf1_loss.item(), global_step)
+                    writer.add_scalar("performance/actor_loss", actor_loss.item(), global_step)
+                    print("SPS:", int(global_step / (time.time() - start_time)))
+                    writer.add_scalar("performance/SPS", int(global_step / (time.time() - start_time)), global_step)
+
+        if args.save_model:
+            model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
+            torch.save((actor.state_dict(), qf1.state_dict()), model_path)
+            print(f"model saved to {model_path}")
+            from cleanrl_utils.evals.ddpg_eval import evaluate
+
+            episodic_returns = evaluate(
+                model_path,
+                make_env,
+                args.env_id,
+                eval_episodes=10,
+                run_name=f"{run_name}-eval",
+                Model=(Actor, QNetwork),
+                device=device,
+                exploration_noise=args.exploration_noise,
+            )
+            for idx, episodic_return in enumerate(episodic_returns):
+                writer.add_scalar("eval/episodic_return", episodic_return, idx)
+
+            if args.upload_model:
+                from cleanrl_utils.huggingface import push_to_hub
+
+                repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
+                repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
+                push_to_hub(args, episodic_returns, repo_id, "DDPG", f"runs/{run_name}", f"videos/{run_name}-eval")
+
+        envs.close()
+        writer.close()
