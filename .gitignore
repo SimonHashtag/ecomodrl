@@ -137,6 +137,7 @@ dmypy.json
 
 # runs
 /runs
+/tune_results
 
 # vscode
 /.vscode

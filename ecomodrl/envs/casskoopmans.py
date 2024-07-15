@@ -23,7 +23,8 @@ class CassKoopmansEnv(gym.Env):
                  GAMMA=GAMMA,
                  DELTA=DELTA,
                  ALPHA=ALPHA,
-                 RESETSTATE=RESETSTATE):
+                 RESETSTATE=RESETSTATE,
+                 floattype=np.float32):
         
         # parameters
         self.A = A
@@ -31,18 +32,19 @@ class CassKoopmansEnv(gym.Env):
         self.DELTA = DELTA
         self.ALPHA = ALPHA
         self.RESETSTATE = RESETSTATE
+        self.floattype = floattype
         
         # action (consumption)
-        self.action_space = Box(TOL, 1.0-TOL, shape=(1,), dtype=np.float32)
+        self.action_space = Box(TOL, 1.0-TOL, shape=(1,), dtype=self.floattype)
 
         # states (capital)
-        self.observation_space = Box(low=0.0, high=np.inf, shape=(1,), dtype=np.float32)
+        self.observation_space = Box(low=0.0, high=np.inf, shape=(1,), dtype=self.floattype)
 
         self.max_episode_steps = max_episode_steps
         self._finite = finite
 
     def _get_obs(self):
-        return np.array([np.float32(self._capital)])
+        return np.array([self._capital]).astype(self.floattype)
 
     def _get_info(self):
         return {
@@ -53,7 +55,7 @@ class CassKoopmansEnv(gym.Env):
         super().reset(seed=seed)
 
         self.period_iter = 0
-        self._capital = np.float32(self.RESETSTATE)  # capital
+        self._capital = np.array([self.RESETSTATE], dtype=self.floattype)[0]  # capital
 
         observations = self._get_obs()
         info = self._get_info()
@@ -75,7 +77,7 @@ class CassKoopmansEnv(gym.Env):
         
         # get consumption and reward
         consumption = self._capital * action[0]
-        reward = crra_utility(consumption, gamma=self.GAMMA)
+        reward = crra_utility(consumption, gamma=self.GAMMA, floattype=self.floattype)
         
         # get production
         y = self.A * self._capital ** self.ALPHA
@@ -101,7 +103,7 @@ class CassKoopmansEnv(gym.Env):
         return observations, reward, terminated, truncated, info
 
 
-def crra_utility(consumption: float, gamma: float = GAMMA) -> float:
+def crra_utility(consumption: float, gamma: float = GAMMA, floattype=np.float32) -> float:
     """Get the utility based on consumption.
     For consumption ~ 0.0 return a very small utility (not -inf however).
     For consumption above 0.0 return the log utility
@@ -113,7 +115,7 @@ def crra_utility(consumption: float, gamma: float = GAMMA) -> float:
     assert consumption > 0.0, "Non-positive consumption not allowed"
     
     if gamma == 1:
-        u = np.log(consumption, dtype=np.float32)
+        u = np.log(consumption, dtype=floattype)
     else:
-        u = np.float32((consumption ** (1 - gamma)) / (1 - gamma))
+        u = np.array([((consumption ** (1 - gamma)) / (1 - gamma))], dtype=floattype)[0]
     return u
