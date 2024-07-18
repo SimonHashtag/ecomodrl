@@ -47,31 +47,31 @@ class Args:
     """The number of steps run in each env instance before resetting"""
     total_timesteps: int = 200000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 0.002375
     """the learning rate of the optimizer"""
     num_envs: int = 5
     """the number of parallel game environments"""
-    num_steps: int = 2048
+    num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.95
     """the discount factor gamma"""
-    gae_lambda: float = 0.95
+    gae_lambda: float = 0.85
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 32
     """the number of mini-batches"""
-    update_epochs: int = 10
+    update_epochs: int = 6
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
+    clip_coef: float = 0.31
     """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
+    clip_vloss: bool = False
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.0
+    ent_coef: float = 0.003
     """coefficient of the entropy"""
-    vf_coef: float = 0.5
+    vf_coef: float = 0.05
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
@@ -190,7 +190,7 @@ if __name__ == "__main__":
             min_iter=args.num_iterations//10,
             early_stopping=15,
             min_episode_length=args.max_episode_steps*(1-0.05),
-            max_deviation=0.05,
+            max_deviation=0.01,
             )
         eps_results = defaultdict(list)
 

@@ -84,9 +84,9 @@ def make_env(env_id, max_episode_steps, seed):
 class QNetwork(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
+        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, 1)
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
@@ -99,9 +99,9 @@ class QNetwork(nn.Module):
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mu = nn.Linear(256, np.prod(env.single_action_space.shape))
+        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc_mu = nn.Linear(64, np.prod(env.single_action_space.shape))
         # action rescaling
         self.register_buffer(
             "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
@@ -159,7 +159,7 @@ if __name__ == "__main__":
         device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
         # env setup
-        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed)])
+        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.max_episode_steps, args.seed)])
         assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
         actor = Actor(envs).to(device)

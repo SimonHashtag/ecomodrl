@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 from numba import njit, float64
 from numba.experimental import jitclass
 import numpy as np
+from typing import Union
+from scipy.interpolate import interp1d
+from scipy.optimize import minimize
 
 planning_data = [
     ('γ', float64),    # Coefficient of relative risk aversion
@@ -203,3 +206,89 @@ print(f'the optimal episode return is: {U}')
 
 plot_paths(pp, 1.0, 5.0, 100, k_ter=k_ss, c_ss=c_ss, k_ss=k_ss, s_ss=s_ss)
 plt.show()
+
+## Dynamic Programming (VFI)
+class problem():
+    def __init__(self, γ=2, β=0.95, δ=0.02, α=0.33, A=1):
+        self.γ, self.β = γ, β
+        self.δ, self.α, self.A = δ, α, A
+    
+    def u(self, c):
+        '''
+        Utility function
+        '''
+        γ = self.γ
+
+        return c ** (1 - γ) / (1 - γ) if γ!= 1 else np.log(c)
+    
+    def f(self, k):
+        'Production function'
+        α, A = self.α, self.A
+
+        return A * k ** α
+    
+    def eom(self, c, k):
+        'Equation of motion'
+        new_k = self.f(k) + (1-self.δ) * k - c * k
+        
+        return new_k
+    
+    def bellman(self, c, k, value):
+        new_k = self.eom(c, k)
+        if any(new_k)<0:
+            return np.inf
+        else:
+            return -(self.u(c*k) + self.β * value(new_k))
+        
+        
+def vfi(problem, tolerance: float = 0.25, conv: float = 0.1, grid_points: int = 1000, lower_limit = 0.1, upper_limit= 15., verbose=True):
+    grid = np.linspace(lower_limit, upper_limit, grid_points)
+    V = interp1d(grid, np.zeros(grid_points), fill_value="extrapolate")
+    Vn = np.zeros(grid_points)
+    copt = np.linspace(0.001, 1, grid_points)
+    
+    while True:
+        for i in range(0, grid_points):
+            obj = minimize(
+                problem.bellman,
+                x0 = copt[i],
+                bounds=((0.001, 1.0),),
+                args=(
+                    grid[i],
+                    V,
+                ),
+                method="nelder-mead",
+                tol=tolerance,
+            )
+            Vn[i] = -obj.fun
+            copt[i] = obj.x[0]
+            if abs(obj.x - 0.0001) < 0.0001 or abs(obj.x - grid[i]) < 0.00001:
+                print(f"Corner point solution! State: {grid[i]}; Action: {obj.x[0]}")
+        if max(abs(Vn - V(grid))) < conv:
+            break
+        if verbose:
+            print(
+                "Convergence: {}.".format(max(abs(Vn - V(grid)))),
+                "Convergence criterion: {}.".format(conv),
+            )
+        V = interp1d(grid, Vn, fill_value="extrapolate")
+    return grid, Vn, copt
+
+def simulation(problem, grid, copt, periods=100, start_value=5.0):
+    """Simulate consumption path over number of periods"""
+    policy = interp1d(grid, copt, fill_value="extrapolate")
+    state = []
+    action = []
+    U = 0
+    state.append(start_value)
+    for t in range(periods):
+        action.append(policy(state[t]))
+        state.append(problem.eom(action[t], state[t]))
+        U += problem.u(state[t]*action[t])
+    return action, state, U
+
+p = problem()
+
+grid, V, copt = vfi(p, conv=0.01, tolerance=0.01, verbose=False)
+action_path, state_path, U = simulation(p, grid, copt, 100)
+print(f'the optimal episode return is: {U}')

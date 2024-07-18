@@ -56,12 +56,8 @@ class Args:
     """the learning rate of the policy network optimizer"""
     q_lr: float = 1e-3
     """the learning rate of the Q network network optimizer"""
-    policy_frequency: int = 2
+    policy_frequency: int = 1
     """the frequency of training policy (delayed)"""
-    target_network_frequency: int = 1  # Denis Yarats' implementation delays this by 2.
-    """the frequency of updates for the target nerworks"""
-    noise_clip: float = 0.5
-    """noise clip parameter of the Target Policy Smoothing Regularization"""
     alpha: float = 0.2
     """Entropy regularization coefficient."""
     autotune: bool = True
@@ -315,11 +311,10 @@ if __name__ == "__main__":
                             alpha = log_alpha.exp().item()
 
                 # update the target networks
-                if global_step % args.target_network_frequency == 0:
-                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
+                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
+                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
                 if global_step % 100 == 0:
                     writer.add_scalar("performance/qf1_values", qf1_a_values.mean().item(), global_step)
