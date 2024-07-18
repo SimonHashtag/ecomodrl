@@ -43,35 +43,34 @@ class Args:
 
     # Algorithm specific arguments
     env_id: str = "CassKoopmans-v0"
-    """the environment id of the Atari game"""
+    """the environment id of the economic model"""
     max_episode_steps: str = 100
     """The number of steps run in each env instance before resetting"""
-    total_timesteps: int = 200000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 0.001
     """the learning rate of the optimizer"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
     gamma: float = 0.95
     """the discount factor gamma"""
-    tau: float = 0.005
+    tau: float = 0.03
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
-    exploration_noise: float = 0.1
+    exploration_noise: float = 0.2
     """the scale of exploration noise"""
     learning_starts: int = 25e3
     """timestep to start learning"""
-    policy_frequency: int = 2
-    """the frequency of training policy (delayed)"""
-    noise_clip: float = 0.5
-    """noise clip parameter of the Target Policy Smoothing Regularization"""
+    learning_ends: int= 90000
+    """timestep to end learning and start testing"""
 
 
 def make_env(env_id, max_episode_steps, seed):
     def thunk():
         env = gym.make(env_id, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = gym.wrappers.NormalizeObservation(env)
         env.action_space.seed(seed)
         return env
 
@@ -82,9 +81,9 @@ def make_env(env_id, max_episode_steps, seed):
 class QNetwork(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
+        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, 1)
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
@@ -97,9 +96,9 @@ class QNetwork(nn.Module):
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mu = nn.Linear(256, np.prod(env.single_action_space.shape))
+        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc_mu = nn.Linear(64, np.prod(env.single_action_space.shape))
         # action rescaling
         self.register_buffer(
             "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
@@ -156,7 +155,7 @@ if __name__ == "__main__":
         device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
         # env setup
-        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed)])
+        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.max_episode_steps, args.seed)])
         assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
         actor = Actor(envs).to(device)
@@ -196,10 +195,14 @@ if __name__ == "__main__":
             # ALGO LOGIC: put action logic here
             if global_step < args.learning_starts:
                 actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-            else:
+            elif global_step < args.learning_ends:
                 with torch.no_grad():
                     actions = actor(torch.Tensor(obs).to(device))
                     actions += torch.normal(0, actor.action_scale * args.exploration_noise)
+                    actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
+            else:
+                with torch.no_grad():
+                    actions = actor(torch.Tensor(obs).to(device))
                     actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
 
             # TRY NOT TO MODIFY: execute the game and log data.
@@ -237,7 +240,7 @@ if __name__ == "__main__":
             obs = next_obs
 
             # ALGO LOGIC: training.
-            if global_step > args.learning_starts:
+            if global_step > args.learning_starts and global_step < args.learning_ends:
                 data = rb.sample(args.batch_size)
                 with torch.no_grad():
                     next_state_actions = target_actor(data.next_observations)
@@ -252,17 +255,16 @@ if __name__ == "__main__":
                 qf1_loss.backward()
                 q_optimizer.step()
 
-                if global_step % args.policy_frequency == 0:
-                    actor_loss = -qf1(data.observations, actor(data.observations)).mean()
-                    actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    actor_optimizer.step()
+                actor_loss = -qf1(data.observations, actor(data.observations)).mean()
+                actor_optimizer.zero_grad()
+                actor_loss.backward()
+                actor_optimizer.step()
 
-                    # update the target network
-                    for param, target_param in zip(actor.parameters(), target_actor.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                # update the target network
+                for param, target_param in zip(actor.parameters(), target_actor.parameters()):
+                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
+                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
                 if global_step % 100 == 0:
                     writer.add_scalar("performance/qf1_values", qf1_a_values.mean().item(), global_step)
