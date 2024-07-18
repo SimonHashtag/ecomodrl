@@ -1,6 +1,7 @@
-# Single-file implementation of TD-MPC2, see https://github.com/nicklashansen/tdmpc2
+# Single-file implementation of single-task TD-MPC2, see https://github.com/nicklashansen/tdmpc2
 
 # Packages
+from copy import deepcopy
 import os
 import random
 from dataclasses import dataclass
@@ -29,7 +30,6 @@ class Args:
 
 
 # Architecture (World model)
-## MLP, Ensemble, SimNorm, NormedLinear
 class Ensemble(nn.Module):
 	"""
 	Vectorized ensemble of modules.
@@ -52,9 +52,9 @@ class SimNorm(nn.Module):
 	Adapted from https://arxiv.org/abs/2204.00616.
 	"""
 	
-	def __init__(self, cfg):
+	def __init__(self, simnorm_dim):
 		super().__init__()
-		self.dim = cfg.simnorm_dim
+		self.dim = simnorm_dim
 	
 	def forward(self, x):
 		shp = x.shape
@@ -89,9 +89,6 @@ def mlp(in_dim, mlp_dims, out_dim, act=None, dropout=0.):
         mlp.append(NormedLinear(dims[i], dims[i+1], dropout=dropout*(i==0)))
     mlp.append(NormedLinear(dims[-2], dims[-1], act=act) if act else nn.Linear(dims[-2], dims[-1]))
     return nn.Sequential(*mlp)
-
-def enc():
-    pass
     
 
 class WorldModel(nn.Module):
@@ -99,10 +96,31 @@ class WorldModel(nn.Module):
     World Model architecture including state encoder, forward dynamics model, 
     reward model, policy prior, and Q-Function
     """
-    def __init__(self):
+    def __init__(
+        self, 
+        env, 
+        latent_dim, 
+        enc_dim, 
+        num_enc_layers, 
+        mlp_dim, 
+        simnorm_dim, 
+        num_bins,
+        dropout,
+        num_q, 
+        log_std_min, 
+        log_std_max
+        ):
         super().__init__()
-        self._encoder = enc()
-        self._dynamics = mlp()
+        self._encoder = mlp(np.array(env.single_observation_space.shape).prod(),  max(num_enc_layers-1, 1)*[enc_dim], latent_dim, act=SimNorm(simnorm_dim))
+        self._dynamics = mlp(latent_dim + np.prod(env.single_action_space.shape), 2*[mlp_dim], latent_dim, act=SimNorm(simnorm_dim))
+        self._rewards = mlp(latent_dim + np.prod(env.single_action_space.shape), 2*[mlp_dim], max(num_bins, 1))  
+        self._pi = mlp(latent_dim, 2*[mlp_dim], 2*np.prod(env.single_action_space.shape)) # Output: mean and var of multivariate Gaussian to predict rewards
+        self._Qs = Ensemble([mlp(latent_dim + np.prod(env.single_action_space.shape), 2*[mlp_dim], max(num_bins, 1), dropout=dropout) for _ in range(num_q)])
+        # weight initialization: self.apply(init.weight_init)
+        # initialize some parameters to zero: init.zero_([self._reward[-1].weight, self._Qs.params[-2]])
+        self._target_Qs = deepcopy(self._Qs).requires_grad_(False)
+        self.log_std_min = torch.tensor(log_std_min)
+        self.log_std_dif = torch.tensor(log_std_max) - self.log_std_min
 
 ## encoder
 
