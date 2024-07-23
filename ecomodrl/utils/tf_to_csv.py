@@ -16,8 +16,8 @@ def stats2csv(logs: pd.DataFrame, data_prefix: str, out_dir: str):
     clean_logs = logs[cols].dropna()
     info = os.path.basename(out_dir).split("__")
     clean_logs["exp_name"] = info[1]
-    clean_logs["seed"] = info[2]
-    out_file = os.path.join(out_dir, data_prefix + "__" + os.path.basename(out_dir).split("__", 1)[1] + ".csv")
+    clean_logs["training_seed"] = info[2]
+    out_file = os.path.join(out_dir, data_prefix.replace("/","_") + "__" + os.path.basename(out_dir).split("__", 1)[1] + ".csv")
     clean_logs.to_csv(out_file, index=None)
     clean_logs.set_index("step", inplace = True)
     clean_logs.index.name = None
@@ -29,7 +29,7 @@ def extract_stats(logdir_or_logfile, out_dir, data_prefix: list = ["period_stats
         csv_path = glob.glob(os.path.join(logdir_or_logfile, "*.csv"))[0]
         if out_dir is None:
             out_dir = logdir_or_logfile
-    elif os.path.isfile(logdir_or_logfile):
+    elif os.path.isfile(logdir_or_logfile) and logdir_or_logfile.endswith(".csv"):
         csv_path = logdir_or_logfile
         if out_dir is None:
             out_dir = os.path.dirname(logdir_or_logfile)
@@ -174,8 +174,11 @@ def main(logdir_or_logfile: str, write_pkl: bool, write_csv: bool, out_dir: Opti
     """
     if os.path.isdir(logdir_or_logfile):
         dirs = os.listdir(logdir_or_logfile)
-        for dir in dirs:
-            tflogs2file(os.path.join(logdir_or_logfile, dir), write_pkl, write_csv, out_dir, wide_format, prefix)
+        if os.path.isdir(dirs[0]):
+            for dir in dirs:
+                tflogs2file(os.path.join(logdir_or_logfile, dir), write_pkl, write_csv, out_dir, wide_format, prefix)
+        else:
+            tflogs2file(logdir_or_logfile, write_pkl, write_csv, out_dir, wide_format, prefix)
     else:
         tflogs2file(logdir_or_logfile, write_pkl, write_csv, out_dir, wide_format, prefix)
 

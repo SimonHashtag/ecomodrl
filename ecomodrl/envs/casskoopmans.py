@@ -49,10 +49,12 @@ class CassKoopmansEnv(gym.Env):
     def _get_info(self):
         return {
             "capital": self._capital,
+            "seed": self.seed,
         }
 
     def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
+        self.seed = seed if seed is not None else self.seed
+        super().reset(seed=self.seed)
 
         self.period_iter = 0
         self._capital = np.array([self.RESETSTATE], dtype=self.floattype)[0]  # capital

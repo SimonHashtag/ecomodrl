@@ -4,6 +4,7 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
+from typing import Union
 
 class PPO:
     def __init__(
@@ -74,7 +75,7 @@ class PPO:
         
         global_step = 0
         start_time = time.time()
-        next_obs, _ = self.envs.reset(seed=self.seed)
+        next_obs, _ = self.envs.reset(seed=[self.seed]*self.num_envs) # set the same training seed for all parallel envs
         next_obs = torch.Tensor(next_obs).to(self.device, dtype=self.floattype)
         real_next_obs = next_obs.detach().clone()
         next_done = torch.zeros(self.num_envs).to(self.device)
@@ -219,16 +220,18 @@ class PPO:
     
     def evaluate(
         self,
-        eval_seeds,
-        eval_steps):
+        eval_seeds: Union[int, list],
+        eval_steps: int):
         # Configure logging label
         self.writer.is_eval(True)
+        
+        eval_seeds = [eval_seeds] if isinstance(eval_seeds, int) else eval_seeds
         
         # Start evaluation for #eval_steps over #eval_seeds
         for eval_seed in eval_seeds:
             self.seed = eval_seed
             self.seeding()
-            next_obs, _ = self.envs.reset(seed=eval_seed)
+            next_obs, _ = self.envs.reset(seed=[self.seed]*self.num_envs)
             next_obs = torch.Tensor(next_obs).to(self.device, dtype=self.floattype)
             for step in range(1, eval_steps + 1):
                 with torch.no_grad():
@@ -238,3 +241,4 @@ class PPO:
                 next_obs = torch.Tensor(next_obs).to(self.device, dtype=self.floattype)
                 self.writer.log_env_stats(step, infos)
             self.writer.empty_eps_buffer()
+        self.writer.is_eval(False)

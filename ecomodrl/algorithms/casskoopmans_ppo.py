@@ -1,8 +1,7 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import os
 import time
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import gymnasium as gym
 import numpy as np
@@ -22,7 +21,7 @@ from ecomodrl.utils.logger import PPOLogger
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")] 
     """the name of this experiment"""
-    seeds: list = list(range(15, 25))
+    seeds: list = field(default_factory=lambda: list(range(15, 25)))
     """A list of training seeds of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -36,7 +35,7 @@ class Args:
     """the id of the environment"""
     max_episode_steps: str = 100
     """The number of steps run in each env instance before resetting"""
-    total_timesteps: int = 100000
+    total_timesteps: int = 10000
     """total timesteps of the experiments"""
     learning_rate: float = 0.002375
     """the learning rate of the optimizer"""
@@ -78,7 +77,7 @@ class Args:
     """the number of iterations (computed in runtime)"""
     
     # Evaluation specific arguments
-    eval_seeds: list = list(range(100, 200, 1))
+    eval_seeds: list = field(default_factory=lambda: list(range(100, 110)))
     """A list of seeds for evaluation"""
     eval_steps: int = 100
     """The number of environment steps per eval seed"""
@@ -184,7 +183,6 @@ if __name__ == "__main__":
             max_deviation=0.01,
             )
         
-        #for s in range(10):
         ppo = PPO(
             envs,
             agent,
@@ -196,7 +194,7 @@ if __name__ == "__main__":
             device,
             seed,
             floattype)
-        ppo.train()
+        ppo.train(args.save_model)
         ppo.evaluate(args.eval_seeds, args.eval_steps)
         
         envs.close()

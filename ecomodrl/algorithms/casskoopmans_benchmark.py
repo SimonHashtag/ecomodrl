@@ -189,24 +189,6 @@ def plot_paths(pp, c0, k0, T, k_ter=0, c_ss=None, k_ss=None, s_ss=None):
         axs[1].axvline(T+1, c='k', ls='--', lw=1, color="#333F48")
         axs[1].scatter(T+1, paths[1][-1], s=80, color="#AF0078")
 
-pp = PlanningProblem()
-
-ρ = 1 / pp.β - 1
-k_ss = pp.f_prime_inv(ρ+pp.δ)
-s_ss = pp.δ * k_ss / pp.f(k_ss)
-c_ss = pp.f(k_ss)*(1-s_ss)
-
-c_path, k_path, s_path, μ_path = calculate_paths(pp, 1.0, 5.0, 100, k_ter=k_ss)
-
-U = sum(pp.u(c_path))
-print(f'steady state for capital is: {k_ss}')
-print(f'the steady state savings rate is: {s_ss}')
-print(f'steady state consumption is: {c_ss}')
-print(f'the optimal episode return is: {U}')
-
-plot_paths(pp, 1.0, 5.0, 100, k_ter=k_ss, c_ss=c_ss, k_ss=k_ss, s_ss=s_ss)
-plt.show()
-
 ## Dynamic Programming (VFI)
 class problem():
     def __init__(self, γ=2, β=0.95, δ=0.02, α=0.33, A=1):
@@ -287,8 +269,26 @@ def simulation(problem, grid, copt, periods=100, start_value=5.0):
         U += problem.u(state[t]*action[t])
     return action, state, U
 
-p = problem()
+if __name__ == "__main__":
+    pp = PlanningProblem()
 
-grid, V, copt = vfi(p, conv=0.01, tolerance=0.01, verbose=False)
-action_path, state_path, U = simulation(p, grid, copt, 100)
-print(f'the optimal episode return is: {U}')
+    ρ = 1 / pp.β - 1
+    k_ss = pp.f_prime_inv(ρ+pp.δ)
+    s_ss = pp.δ * k_ss / pp.f(k_ss)
+    c_ss = pp.f(k_ss)*(1-s_ss)
+
+    c_path, k_path, s_path, μ_path = calculate_paths(pp, 1.0, 5.0, 100, k_ter=k_ss)
+
+    U = sum(pp.u(c_path))
+    print(f'steady state for capital is: {k_ss}')
+    print(f'the steady state savings rate is: {s_ss}')
+    print(f'steady state consumption is: {c_ss}')
+    print(f'the optimal episode return is: {U}')
+
+    plot_paths(pp, 1.0, 5.0, 100, k_ter=k_ss, c_ss=c_ss, k_ss=k_ss, s_ss=s_ss)
+    plt.show()
+    
+    p = problem()
+    grid, V, copt = vfi(p, conv=0.01, tolerance=0.01, verbose=False)
+    action_path, state_path, U = simulation(p, grid, copt, 100)
+    print(f'the optimal episode return is: {U}')
