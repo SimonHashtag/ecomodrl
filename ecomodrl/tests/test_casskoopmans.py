@@ -6,28 +6,28 @@ import subprocess
 
 def test_ppo():
     subprocess.run(
-        "python ecomodrl/algorithms/casskoopmans_ppo.py --num-envs 1 --num-steps 64 --total-timesteps 256",
+        "python ecomodrl/experiments/casskoopmans_ppo.py --num-envs 1 --num-steps 64 --total-timesteps 256",
         shell=True,
         check=True,
     )
     
 def test_ddpg():
     subprocess.run(
-        "python ecomodrl/algorithms/casskoopmans_ddpg.py --total-timesteps 256 --learning-starts 128",
+        "python ecomodrl/experiments/casskoopmans_ddpg.py --total-timesteps 256 --learning-starts 128",
         shell=True,
         check=True,
     )
     
 def test_td3():
     subprocess.run(
-        "python ecomodrl/algorithms/casskoopmans_td3.py --total-timesteps 256 --learning-starts 128",
+        "python ecomodrl/experiments/casskoopmans_td3.py --total-timesteps 256 --learning-starts 128",
         shell=True,
         check=True,
     )
     
 def test_sac():
     subprocess.run(
-        "python ecomodrl/algorithms/casskoopmans_sac.py --total-timesteps 256 --learning-starts 128",
+        "python ecomodrl/experiments/casskoopmans_sac.py --total-timesteps 256 --learning-starts 128",
         shell=True,
         check=True,
     )

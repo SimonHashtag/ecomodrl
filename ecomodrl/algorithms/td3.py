@@ -7,6 +7,7 @@ import torch.optim as optim
 from typing import Union, Optional
 from stable_baselines3.common.buffers import ReplayBuffer
 
+
 class TD3:
     def __init__(
         self,
@@ -156,6 +157,8 @@ class TD3:
                     
                     # evaluate training
                     self.evaluate(self.seed, self.max_episode_steps, global_step)
+                    if (self.stopper(self.writer.eps_buffer)):
+                        break
 
         if save_model:
             model_path = f"runs/{self.run_name}/{self.exp_name}.ecomodrl_model"
@@ -163,6 +166,8 @@ class TD3:
             print(f"model saved to {model_path}")
         
     def evaluate(self, eval_seeds: Union[int, list], eval_steps: int, global_step: Optional[int]=None):
+        # Clear episode stats buffer
+        self.writer.empty_eps_buffer()
         # Configure logging label
         self.writer.is_eval(True)
         
@@ -179,5 +184,5 @@ class TD3:
                 step_count = step if global_step is None else global_step
                 self.writer.log_env_stats(step_count, infos)
                 obs = next_obs
-            self.writer.empty_eps_buffer()
+        # Reconfigure logging label
         self.writer.is_eval(False)

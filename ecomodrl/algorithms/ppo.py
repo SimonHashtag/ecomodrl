@@ -222,6 +222,8 @@ class PPO:
         self,
         eval_seeds: Union[int, list],
         eval_steps: int):
+        # Clear episode stats buffer
+        self.writer.empty_eps_buffer()
         # Configure logging label
         self.writer.is_eval(True)
         
@@ -240,5 +242,5 @@ class PPO:
                         
                 next_obs = torch.Tensor(next_obs).to(self.device, dtype=self.floattype)
                 self.writer.log_env_stats(step, infos)
-            self.writer.empty_eps_buffer()
+        # Reconfigure logging label
         self.writer.is_eval(False)
