@@ -4,7 +4,7 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Union
+from typing import Union, Optional
 
 class PPO:
     def __init__(
@@ -45,6 +45,7 @@ class PPO:
         self.max_grad_norm = args.max_grad_norm
         self.target_kl = args.target_kl
         self.anneal_lr = args.anneal_lr
+        self.max_episode_steps = args.max_episode_steps
         
         self.run_name = run_name
         self.device = device
@@ -213,6 +214,7 @@ class PPO:
                 explained_var,
                 start_time,
                 self.optimizer.param_groups[0]["lr"])
+            self.evaluate(self.seed, self.max_episode_steps, global_step)
         if save_model:
             model_path = f"runs/{self.run_name}/{self.exp_name}.ecomodrl_model"
             torch.save(self.agent.state_dict(), model_path)
@@ -221,7 +223,8 @@ class PPO:
     def evaluate(
         self,
         eval_seeds: Union[int, list],
-        eval_steps: int):
+        eval_steps: int, 
+        global_step: Optional[int]=None):
         # Clear episode stats buffer
         self.writer.empty_eps_buffer()
         # Configure logging label
@@ -241,6 +244,7 @@ class PPO:
                 next_obs, _, _, _, infos = self.envs.step(action.cpu().numpy())
                         
                 next_obs = torch.Tensor(next_obs).to(self.device, dtype=self.floattype)
-                self.writer.log_env_stats(step, infos)
+                step_count = step if global_step is None else global_step
+                self.writer.log_env_stats(step_count, infos)
         # Reconfigure logging label
         self.writer.is_eval(False)

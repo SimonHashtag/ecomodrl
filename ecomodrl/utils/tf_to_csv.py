@@ -174,7 +174,7 @@ def main(logdir_or_logfile: str, write_pkl: bool, write_csv: bool, out_dir: Opti
     """
     if os.path.isdir(logdir_or_logfile):
         dirs = os.listdir(logdir_or_logfile)
-        if os.path.isdir(dirs[0]):
+        if os.path.isdir(os.path.join(logdir_or_logfile, dirs[0])):
             for dir in dirs:
                 tflogs2file(os.path.join(logdir_or_logfile, dir), write_pkl, write_csv, out_dir, wide_format, prefix)
         else:

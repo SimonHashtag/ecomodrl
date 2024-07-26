@@ -20,7 +20,7 @@ from ecomodrl.utils.logger import SACLogger
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seeds: int = field(default_factory=lambda: list(range(15, 16)))
+    seeds: list = field(default_factory=lambda: list(range(15, 16)))
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""

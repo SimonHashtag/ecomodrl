@@ -81,7 +81,7 @@ class SAC:
     def train(self, save_model=False):
         start_time = time.time()
         obs, _ = self.envs.reset(seed=self.seed)
-        for global_step in range(self.total_timesteps):
+        for global_step in range(1, self.total_timesteps + 1):
             # ALGO LOGIC: put action logic here
             if global_step < self.learning_starts:
                 actions = np.array([self.envs.single_action_space.sample() for _ in range(self.envs.num_envs)])

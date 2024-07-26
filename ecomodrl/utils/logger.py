@@ -7,8 +7,10 @@ from torch.utils.tensorboard import SummaryWriter
 class BaseLogger(SummaryWriter):
     def __init__(
         self,
-        log_dir):
+        log_dir,
+        verbose=False,):
         super().__init__(log_dir=log_dir)
+        self.verbose = verbose
         self.eps_buffer = defaultdict(list)
         self.is_eval(False)
     
@@ -21,7 +23,8 @@ class BaseLogger(SummaryWriter):
         if "final_info" in infos:
                 for info in infos["final_info"]:
                     if "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                        if self.verbose:
+                            print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         self.add_scalar(f"{self.eps_label}/episodic_return", info["episode"]["r"], global_step, current_walltime)
                         self.add_scalar(f"{self.eps_label}/episodic_length", info["episode"]["l"], global_step, current_walltime)
                         self.add_scalar(f"{self.eps_label}/seed", info["seed"], global_step, current_walltime)
@@ -50,8 +53,9 @@ class BaseLogger(SummaryWriter):
 class PPOLogger(BaseLogger):
     def __init__(
         self,
-        log_dir):
-        super().__init__(log_dir=log_dir)
+        log_dir,
+        verbose=False,):
+        super().__init__(log_dir=log_dir, verbose=verbose)
     
     def log_training_stats(
         self,
@@ -74,7 +78,8 @@ class PPOLogger(BaseLogger):
         self.add_scalar("performance/approx_kl", approx_kl.item(), global_step, current_walltime)
         self.add_scalar("performance/clipfrac", np.mean(clipfracs), global_step, current_walltime)
         self.add_scalar("performance/explained_variance", explained_var, global_step, current_walltime)
-        print("SPS:", int(global_step / (current_walltime - start_time)))
+        if self.verbose:
+            print("SPS:", int(global_step / (current_walltime - start_time)))
         self.add_scalar("performance/SPS", int(global_step / (current_walltime - start_time)), global_step, current_walltime)
         self.add_scalar("performance/learning_rate", lr, global_step, current_walltime)
 
@@ -82,8 +87,9 @@ class PPOLogger(BaseLogger):
 class DDPGLogger(BaseLogger):
     def __init__(
         self,
-        log_dir):
-        super().__init__(log_dir=log_dir)
+        log_dir,
+        verbose=False,):
+        super().__init__(log_dir=log_dir, verbose=verbose)
     
     def log_training_stats(
         self,
@@ -98,15 +104,17 @@ class DDPGLogger(BaseLogger):
         self.add_scalar("performance/qf1_values", qf1_a_values.mean().item(), global_step, current_walltime)
         self.add_scalar("performance/qf1_loss", qf1_loss.item(), global_step, current_walltime)
         self.add_scalar("performance/actor_loss", actor_loss.item(), global_step, current_walltime)
-        print("SPS:", int(global_step / (current_walltime - start_time)))
+        if self.verbose:
+            print("SPS:", int(global_step / (current_walltime - start_time)))
         self.add_scalar("performance/SPS", int(global_step / (current_walltime - start_time)), global_step, current_walltime)
 
 
 class TD3Logger(DDPGLogger):
     def __init__(
         self,
-        log_dir):
-        super().__init__(log_dir=log_dir)
+        log_dir,
+        verbose=False,):
+        super().__init__(log_dir=log_dir, verbose=verbose)
     
     def log_training_stats(
         self,
@@ -135,8 +143,9 @@ class TD3Logger(DDPGLogger):
 class SACLogger(BaseLogger):
     def __init__(
         self,
-        log_dir):
-        super().__init__(log_dir=log_dir)
+        log_dir,
+        verbose=False,):
+        super().__init__(log_dir=log_dir, verbose=verbose)
     
     def log_training_stats(
         self,
@@ -162,5 +171,6 @@ class SACLogger(BaseLogger):
         self.add_scalar("performance/alpha", alpha, global_step, current_walltime)
         if autotune:
             self.add_scalar("performance/alpha_loss", alpha_loss.item(), global_step, current_walltime)
-        print("SPS:", int(global_step / (current_walltime - start_time)))
+        if self.verbose:
+            print("SPS:", int(global_step / (current_walltime - start_time)))
         self.add_scalar("performance/SPS", int(global_step / (current_walltime - start_time)), global_step, current_walltime)
