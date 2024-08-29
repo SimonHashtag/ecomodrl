@@ -20,13 +20,13 @@ from ecomodrl.utils.logger import DDPGLogger
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seeds: list = field(default_factory=lambda: list(range(15, 16)))
+    seeds: list = field(default_factory=lambda: list(range(15, 17)))
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    save_model: bool = False
+    save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
 
     # Algorithm specific arguments
@@ -34,7 +34,7 @@ class Args:
     """the environment id of the economic model"""
     max_episode_steps: str = 100
     """The number of steps run in each env instance before resetting"""
-    total_timesteps: int = 50000
+    total_timesteps: int = 15e3
     """total timesteps of the experiments"""
     learning_rate: float = 0.001
     """the learning rate of the optimizer"""
@@ -48,11 +48,11 @@ class Args:
     """the batch size of sample from the reply memory"""
     exploration_noise: float = 0.2
     """the scale of exploration noise"""
-    learning_starts: int = 10e3
+    learning_starts: int = 5e3
     """timestep to start learning"""
     
     # Evaluation specific arguments
-    eval_seeds: list = field(default_factory=lambda: list(range(100, 110)))
+    eval_seeds: list = field(default_factory=lambda: list(range(100, 200)))
     """A list of seeds for evaluation"""
     eval_steps: int = 100
     """The number of environment steps per eval seed"""

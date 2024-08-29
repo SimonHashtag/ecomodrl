@@ -289,6 +289,6 @@ if __name__ == "__main__":
     plt.show()
     
     p = problem()
-    grid, V, copt = vfi(p, conv=0.01, tolerance=0.01, verbose=False)
+    grid, V, copt = vfi(p, conv=0.001, tolerance=0.01, verbose=False)
     action_path, state_path, U = simulation(p, grid, copt, 100)
     print(f'the optimal episode return is: {U}')
