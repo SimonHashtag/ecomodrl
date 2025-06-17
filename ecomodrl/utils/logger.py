@@ -23,7 +23,7 @@ class BaseLogger(SummaryWriter):
         if "final_info" in infos:
                 for info in infos["final_info"]:
                     if "episode" in info:
-                        if self.verbose:
+                        if self.verbose and self.eps_label == "eval/eps_stats":
                             print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         self.add_scalar(f"{self.eps_label}/episodic_return", info["episode"]["r"], global_step, current_walltime)
                         self.add_scalar(f"{self.eps_label}/episodic_length", info["episode"]["l"], global_step, current_walltime)
@@ -43,6 +43,9 @@ class BaseLogger(SummaryWriter):
 
     def empty_eps_buffer(self):
         self.eps_buffer.clear()
+    
+    def get_eps_buffer(self):
+        return self.eps_buffer
         
     def is_eval(self, eval=True):
         self.eps_label = "eval/eps_stats" if eval else "eps_stats"

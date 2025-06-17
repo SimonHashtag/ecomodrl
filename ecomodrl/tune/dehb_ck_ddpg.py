@@ -10,14 +10,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 import tyro
-from stable_baselines3.common.buffers import ReplayBuffer
+
+from ecomodrl.algorithms.ddpg import DDPG
+from ecomodrl.envs.casskoopmans import CassKoopmansEnv
+from ecomodrl.utils.stopper import Stopper
+from ecomodrl.utils.logger import DDPGLogger
+
 import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
 from dehb import DEHB
 
-from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 
 @dataclass
 class Args:
@@ -73,11 +76,12 @@ def get_configspace(seed=None):
     
     return cs
 
-def make_env(env_id, max_episode_steps, floattype):
+def make_env(env_id, max_episode_steps, seed):
     def thunk():
-        env = gym.make(env_id, max_episode_steps=max_episode_steps, floattype=floattype)
+        env = gym.make(env_id, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = gym.wrappers.NormalizeObservation(env)
+        env.action_space.seed(seed)
         return env
 
     return thunk
@@ -100,17 +104,17 @@ class QNetwork(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, env, floattype):
+    def __init__(self, env):
         super().__init__()
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 64)
         self.fc2 = nn.Linear(64, 64)
         self.fc_mu = nn.Linear(64, np.prod(env.single_action_space.shape))
         # action rescaling
         self.register_buffer(
-            "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=floattype)
+            "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0)
         )
         self.register_buffer(
-            "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=floattype)
+            "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0)
         )
 
     def forward(self, x):
@@ -120,127 +124,78 @@ class Actor(nn.Module):
         return x * self.action_scale + self.action_bias
     
 def objective_fun(config, fidelity, **kwargs):
-    batch_size = config["batch_size"]
-    learning_rate = config["learning_rate"]
-    tau = config["tau"]
-    exploration_noise = config["exploration_noise"]
+    args=kwargs["args"]
     
-    envs = kwargs["envs"]
+    args.batch_size = config["batch_size"]
+    args.learning_rate = config["learning_rate"]
+    args.tau = config["tau"]
+    args.exploration_noise = config["exploration_noise"]
+    args.total_timesteps = fidelity
+
     device = kwargs["device"]
-    buffer_size = kwargs["buffer_size"]
-    learning_starts = kwargs["learning_starts"]
-    gamma = kwargs["gamma"]
     tuning_seeds = kwargs["tuning_seeds"]
     eval_seeds = kwargs["eval_seeds"]
-    eval_steps = kwargs["eval_steps"]
-    torch_floattype = kwargs["torch_floattype"]
-    torch.set_default_dtype(torch_floattype)
+    tune_time = kwargs["tune_time"]
     
-    
-    # Empty lists for storing episode returns during testing
+    # Empty lists for storing episode returns during evaluation
     eps_return = list()
     eps_length = list()
     
+    start_time = time.time()
+    
     for tuning_seed in tuning_seeds:
-        # seeding
+        # logger setup
+        run_name = f"{args.env_id}__{args.exp_name}__{tuning_seed}__{int(tune_time)}"
+        writer = DDPGLogger(f"tune_results/{run_name}")
+        writer.add_text(
+            "hyperparameters",
+            "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        )
+        
+        # seeding (DO NOT MOVE THIS -> Must be before env and agent setup)
         random.seed(tuning_seed)
         np.random.seed(tuning_seed)
         torch.manual_seed(tuning_seed)
+        
+        # env setup
+        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.max_episode_steps, tuning_seed)])
+        assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+
+        # Early stopping mechanism setup
+        min_iter_esm = (args.total_timesteps-args.learning_starts)//(10*args.max_episode_steps)
+        stopper = Stopper(
+            max_iter=args.total_timesteps, 
+            min_iter=min_iter_esm,
+            early_stopping=40,
+            min_episode_length=args.max_episode_steps*(1-0.05),
+            max_deviation=0.05,
+            )
+        
+        ddpg = DDPG(envs,
+                    Actor,
+                    QNetwork,
+                    writer, 
+                    args,
+                    run_name,
+                    device,
+                    tuning_seed,
+                    stopper
+                    )
+        ddpg.train()
+        ddpg.evaluate(eval_seeds, args.eval_steps)
+        eps_buffer = writer.get_eps_buffer()
+        eps_return = eps_return.append(eps_buffer["episode_returns"])
+        eps_length = eps_length.append(eps_buffer["episode_lens"])
+        
+        envs.close()
+        writer.close()
     
-        actor = Actor(envs, torch_floattype).to(device)
-        qf1 = QNetwork(envs).to(device)
-        qf1_target = QNetwork(envs).to(device)
-        target_actor = Actor(envs, torch_floattype).to(device)
-        target_actor.load_state_dict(actor.state_dict())
-        qf1_target.load_state_dict(qf1.state_dict())
-        q_optimizer = optim.Adam(list(qf1.parameters()), lr=learning_rate)
-        actor_optimizer = optim.Adam(list(actor.parameters()), lr=learning_rate)
-        
-        rb = ReplayBuffer(
-            buffer_size,
-            envs.single_observation_space,
-            envs.single_action_space,
-            device,
-            handle_timeout_termination=False,
-        )
-
-        # TRY NOT TO MODIFY: start the game
-        start_time = time.time()
-        obs, _ = envs.reset(seed=tuning_seed)
-        for global_step in range(int(fidelity)):
-            # ALGO LOGIC: put action logic here
-            if global_step < learning_starts:
-                actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-            else:
-                with torch.no_grad():
-                    actions = actor(torch.Tensor(obs).to(device))
-                    actions += torch.normal(0, actor.action_scale * exploration_noise)
-                    actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
-
-            # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-            # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-            real_next_obs = next_obs.copy()
-            for idx, trunc in enumerate(truncations):
-                if trunc:
-                    real_next_obs[idx] = infos["final_observation"][idx]
-            rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-            # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-            obs = next_obs
-
-            # ALGO LOGIC: training.
-            if global_step > learning_starts:
-                data = rb.sample(batch_size)
-                with torch.no_grad():
-                    next_state_actions = target_actor(data.next_observations)
-                    qf1_next_target = qf1_target(data.next_observations, next_state_actions)
-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * gamma * (qf1_next_target).view(-1)
-
-                qf1_a_values = qf1(data.observations, data.actions).view(-1)
-                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-
-                # optimize the model
-                q_optimizer.zero_grad()
-                qf1_loss.backward()
-                q_optimizer.step()
-
-                actor_loss = -qf1(data.observations, actor(data.observations)).mean()
-                actor_optimizer.zero_grad()
-                actor_loss.backward()
-                actor_optimizer.step()
-
-                # update the target network
-                for param, target_param in zip(actor.parameters(), target_actor.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-                for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-        cost = time.time()-start_time
-        
-        # evaluate algo (test runs)   
-        for eval_seed in eval_seeds:
-            next_obs, _ = envs.reset(seed=eval_seed)
-            next_obs = torch.Tensor(next_obs).to(device)
-            for _ in range(0, eval_steps//10):
-                with torch.no_grad():
-                    actions = actor(torch.Tensor(obs).to(device))
-                    actions = actions.cpu().numpy().clip(envs.single_action_space.low, envs.single_action_space.high)
-                next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-                        
-                next_obs = torch.Tensor(next_obs).to(device)
-
-                if "final_info" in infos:
-                    for info in infos["final_info"]:
-                        if "episode" in info:
-                            eps_return.append(info["episode"]["r"])
-                            eps_length.append(info["episode"]["l"])      
-    envs.close()
+    cost = time.time()-start_time
     
     res = {
     "fitness": -np.mean(eps_return, dtype=np.float64),
     "cost": cost,
-    "info": {"eps_length": np.mean(eps_length), "training_steps": fidelity-learning_starts}
+    "info": {"eps_length": np.mean(eps_length), "training_steps": fidelity-args.learning_starts}
     }
     return res
 
@@ -253,14 +208,10 @@ if __name__ == "__main__":
     tuning_seeds = range(5)
     eval_seeds = range(5, 15)
     
-    # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.max_episode_steps, np.float64)]
-    )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
-    
     cs = get_configspace(args.seed)
     dimensions = len(list(cs.values()))
+    
+    tune_time = time.time()
     
     dehb = DEHB(f=objective_fun, 
                 cs=cs, 
@@ -275,15 +226,11 @@ if __name__ == "__main__":
                 log_level=args.log_level)
     traj, runtime, history = dehb.run(
         total_cost=args.runtime, 
-        envs=envs,
         device=device,
-        buffer_size=args.buffer_size,
-        learning_starts=args.learning_starts,
-        gamma=args.gamma,
-        torch_floattype=torch.float64,
         tuning_seeds=tuning_seeds,
         eval_seeds=eval_seeds,
-        eval_steps=args.eval_steps
+        tune_time=tune_time,
+        args=args
         )
     # Saving optimisation trace history
     name = time.strftime("%x %X %Z", time.localtime(dehb.start))

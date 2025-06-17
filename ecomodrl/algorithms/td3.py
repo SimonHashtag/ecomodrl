@@ -176,7 +176,7 @@ class TD3:
         for eval_seed in eval_seeds:
             self.seed = eval_seed
             self.seeding()
-            obs, _ = self.envs.reset(seed=eval_seed)
+            obs, _ = self.envs.reset(seed=eval_seed, options={"eval": True})
             for step in range(1, eval_steps + 1):
                 with torch.no_grad():
                     actions = self.actor(torch.Tensor(obs).to(self.device))

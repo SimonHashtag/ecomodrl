@@ -52,7 +52,7 @@ class Args:
     """timestep to start learning"""
     
     # Evaluation specific arguments
-    eval_seeds: list = field(default_factory=lambda: list(range(100, 200)))
+    eval_seeds: list = field(default_factory=lambda: list(range(100, 110)))
     """A list of seeds for evaluation"""
     eval_steps: int = 100
     """The number of environment steps per eval seed"""
@@ -63,6 +63,7 @@ def make_env(env_id, max_episode_steps, seed):
         env = gym.make(env_id, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = gym.wrappers.NormalizeObservation(env)
+        env = gym.wrappers.NormalizeReward(env)
         env.action_space.seed(seed)
         return env
 
@@ -110,7 +111,6 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     args = import_tuned_hp(args, args.exp_name)
     
-    floattype = torch.float32
     torch.backends.cudnn.deterministic = args.torch_deterministic
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     
@@ -137,9 +137,9 @@ if __name__ == "__main__":
         stopper = Stopper(
             max_iter=args.total_timesteps, 
             min_iter=min_iter_esm,
-            early_stopping=40,
+            early_stopping=10,
             min_episode_length=args.max_episode_steps*(1-0.05),
-            max_deviation=0.05,
+            max_deviation=0.01,
             )
         
         ddpg = DDPG(
@@ -147,12 +147,11 @@ if __name__ == "__main__":
             Actor,
             QNetwork,
             writer,
-            stopper,
             args,
             run_name,
             device,
             seed,
-            floattype,
+            stopper
         )
         ddpg.train(args.save_model)
         ddpg.evaluate(args.eval_seeds, args.eval_steps)

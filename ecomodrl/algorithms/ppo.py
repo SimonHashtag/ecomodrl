@@ -236,7 +236,7 @@ class PPO:
         for eval_seed in eval_seeds:
             self.seed = eval_seed
             self.seeding()
-            next_obs, _ = self.envs.reset(seed=[self.seed]*self.num_envs)
+            next_obs, _ = self.envs.reset(seed=[self.seed]*self.num_envs, options={"eval": True})
             next_obs = torch.Tensor(next_obs).to(self.device, dtype=self.floattype)
             for step in range(1, eval_steps + 1):
                 with torch.no_grad():

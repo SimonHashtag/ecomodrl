@@ -106,4 +106,4 @@ def main(logdir_or_logfile, data_prefix: Union[str, list]):
 if __name__ == "__main__":
     #data_prefix = ["eps_stats", "period_stats"]
     data_prefix = "eval_eps_stats"
-    main("C:/Users/s_haas09/VSC_Python/EcoModRL/runs/poster_bernoulli", data_prefix) #CassKoopmans-v0__casskoopmans_ppo__1__1712927370
+    main("C:/Users/s_haas09/VSC_Python/EcoModRL/runs/DeepNets", data_prefix) #CassKoopmans-v0__casskoopmans_ppo__1__1712927370

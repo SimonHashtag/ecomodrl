@@ -35,7 +35,7 @@ class Args:
     """the id of the environment"""
     max_episode_steps: str = 100
     """The number of steps run in each env instance before resetting"""
-    total_timesteps: int = 10000
+    total_timesteps: int = 50000
     """total timesteps of the experiments"""
     learning_rate: float = 0.002375
     """the learning rate of the optimizer"""
@@ -107,21 +107,28 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1.0),
-        )
-        self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, np.prod(envs.single_action_space.shape)*2), std=0.01),
-            nn.Softplus(), # softplus function + 1 to transform action_params to values > 1 (for beta distribution)
-        )
+        self.nunits = 64
+        self.nlayers = 40
+        critic_layers = [
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), self.nunits)),
+            nn.Tanh()
+        ]
+        for _ in range(self.nlayers):
+            critic_layers.append(layer_init(nn.Linear(self.nunits, self.nunits)))
+            critic_layers.append(nn.Tanh())
+        critic_layers.append(layer_init(nn.Linear(self.nunits, 1), std=1.0))
+        #critic_layers.append(nn.LogSoftmax())
+        self.critic = nn.Sequential(*critic_layers)
+        actor_layers = [
+            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), self.nunits)),
+            nn.Tanh()
+        ]
+        for _ in range(self.nlayers):
+            actor_layers.append(layer_init(nn.Linear(self.nunits, self.nunits)))
+            actor_layers.append(nn.Tanh())
+        actor_layers.append(layer_init(nn.Linear(self.nunits, np.prod(envs.single_action_space.shape)*2), std=0.01))
+        actor_layers.append(nn.Softplus()) # softplus function + 1 to transform action_params to values > 1 (for beta distribution)
+        self.actor = nn.Sequential(*actor_layers)
 
     def get_value(self, x):
         return self.critic(x)
@@ -153,7 +160,8 @@ if __name__ == "__main__":
     for seed in args.seeds:
         # logger setup
         run_name = f"{args.env_id}__{args.exp_name}__{seed}__{int(time.time())}"
-        writer = PPOLogger(log_dir=f"runs/{run_name}")
+        writer = PPOLogger(log_dir=f"runs/{run_name}",
+                           verbose=True)
         writer.add_text(
             "hyperparameters",
             "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),

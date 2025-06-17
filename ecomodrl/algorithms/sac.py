@@ -195,7 +195,7 @@ class SAC:
             obs, _ = self.envs.reset(seed=eval_seed)
             for step in range(1, eval_steps + 1):
                 with torch.no_grad():
-                    actions, _, _ = self.actor.get_action(torch.Tensor(obs).to(self.device))
+                    _, _, actions = self.actor.get_action(torch.Tensor(obs).to(self.device))
                 next_obs, _, _, _, infos = self.envs.step(actions.detach().cpu().numpy())
                 step_count = step if global_step is None else global_step
                 self.writer.log_env_stats(step_count, infos)

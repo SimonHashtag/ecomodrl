@@ -15,12 +15,11 @@ class DDPG:
         Actor,
         QNetwork,
         writer,
-        stopper,
         args,
         run_name,
         device,
         seed,
-        floattype,
+        stopper=None
     ):
         self.envs = envs
         self.writer = writer
@@ -41,7 +40,6 @@ class DDPG:
         self.run_name = run_name
         self.device = device
         self.seed = seed
-        self.floattype = floattype
         
         # agent setup
         self.actor = Actor(self.envs).to(self.device)
@@ -134,7 +132,7 @@ class DDPG:
                     
                     # evaluate training
                     self.evaluate(self.seed, self.max_episode_steps, global_step)
-                    if (self.stopper(self.writer.eps_buffer)):
+                    if (self.stopper is not None and self.stopper(self.writer.eps_buffer)):
                         break
         
         if save_model:
@@ -153,7 +151,7 @@ class DDPG:
         for eval_seed in eval_seeds:
             self.seed = eval_seed
             self.seeding()
-            obs, _ = self.envs.reset(seed=eval_seed)
+            obs, _ = self.envs.reset(seed=eval_seed, options={"eval": True})
             for step in range(1, eval_steps + 1):
                 with torch.no_grad():
                     actions = self.actor(torch.Tensor(obs).to(self.device))

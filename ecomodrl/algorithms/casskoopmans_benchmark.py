@@ -284,6 +284,9 @@ if __name__ == "__main__":
     print(f'the steady state savings rate is: {s_ss}')
     print(f'steady state consumption is: {c_ss}')
     print(f'the optimal episode return is: {U}')
+    print(f'optimal consumption share is: {c_path/k_path[0:101]}')
+    plt.plot(c_path/k_path[0:101])
+    plt.show()
 
     plot_paths(pp, 1.0, 5.0, 100, k_ter=k_ss, c_ss=c_ss, k_ss=k_ss, s_ss=s_ss)
     plt.show()
@@ -291,4 +294,6 @@ if __name__ == "__main__":
     p = problem()
     grid, V, copt = vfi(p, conv=0.001, tolerance=0.01, verbose=False)
     action_path, state_path, U = simulation(p, grid, copt, 100)
+    plt.plot(grid, copt)
+    plt.show()
     print(f'the optimal episode return is: {U}')
