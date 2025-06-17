@@ -7,10 +7,10 @@ from typing import Union
 
 
 color_map = [
-    ("#333f48", "#d2dadf"),  # dark bluegrey
+    ("#7ab51d", "#dff4bd"),  # green
     ("#AF0078", "#ffb3e7"),  # violett
     ("#00578a", "#b3e3ff"),  # blue
-    ("#7ab51d", "#dff4bd"),  # green
+    ("#333f48", "#d2dadf"),  # dark bluegrey
     ("#009dd1", "#b3ecff"),  # bright blue
     ("#fff300", "#fffa95"),  # yellow
     ("#000000", "#a7a7a7"),  # black
@@ -41,8 +41,20 @@ def load_data(logdir_or_logfile: str, data_prefix: str):
     df.set_index("step", inplace = True)
     df.index.name = None
     return df
-    
-def plot_with_sd(df: pd.DataFrame, title=None, rolling_window: int = 50, xmax: int = 10e4, ymin: int = -5, ymax: int = 5):
+
+def idxmaxs(df, n=5):
+    return list(df.sort_values().head(n).index)
+
+def idxmins(df, n=5):
+    return list(df.sort_values().tail(n).index)
+
+def iqm(df: pd.DataFrame, q: float = 0.1):
+    """InterQuantileMean: 
+    Filter top and worst q-quantile seeds according to mean"""
+    drop_n = int(np.ceil(q * df.shape[1]))
+    return df.drop(idxmaxs(df.mean(), drop_n)+idxmins(df.mean(), drop_n), axis=1)
+
+def plot_with_sd(df: pd.DataFrame, title=None, rolling_window: int = 1, xmax: int = 10e4, ymin: int = -5, ymax: int = 5):
     measures = df.columns[1:-2]
     n_cols = 2
     n_rows = len(measures) // n_cols
@@ -55,16 +67,20 @@ def plot_with_sd(df: pd.DataFrame, title=None, rolling_window: int = 50, xmax: i
             color, color_light = get_color(i)
             data = df.loc[df.exp_name==exp]
             data.iloc[:, 1:-2] = data.iloc[:,1:-2].rolling(rolling_window, min_periods=0).mean()
-            data = data.pivot_table(index=data.index, columns="exp_name", values=measure, aggfunc=["mean", "std"])
+            data = data.pivot(columns="training_seed", values=measure).ffill()
+            data = iqm(data, 0.2)
+            data = data.apply(pd.DataFrame.describe, 1)[["mean", "std"]]
+            data = pd.concat([data,pd.DataFrame(data.iloc[-1:,].values, index=[df.index.max()], columns=data.columns)])
+            #data = data.pivot_table(index=data.index, columns="exp_name", values=measure, aggfunc=["mean", "std"])
             #data = data.iloc[1:int((len(data)/2)),]
-            ax.plot(data.index, data["mean", exp], color=color, label=exp.split("_", 1)[1])
+            ax.plot(data.index, data["mean"], color=color, label=exp.split("_", 1)[1].upper())
             if "std" in data:
                 ax.fill_between(
-                    data["mean", exp].index,
-                    (data["mean", exp] - data["std", exp]).values.flatten(),
-                    (data["mean", exp] + data["std", exp]).values.flatten(),
+                    data["mean"].index,
+                    (data["mean"] - data["std"]).values.flatten(),
+                    (data["mean"] + data["std"]).values.flatten(),
                     color=color_light,
-                    alpha=0.5,
+                    alpha=0.75,
                     interpolate=True
                 )
             if data["mean"].values.min() < yaxmin:
@@ -73,9 +89,9 @@ def plot_with_sd(df: pd.DataFrame, title=None, rolling_window: int = 50, xmax: i
                 yaxmax = data["mean"].values.max()
         ax.set_xlim([0, df.index.max()])
         ax.set_ylim([yaxmin-1, yaxmax+1])
-        #ax.hlines(-56.138636853032445, 0, xmax, linestyle='--', color="#333F48")
+        ax.hlines(-55.674136089520125, 0, xmax, linestyle='--', color="#333F48")
         ax.set_xticklabels(ax.get_xticklabels(), rotation = 335)
-        ax.set(xlabel='Period steps', ylabel=measure.split("/")[1], title=title)
+        ax.set(xlabel='Environment steps', ylabel=measure.split("/")[-1].replace("_", " ").title(), title=title)
         ax.legend(loc=4)
     plt.show()
 
@@ -88,5 +104,6 @@ def main(logdir_or_logfile, data_prefix: Union[str, list]):
         plot_with_sd(df)
 
 if __name__ == "__main__":
-    data_prefix = ["eps_stats", "period_stats"]
-    main("C:/Users/s_haas09/VSC_Python/EcoModRL/runs/test", data_prefix) #CassKoopmans-v0__casskoopmans_ppo__1__1712927370
+    #data_prefix = ["eps_stats", "period_stats"]
+    data_prefix = "eval_eps_stats"
+    main("C:/Users/s_haas09/VSC_Python/EcoModRL/runs/DeepNets", data_prefix) #CassKoopmans-v0__casskoopmans_ppo__1__1712927370

@@ -10,3 +10,4 @@ stable_baselines3
 ray[tune, data]
 ConfigSpace
 dehb
+rliable
