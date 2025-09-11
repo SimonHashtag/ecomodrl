@@ -1,4 +1,5 @@
 # Source (changes were made): https://python.quantecon.org/cass_koopmans_1.html#equation-feasibility-constraint
+# %%
 
 import matplotlib.pyplot as plt
 from numba import njit, float64
@@ -7,6 +8,8 @@ import numpy as np
 from typing import Union
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
+
+# %%
 
 planning_data = [
     ('γ', float64),    # Coefficient of relative risk aversion
@@ -189,6 +192,12 @@ def plot_paths(pp, c0, k0, T, k_ter=0, c_ss=None, k_ss=None, s_ss=None):
         axs[1].axvline(T+1, c='k', ls='--', lw=1, color="#333F48")
         axs[1].scatter(T+1, paths[1][-1], s=80, color="#AF0078")
 
+def calculate_euler_errors(pp, c_path, k_path):
+    'Calculate Euler equation errors given paths of consumption and capital'
+    euler_errors = pp.β * (c_path[:-1]/c_path[1:])**(pp.γ) * (pp.f_prime(k_path[1:-1]) + (1 - pp.δ)) - 1
+    
+    return euler_errors
+
 ## Dynamic Programming (VFI)
 class problem():
     def __init__(self, γ=2, β=0.95, δ=0.02, α=0.33, A=1):
@@ -259,41 +268,61 @@ def vfi(problem, tolerance: float = 0.25, conv: float = 0.1, grid_points: int = 
 def simulation(problem, grid, copt, periods=100, start_value=5.0):
     """Simulate consumption path over number of periods"""
     policy = interp1d(grid, copt, fill_value="extrapolate")
-    state = []
-    action = []
+    state = np.empty(periods+1)
+    state[0] = start_value
+    cons = np.empty(periods)
     U = 0
-    state.append(start_value)
+    power = 1.0
     for t in range(periods):
-        action.append(policy(state[t]))
-        state.append(problem.eom(action[t], state[t]))
-        U += problem.u(state[t]*action[t])
-    return action, state, U
+        action = policy(state[t])
+        cons[t] = state[t]*action
+        state[t+1] = problem.eom(action, state[t])
+        U += power * problem.u(cons[t])
+        power *= problem.β
+    return cons, state, U
 
-if __name__ == "__main__":
-    pp = PlanningProblem()
+# %% Bisection
 
-    ρ = 1 / pp.β - 1
-    k_ss = pp.f_prime_inv(ρ+pp.δ)
-    s_ss = pp.δ * k_ss / pp.f(k_ss)
-    c_ss = pp.f(k_ss)*(1-s_ss)
+pp = PlanningProblem()
 
-    c_path, k_path, s_path, μ_path = calculate_paths(pp, 1.0, 5.0, 100, k_ter=k_ss)
+ρ = 1 / pp.β - 1
+k_ss = pp.f_prime_inv(ρ+pp.δ)
+s_ss = pp.δ * k_ss / pp.f(k_ss)
+c_ss = pp.f(k_ss)*(1-s_ss)
 
-    U = sum(pp.u(c_path))
-    print(f'steady state for capital is: {k_ss}')
-    print(f'the steady state savings rate is: {s_ss}')
-    print(f'steady state consumption is: {c_ss}')
-    print(f'the optimal episode return is: {U}')
-    print(f'optimal consumption share is: {c_path/k_path[0:101]}')
-    plt.plot(c_path/k_path[0:101])
-    plt.show()
+c_path, k_path, s_path, μ_path = calculate_paths(pp, 1.0, 5.0, 100, k_ter=k_ss)
 
-    plot_paths(pp, 1.0, 5.0, 100, k_ter=k_ss, c_ss=c_ss, k_ss=k_ss, s_ss=s_ss)
-    plt.show()
-    
-    p = problem()
-    grid, V, copt = vfi(p, conv=0.001, tolerance=0.01, verbose=False)
-    action_path, state_path, U = simulation(p, grid, copt, 100)
-    plt.plot(grid, copt)
-    plt.show()
-    print(f'the optimal episode return is: {U}')
+# Compute optimal discounted episode return
+U = sum(np.power(pp.β, range(0, len(c_path))) *  pp.u(c_path))
+# Euler equation errors
+euler_errors = calculate_euler_errors(pp, c_path, k_path)
+plt.hist(euler_errors, bins=50)
+plt.title('Euler equation errors')
+plt.show()
+print(f'max Euler equation error is: {max(abs(euler_errors))}')
+print(f'steady state for capital is: {k_ss}')
+print(f'the steady state savings rate is: {s_ss}')
+print(f'steady state consumption is: {c_ss}')
+print(f'the optimal discounted episode return is: {U}')
+print(f'optimal consumption share is: {c_path/k_path[0:101]}')
+plt.plot(c_path/k_path[0:101])
+plt.show()
+
+plot_paths(pp, 1.0, 5.0, 100, k_ter=k_ss, c_ss=c_ss, k_ss=k_ss, s_ss=s_ss)
+plt.show()
+
+# %% VFI
+
+p = problem()
+grid, V, copt = vfi(p, conv=0.001, tolerance=0.01, verbose=False)
+cons_path, state_path, U = simulation(p, grid, copt, 100)
+plt.plot(grid, copt)
+plt.show()
+euler_errors = calculate_euler_errors(pp, cons_path, state_path)
+plt.hist(euler_errors, bins=50)
+plt.title('Euler equation errors')
+plt.show()
+print(f'max Euler equation error is: {max(abs(euler_errors))}')
+print(f'the optimal discounted episode return is: {U}')
+
+# %%

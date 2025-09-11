@@ -1,5 +1,5 @@
 import logging
-from typing import List, Tuple, Optional
+from typing import Union, Tuple, Optional
 
 import gymnasium as gym
 from gymnasium.spaces import Box
@@ -7,24 +7,41 @@ import numpy as np
 
 __all__ = ["CassKoopmansEnv"]
 
-A = 1 # technology factor
-GAMMA = 2 # coefficient of relative risk aversion
-DELTA = 0.02 # depreciation rate of capital
-ALPHA = 0.33  # return to capital per capita
-RESETSTATE = 5.0  # Capital in first period
-TOL = 1e-6  # Minimum distance to no/complete consumption 
+# ---- Default parameters (can be overridden via __init__) ----
+A_DEFAULT = 1.0 # technology factor
+GAMMA_DEFAULT = 2 # coefficient of relative risk aversion
+DELTA_DEFAULT = 0.02 # depreciation rate of capital
+ALPHA_DEFAULT = 0.33  # return to capital per capita
+RESET_K_DEFAULT = 5.0  # Capital in first period
+TOL = 1e-3  # Minimum distance to no/complete consumption 
 
 
 class CassKoopmansEnv(gym.Env):
-    def __init__(self, 
-                 max_episode_steps=100, 
-                 finite=False,
-                 A=A,
-                 GAMMA=GAMMA,
-                 DELTA=DELTA,
-                 ALPHA=ALPHA,
-                 RESETSTATE=RESETSTATE,
-                 floattype=np.float32):
+    """
+    Deterministic Cass-Koopmans growth environment with a single control:
+    action a_t in (0,1) is the fraction of available resources consumed.
+    State s_t is capital k_t (scalar).
+    Dynamics:
+        y_t   = A * k_t^alpha
+        k_{t+1} = (1 - delta) * k_t + y_t - c_t
+        c_t = a_t * [(1 - delta) * k_t + y_t]
+    Reward r_t = u(c_t) (CRRA utility).
+    """
+    def __init__(
+        self, 
+        max_episode_steps: int = 100, 
+        A: Union[float, int] = A_DEFAULT,
+        GAMMA: float = GAMMA_DEFAULT,
+        DELTA: float = DELTA_DEFAULT,
+        ALPHA: float = ALPHA_DEFAULT,
+        RESETSTATE: float = RESET_K_DEFAULT,
+        fixed_start: bool = False,      # if True, always start from RESETSTATE
+        k_min: float = 1.0,            # min random start capital (if not fixed)
+        k_max: float = 15.0,            # max random start capital (if not fixed)
+        seed: Optional[int] = None,
+        floattype = np.float32
+        ):
+        super().__init__()
         
         # parameters
         self.A = A
@@ -33,41 +50,55 @@ class CassKoopmansEnv(gym.Env):
         self.ALPHA = ALPHA
         self.RESETSTATE = RESETSTATE
         self.floattype = floattype
+        self.max_episode_steps = max_episode_steps
+        self.fixed_start = fixed_start
+        self.k_min, self.k_max = k_min, k_max
         
         # action (consumption)
         self.action_space = Box(TOL, 1.0-TOL, shape=(1,), dtype=self.floattype)
 
         # states (capital)
-        self.observation_space = Box(low=0.0, high=np.inf, shape=(1,), dtype=self.floattype)
+        self.observation_space = Box(
+            low=np.array([0.0], dtype=self.floattype), 
+            high=np.array([np.finfo(self.floattype).max], dtype=self.floattype), 
+            shape=(1,), 
+            dtype=self.floattype,)
 
-        self.max_episode_steps = max_episode_steps
-        self._finite = finite
+        # RNG
+        self._seed = seed
+        self._rng = np.random.default_rng(seed)
+        
+        # internal counters / state holders
+        self._t: int = 0
+        self._k: Optional[float] = None
 
-    def _get_obs(self):
-        return np.array([self._capital]).astype(self.floattype)
+    def _get_obs(self) -> np.ndarray:
+        return np.array([self._k], dtype=self.floattype)
 
-    def _get_info(self):
+    def _get_info(self) -> dict:
         return {
-            "capital": self._capital,
-            "seed": self.seed,
+            "capital": self._k,
+            "seed": self._seed,
+            "A": self.A,
+            "DELTA": self.DELTA,
+            "GAMMA": self.GAMMA,
+            "ALPHA": self.ALPHA,
         }
 
-    def reset(self, seed=None, options=None):
-        self.seed = seed if seed is not None else self.seed
-        super().reset(seed=self.seed, options=options)
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
+        if seed is not None:
+            self._seed = seed
+            self._rng = np.random.default_rng(seed)
 
-        self.period_iter = 0
-        if options is not None:
-            self._capital = np.array([self.RESETSTATE], dtype=self.floattype)[0]  # capital
+        self._t = 0
+        if self.fixed_start or (options and options.get("fixed_start", False)):
+            self._k = self.RESETSTATE
         else:
-            self._capital = np.array([np.random.uniform(0.1, 15.)], dtype=self.floattype)[0]  # capital
-        
-        observations = self._get_obs()
-        info = self._get_info()
+            self._k = self._rng.uniform(self.k_min, self.k_max)
 
-        return observations, info
+        return self._get_obs(), self._get_info()
 
-    def step(self, action: float) -> Tuple[dict, float, bool, bool, Optional[dict]]:
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, dict]:
         """
         Update capital.
         Calculate the reward (crra utility function) and determine whether episode is to be truncated.
@@ -75,52 +106,51 @@ class CassKoopmansEnv(gym.Env):
             action: float consumption (share of available capital)
         Returns: Tuple[obs, reward, terminated, truncated, info]
         """
-        assert self.action_space.contains(action), f"{action!r} ({type(action)}) invalid"
-        assert self._capital is not None, "Call reset before using step method."
+        # ensure shape and bounds (avoid failing hard on tiny numeric drift)
+        a = float(np.clip(np.asarray(action, dtype=np.float64).reshape(-1)[0], TOL, 1.0 - TOL))
+        assert self._k is not None, "Call reset before using step method."
 
-        self.period_iter += 1
+        self._t += 1
+        
+        # production and resources available before consumption
+        y = self.A * (self._k ** self.ALPHA)
+        resources = (1.0 - self.DELTA) * self._k + y
         
         # get consumption and reward
-        consumption = self._capital * action[0]
-        reward = crra_utility(consumption, gamma=self.GAMMA, floattype=self.floattype)
+        c = a * resources
+        r = crra_utility(c, gamma=self.GAMMA, floattype=self.floattype)
         
-        # get production
-        y = self.A * self._capital ** self.ALPHA
+        # capital transition
+        self._k = resources - c
+        # numerical safety: capital should stay non-negative
+        self._k = float(max(self._k, 0.0))
 
-        # update capital
-        self._capital *= 1 - self.DELTA
-        self._capital += y
-        self._capital -= consumption
-        
-        assert self._capital >= 0.0, f"capital is not allowed to be smaller than {0.0} but is {self._capital} " f"A {A} " f"DELTA {DELTA} " f"consumption {consumption} " f"reward {reward} "
-
-        observations = self._get_obs()
-        terminated = self._finite and self.period_iter >= self.max_episode_steps
-        truncated = not self._finite and self.period_iter >= self.max_episode_steps
+        obs = self._get_obs()
+        terminated = False
+        truncated = False
         info = self._get_info()
-        info["consumption_frac"] = action[0]
-        info["consumption"] = consumption
-        info["reward"] = reward
-        info["A"] = self.A
-        info["DELTA"] = self.DELTA
-        info["GAMMA"] = self.GAMMA
+        info.update({
+            "consumption_frac": a,
+            "consumption": c,
+            "reward": r,
+        })
 
-        return observations, reward, terminated, truncated, info
+        return obs, float(r), terminated, truncated, info
 
 
-def crra_utility(consumption: float, gamma: float = GAMMA, floattype=np.float32) -> float:
-    """Get the utility based on consumption.
-    For consumption ~ 0.0 return a very small utility (not -inf however).
-    For consumption above 0.0 return the log utility
+def crra_utility(consumption: float, gamma: float, floattype=np.float32) -> float:
+    """Get the CRRA utility from consumption.
     Args:
-        consumption: the consumption of risky asset of the period
+        consumption: the consumption of the period
     Returns:
         float: the utility
     """
-    assert consumption > 0.0, "Non-positive consumption not allowed"
+    
+    # Guard against non-positive consumption
+    c = float(np.maximum(consumption, TOL))
     
     if gamma == 1:
-        u = np.log(consumption, dtype=floattype)
+        u = np.log(c)
     else:
-        u = np.array([((consumption ** (1 - gamma)) / (1 - gamma))], dtype=floattype)[0]
-    return u
+        u = (c ** (1 - gamma)) / (1 - gamma)
+    return floattype(u)
