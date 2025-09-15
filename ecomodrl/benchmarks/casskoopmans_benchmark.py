@@ -5,7 +5,7 @@ from numba import njit, float64
 from numba.experimental import jitclass
 import numpy as np
 from typing import Union
-from scipy.interpolate import interp1d, CubicSpline
+from scipy.interpolate import CubicSpline
 from scipy.optimize import minimize
 
 # %%
@@ -245,7 +245,7 @@ class problem():
     def bellman(self, c, k, value, cons_share=True):
         'Bellman equation for c = consumption share'
         if cons_share:
-            c = c * k
+            c = c * self.pre_decision_next_k(k)
         new_k = self.next_k(k, c)
         if new_k<0:
             return np.inf
@@ -368,7 +368,7 @@ def simulation_cfrac(problem, copt, periods=100, start_value=5.0):
     power = 1.0
     for t in range(periods):
         action = copt(state[t])
-        cons[t] = state[t]*action
+        cons[t] = problem.pre_decision_next_k(state[t])*action
         state[t+1] = problem.next_k(state[t], cons[t])
         U += power * problem.u(cons[t])
         power *= problem.β
@@ -403,11 +403,12 @@ if __name__ == "__main__":
     U = sum(np.power(pp.β, range(0, len(c_path))) *  pp.u(c_path))
     # Euler equation errors
     euler_errors = calculate_euler_errors(pp, c_path, k_path)
-    plt.hist(euler_errors, bins=50)
-    plt.title('Euler equation errors')
+    euler_errors[euler_errors==0.0] += abs(euler_errors[euler_errors>0]).min()
+    plt.hist(np.log10(abs(euler_errors)), bins=50)
+    plt.title('Log10 absolute Euler equation errors')
     plt.show()
     print(f'Bisection method took {elapsed_time} seconds to compute the paths.')
-    print(f'max Euler equation error is: {max(abs(euler_errors))}')
+    print(f'max absolute Euler equation error is: {max(abs(euler_errors))}')
     print(f'steady state for capital is: {k_ss}')
     print(f'the steady state savings rate is: {s_ss}')
     print(f'steady state consumption is: {c_ss}')
@@ -430,14 +431,18 @@ if __name__ == "__main__":
     cons_path, state_path, U = simulation(p, c_optimal, 100)
     plt.plot(grid, c_optimal(grid))
     plt.show()
-    # Euler equation errors
-    euler_errors = calculate_euler_errors(p, cons_path, state_path)
-    plt.hist(euler_errors, bins=50)
-    plt.title('Euler equation errors')
-    plt.show()
     print(f'Time iteration took {elapsed_time} seconds to compute the policy function.')
-    print(f'max Euler equation error is: {max(abs(euler_errors))}')
     print(f'the optimal discounted episode return is: {U}')
+    # Euler equation errors
+    euler_errors = np.array([])
+    for k in grid:
+        cons_path, state_path, U = simulation(p, c_optimal, 100, start_value=k)
+        euler_errors = np.append(euler_errors, calculate_euler_errors(p, cons_path, state_path))
+    plt.hist(np.log10(abs(euler_errors)), bins=50)
+    plt.title('Log10 absolute Euler equation errors')
+    plt.show()
+    print(f'max absolute Euler equation error is: {max(abs(euler_errors))}')
+
 
     # VFI
     start_time = time.time()
@@ -445,12 +450,15 @@ if __name__ == "__main__":
                         conv=0.001, tolerance=1e-5, verbose=False)
     elapsed_time = time.time() - start_time
     cons_path, state_path, U = simulation_cfrac(p, copt, 100)
-    plt.plot(grid, copt(grid)*grid)
+    plt.plot(grid, copt(grid)*p.pre_decision_next_k(grid))
     plt.show()
-    euler_errors = calculate_euler_errors(p, cons_path, state_path)
-    plt.hist(euler_errors, bins=50)
-    plt.title('Euler equation errors')
-    plt.show()
-    print(f'Value function iteration took {elapsed_time} seconds to compute the policy function.')
-    print(f'max Euler equation error is: {max(abs(euler_errors))}')
+    print(f'Time iteration took {elapsed_time} seconds to compute the policy function.')
     print(f'the optimal discounted episode return is: {U}')
+    euler_errors = np.array([])
+    for k in grid:
+        cons_path, state_path, U = simulation_cfrac(p, copt, 100, start_value=k)
+        euler_errors = np.append(euler_errors, calculate_euler_errors(p, cons_path, state_path))
+    plt.hist(np.log10(abs(euler_errors)), bins=50)
+    plt.title('Log10 absolute Euler equation errors')
+    plt.show()
+    print(f'max absolute Euler equation error is: {max(abs(euler_errors))}')

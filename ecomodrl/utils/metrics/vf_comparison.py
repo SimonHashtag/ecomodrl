@@ -9,7 +9,7 @@ from ecomodrl.experiments.casskoopmans_td3 import Actor as td3_actor
 from ecomodrl.experiments.casskoopmans_td3 import QNetwork as td3_critic
 from ecomodrl.experiments.casskoopmans_td3 import Args
 from ecomodrl.utils.hyperparam_import import import_tuned_hp
-from ecomodrl.algorithms.casskoopmans_benchmark import vfi, problem
+from ecomodrl.benchmarks.casskoopmans_benchmark import vfi, problem
 
 def load_model(envs, run_name, device, args):
     """Load the actor and critic(s) from the checkpoint"""

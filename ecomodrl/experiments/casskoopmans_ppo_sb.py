@@ -6,6 +6,7 @@ import numpy as np
 import torch as th
 
 from gymnasium.wrappers import TimeLimit, TransformReward
+from scipy.interpolate import CubicSpline
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.env_util import make_vec_env
@@ -13,8 +14,9 @@ from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
-from benchmarks.casskoopmans_benchmark import problem, time_iterations, get_vfrom_copt
+from ecomodrl.benchmarks.casskoopmans_benchmark import problem, time_iterations, get_vfrom_copt, simulation, calculate_euler_errors
 
+#%%
 # ─────────────────────────────────────────────────────────────
 # 1. Config
 # ─────────────────────────────────────────────────────────────
@@ -198,6 +200,7 @@ def c_from_next_k(k, a, alpha=0.3, delta=0.1):
     return np.clip(a, 0.0, 1.0) * y_res
 
 c_rl = c_from_next_k(obs.squeeze(), policy_det, vecnorm.get_attr("ALPHA")[0], vecnorm.get_attr("DELTA")[0])
+c_rl_fn = CubicSpline(obs.squeeze(), c_rl, bc_type="natural", extrapolate=True)
 
 # VecNormalize: undo reward normalization to recover true-scale values (count=epsilon to avoid division by zero)
 Vs_true = Vs * np.sqrt(vecnorm.ret_rms.var + vecnorm.epsilon)
@@ -210,18 +213,95 @@ grid, policy_benchmark = time_iterations(
 V = get_vfrom_copt(p, grid, policy_benchmark, conv=0.001)
 
 fig, ax = plt.subplots(1, 2, figsize=(10, 4))
-ax[0].plot(obs.squeeze(), c_rl, label="RL Policy")
+ax[0].plot(grid, c_rl_fn(grid), label="RL Policy")
 ax[0].plot(grid, policy_benchmark(grid), linestyle="--", color="orange", label="Benchmark Policy")
-ax[0].set_title("Deterministic policy")
+ax[0].set_title("Policy Function")
 ax[0].set_xlabel("Capital k")
 ax[0].set_ylabel("Consumption")
 
 ax[1].plot(obs.squeeze(), Vs_true, label="RL Value")
 ax[1].plot(grid, V(grid), linestyle="--", color="orange", label="Benchmark Value")
-ax[1].set_title("Value function V(k) (true scale)")
+ax[1].set_title("Value function V(k) (directly from NN)")
 ax[1].set_xlabel("Capital k")
 ax[1].set_ylabel("Value")
 
 plt.tight_layout()
 plt.legend()
 plt.show()
+
+# %%
+# Euler equation errors under RL policy
+euler_errors = np.array([])
+states = np.array([])
+for k in grid:
+    cons_path, state_path, U = simulation(p, c_rl_fn, 100, start_value=k)
+    states = np.append(states, state_path)
+    euler_errors = np.append(euler_errors, calculate_euler_errors(p, cons_path, state_path))
+plt.hist(np.log10(abs(euler_errors)), bins=50)
+plt.title("Log10 Euler equation errors under RL policy")
+plt.xlabel("Euler equation error")
+plt.ylabel("Frequency")
+plt.show()
+print(f'max absolute Euler equation error is: {max(abs(euler_errors))}')
+cons_path, state_path, U = simulation(p, c_rl_fn, 100, start_value=5.0)
+print(f'the optimal discounted episode return is: {U}')
+# %%
+grid = np.linspace(k_min, k_max, 100, dtype=np.float32)
+# Wealth equivalent (cash-on-hand) variation
+V_rl = get_vfrom_copt(p, grid, c_rl_fn, conv=0.001)
+plt.plot(grid, V_rl(grid), label="RL Value")
+plt.plot(grid, V(grid), linestyle="--", color="orange", label="Benchmark Value")
+plt.title("Value function V(k)")
+plt.xlabel("Capital k")
+plt.ylabel("Value")
+plt.tight_layout()
+plt.legend()
+plt.show()
+
+v_rl_inv = CubicSpline(V_rl(grid), grid, bc_type="natural", extrapolate=True)
+v_opt_inv = CubicSpline(V(grid), grid, bc_type="natural", extrapolate=True)
+true_values = V(grid)
+# Interpretation 1: The additional capital that would make the agent indifferent between the two value functions
+# If RL is worse than benchmark, WEV > 0 (need more capital to be as well off as with benchmark)
+wev = v_rl_inv(true_values) - grid
+# Interpretation 2: Distance between the two value functions in terms of capital (cash-on-hand)
+wev1 = v_rl_inv(true_values) - v_opt_inv(true_values)
+
+fig, ax1 = plt.subplots(1, 1, figsize=(6, 4))
+ax1.plot(grid, wev)
+ax1.plot(grid, wev1, linestyle="--", color="orange")
+ax1.set_ylim(bottom=0.0)
+ax1.set_xlabel("Capital k")
+ax1.set_ylabel("WEV", color="blue")
+ax1.tick_params(axis='y', labelcolor="blue")
+ax1.set_title("Wealth equivalent variation (WEV)")
+
+ax2 = ax1.twinx()
+ax2.hist(states, bins=30, density=True, alpha=0.3, color="gray", label="States visited (simulations)")
+ax2.set_ylabel("Density", color="gray")
+ax2.tick_params(axis='y', labelcolor="gray")
+
+fig.tight_layout()
+plt.show()
+print(f"Average WEV: {np.mean(wev):.4f}")
+# %%
+# Consumption-equivalent welfare-loss/variation (CEV)
+cev = (V(grid)/V_rl(grid))**(1/(1-p.γ)) - 1
+
+fig, ax1 = plt.subplots(1, 1, figsize=(6, 4))
+ax1.plot(grid, cev)
+ax1.set_ylim(bottom=0.0)
+ax1.set_xlabel("Capital k")
+ax1.set_ylabel("CEV", color="blue")
+ax1.tick_params(axis='y', labelcolor="blue")
+ax1.set_title("Consumption-equivalent variation (CEV)")
+
+ax2 = ax1.twinx()
+ax2.hist(states, bins=30, density=True, alpha=0.3, color="gray", label="States visited (simulations)")
+ax2.set_ylabel("Density", color="gray")
+ax2.tick_params(axis='y', labelcolor="gray")
+
+fig.tight_layout()
+plt.show()
+print(f"Average CEV: {np.mean(cev):.4f}")
+# %%
