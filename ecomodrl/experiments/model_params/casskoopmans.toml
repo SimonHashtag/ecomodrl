@@ -1,0 +1,8 @@
+# Example parameters for the Cass–Koopmans model
+
+crra = 2        # σ: risk aversion (>0)
+beta = 0.95     # β ∈ (0,1)
+delta = 0.02    # δ ∈ [0,1]
+alpha = 0.33    # α ∈ (0,1)
+A = 1.0         # productivity > 0
+reset_k = 5.0  # initial k for env reset (≥ 0)

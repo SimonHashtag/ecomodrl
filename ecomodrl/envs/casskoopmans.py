@@ -154,3 +154,9 @@ def crra_utility(consumption: float, gamma: float, floattype=np.float32) -> floa
     else:
         u = (c ** (1 - gamma)) / (1 - gamma)
     return floattype(u)
+
+
+def c_from_next_k(k:float, a:float, alpha:float=ALPHA_DEFAULT, delta:Union[float, int]=DELTA_DEFAULT):
+    f = k**alpha
+    y_res = f + (1.0 - delta) * k
+    return np.clip(a, 0.0, 1.0) * y_res
