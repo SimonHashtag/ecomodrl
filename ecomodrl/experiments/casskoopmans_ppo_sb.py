@@ -18,9 +18,10 @@ from typing import Optional
 
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv, c_from_next_k
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
-from ecomodrl.benchmarks.casskoopmans.dynopt import time_iterations, get_vfrom_copt, simulation, get_euler_errors
+from ecomodrl.benchmarks.casskoopmans.dynopt import egm, get_vfrom_copt, simulation, get_euler_errors
 from ecomodrl.utils.params_loader import CassKoopmansParams
 from ecomodrl.utils.metrics.accuracy import wev, cev_crra
+from ecomodrl.utils.stopper_sb import EarlyStoppingEvalCallback
 
 #%%
 # ─────────────────────────────────────────────────────────────
@@ -30,16 +31,15 @@ toml_path = "./ecomodrl/experiments/model_params/casskoopmans.toml" # path to TO
 model_params = CassKoopmansParams.load_params(toml_path)
 MAX_EPISODE_STEPS = 30
 MAX_EVAL_EPISODE_STEPS = 100
-#BETA = 0.95
 SEED = 42
 N_ENVS = 8
-EVAL_EVERY = 8_000 # training steps between evaluations
+EVAL_EVERY = 5_000 # training steps between evaluations
 PATIENCE = 10
 MIN_DELTA = 1e-3
-TOTAL_TIMESTEPS = 100_000
+TOTAL_TIMESTEPS = 200_000
 BEST_PATH = "./runs/best_model_ppo.zip"
 VECNORM_PATH = "./runs/best_vecnormalize.pkl"
-BENCHMARK_RET = -12.165960817708347  # from value function iteration (see casskoopmans_benchmark.py)
+BENCHMARK_RET = -12.165228776842367  # from EGM (see benchmarks/casskoopmans/dynopt.py)
 STATE_MIN = 1.0
 STATE_MAX = 15.0
 
@@ -124,83 +124,39 @@ model = PPO(
     verbose=1,
     seed=SEED,
 )
-# ─────────────────────────────────────────────────────────────
-# 4. Utilities
-# ─────────────────────────────────────────────────────────────
-def sync_vecnormalize(dst: VecNormalize, src: VecNormalize):
-    """keep eval stats in lockstep with training stats"""
-    dst.obs_rms = src.obs_rms
-    dst.ret_rms = src.ret_rms
 
-def evaluate(model, eval_env, beta, n_episodes=1):
-    """fixed start + deterministic => 1 episode is fine."""
-    eval_env.training = False
-    returns = []
-    for _ in range(n_episodes):
-        obs = eval_env.reset()
-        done = np.array([False])
-        G, power = 0.0, 1.0
-        while not done.all():
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, _ = eval_env.step(action)
-            G += float(reward.mean()) * power
-            power *= beta
-        returns.append(G)
-    return float(np.mean(returns))
+callback = EarlyStoppingEvalCallback(
+    eval_env=eval_env,
+    beta=model_params.beta,
+    eval_freq=EVAL_EVERY,
+    patience=PATIENCE,
+    min_delta=MIN_DELTA,
+    n_eval_episodes=1,            # increase for stochastic envs
+    deterministic_eval=True,
+    best_model_path=BEST_PATH,
+    vecnorm_path=VECNORM_PATH,
+    verbose=1,
+)
 
+model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback)
+#%%
 # ─────────────────────────────────────────────────────────────
-# 5. Training loop with early stopping based on evaluation
+# 4. Analyze performance (Euler equation errors & Bellman residuals)
 # ─────────────────────────────────────────────────────────────
-print("────────────────────────────────────────────")
-print("     PPO TRAINING LOOP WITH EARLY STOPPING")
-print("────────────────────────────────────────────")
 
-best_score = -np.inf
-patience_counter = 0
-return_history = []
-timesteps = 0
+# Return curve
+steps, returns = zip(*callback.return_history)
+plt.figure(figsize=(9, 4.5))
+plt.plot(steps, returns, label="Avg true return")
+plt.axhline(y=callback.best_score, linestyle="--", label=f"Best = {callback.best_score:.4f}")
+plt.axhline(y=BENCHMARK_RET, linestyle="--", color="red", label=f"Benchmark (EGM) = {BENCHMARK_RET:.4f}")
+plt.xlabel("Timesteps")
+plt.ylabel("Average discounted episode return (true scale)")
+plt.title("PPO on Cass–Koopmans (evaluation)")
+plt.legend()
+plt.tight_layout()
+plt.show()
 
-while timesteps < TOTAL_TIMESTEPS:
-    model.learn(total_timesteps=EVAL_EVERY, reset_num_timesteps=False)
-    timesteps += EVAL_EVERY
-    
-    sync_vecnormalize(eval_env, train_env)
-    
-    avg_return = evaluate(model, eval_env, beta=model_params.beta, n_episodes=1)    # n_episodes=1 since fixed start and deterministic policy and environment (if stochastic env, increase n_episodes and vary seeds!)
-    return_history.append((timesteps, avg_return))
-    print(f"[{timesteps:7d}] avg true return: {avg_return: .6f} | best: {best_score: .6f} | PATIENCE: {patience_counter}/{PATIENCE}")
-
-    if avg_return > best_score + MIN_DELTA:
-        best_score = avg_return
-        model.save(BEST_PATH)
-        train_env.save(VECNORM_PATH)
-        patience_counter = 0
-    else:
-        patience_counter += 1
-        if patience_counter >= PATIENCE:
-            print("Early stopping.")
-            model = PPO.load(BEST_PATH)  # Restores best policy
-            break
-
-# ─────────────────────────────────────────────────────────────
-# 6. Plot return curve (true scale)
-# ─────────────────────────────────────────────────────────────
-if return_history:
-    steps, returns = zip(*return_history)
-    plt.figure(figsize=(9, 4.5))
-    plt.plot(steps, returns, label="Avg true return")
-    plt.axhline(y=best_score, linestyle="--", label=f"Best = {best_score:.4f}")
-    plt.axhline(y=BENCHMARK_RET, linestyle="--", color="red", label=f"Benchmark (VFI) = {BENCHMARK_RET:.4f}")
-    plt.xlabel("Timesteps")
-    plt.ylabel("Average discounted episode return (true scale)")
-    plt.title("PPO on Cass–Koopmans (evaluation)")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-# %%
-# ─────────────────────────────────────────────────────────────
-# 7. Analyze performance (Euler equation errors & Bellman residuals)
-# ─────────────────────────────────────────────────────────────
 
 model = PPO.load(BEST_PATH)  # Restores best policy
 vecnorm = VecNormalize.load(VECNORM_PATH, train_env)
@@ -223,7 +179,7 @@ policy_rl = CubicSpline(obs.squeeze(), c_rl, bc_type="natural", extrapolate=True
 # VecNormalize: undo reward normalization to recover true-scale values (count=epsilon to avoid division by zero)
 V_nn = V_norm * np.sqrt(vecnorm.ret_rms.var + vecnorm.epsilon)
 
-# Benchmark value and policy functions via time iterations
+# Benchmark value and policy functions via egm
 p = PlanningProblem(
     σ=model_params.crra,
     β=model_params.beta,
@@ -231,9 +187,9 @@ p = PlanningProblem(
     α=model_params.alpha,
     A=model_params.A,
 )
-grid_bm, policy_bm = time_iterations(
-    p, grid_points=30, lower_limit=k_min, upper_limit=k_max, 
-    tol=1e-5, conv=0.0001, verbose=False)
+grid_bm, policy_bm = egm(
+    p, grid_points=100, lower_limit=k_min, upper_limit=k_max, 
+    conv=0.0001, verbose=False)
 V_bm = get_vfrom_copt(p, grid_bm, policy_bm, conv=0.001)
 V_rl = get_vfrom_copt(p, grid, policy_rl, conv=0.001)
 
@@ -261,7 +217,7 @@ plt.show()
 euler_errors_rl, states = get_euler_errors(p, grid, policy_rl, n_eps=100)
 euler_errors_bm, _ = get_euler_errors(p, grid, policy_bm, n_eps=100)
 plt.hist(np.log10(abs(euler_errors_rl)), bins=50, density=True, alpha=0.7, label='RL policy')
-plt.hist(np.log10(abs(euler_errors_bm)), bins=50, density=True, color="grey", alpha=0.7, label='Time iterations')
+plt.hist(np.log10(abs(euler_errors_bm)), bins=50, density=True, color="grey", alpha=0.7, label='EGM')
 plt.axvline(x=np.log10(abs(euler_errors_rl)).mean(), linestyle='--', linewidth=1)
 plt.axvline(x=np.log10(abs(euler_errors_bm)).mean(), color='grey', linestyle='--', linewidth=1)
 plt.title("Log10 Euler equation errors")
@@ -270,10 +226,10 @@ plt.ylabel("Density")
 plt.tight_layout()
 plt.legend()
 plt.show()
-print(f'Max absolute Euler equation error: \r\n  RL: {max(abs(euler_errors_rl))}      Benchmark (TI): {max(abs(euler_errors_bm))}')
+print(f'Max absolute Euler equation error: \r\n  RL: {max(abs(euler_errors_rl))}      Benchmark (EGM): {max(abs(euler_errors_bm))}')
 _, _, U_rl = simulation(p, policy_rl, 100, start_value=5.0)
 _, _, U_bm = simulation(p, policy_bm, 100, start_value=5.0)
-print(f'The optimal discounted episode return is: \r\n  RL: {U_rl}      Benchmark (TI): {U_bm}')
+print(f'The optimal discounted episode return is: \r\n  RL: {U_rl}      Benchmark (EGM): {U_bm}')
 # %%
 # Wealth equivalent (cash-on-hand) variation
 

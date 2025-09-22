@@ -114,6 +114,14 @@ class PlanningProblem():
 
         return (β * u_prime(c_next/c) * (f_prime(k_next) + (1 - δ)) - 1)**2
     
+    def euler_egm(self, c_next, k_next):
+        β, δ = self.β, self.δ
+        u_prime = self.u_prime
+        f_prime = self.f_prime
+        u_prime_inv = self.u_prime_inv
+        
+        return u_prime_inv(β*u_prime(c_next)*(f_prime(k_next)+(1-δ)))
+    
     def calculate_euler_errors(self, c_path, k_path):
         'Calculate Euler equation errors given paths of consumption and capital'
         euler_errors = self.β * (c_path[:-1]/c_path[1:])**(self.σ) * (self.f_prime(k_path[1:-1]) + (1 - self.δ)) - 1

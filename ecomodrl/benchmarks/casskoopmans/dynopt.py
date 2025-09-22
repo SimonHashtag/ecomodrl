@@ -129,6 +129,48 @@ def get_vfrom_copt(pp, grid, copt, conv):
     return CubicSpline(grid, Vn, bc_type="natural", extrapolate=True)
 
 #-------------------------------------------------------------------
+# EGM
+#-------------------------------------------------------------------
+
+def egm(pp, grid_points:int = 1000, lower_limit:float=0.1, upper_limit:float=15., conv:float=0.1, verbose:bool=True):
+    """
+    Given a PlanningProblem object, computes optimal consumption policy by endogenous grid method (EGM)
+    
+    pp: PlanningProblem object
+    grid_points: number of grid points
+    lower_limit: lower limit of grid
+    upper_limit: upper limit of grid
+    conv: convergence criterion
+    verbose: if True, prints convergence information
+    
+    return: grid and optimal consumption policy as CubicSpline object
+    """
+    cash_on_hand = pp.pre_decision_next_k
+    euler_egm = pp.euler_egm
+    
+    k_next_grid = np.linspace(lower_limit, upper_limit, grid_points)
+    sopt = CubicSpline(np.concatenate(([0.0], k_next_grid)), np.concatenate(([0.0], k_next_grid*0.2)), bc_type="natural", extrapolate=True)
+    ms = np.empty(grid_points)
+    while True:
+        for i, k_next in enumerate(k_next_grid):
+            m_next = cash_on_hand(k_next)
+            c_next = m_next - sopt(m_next)
+            c = euler_egm(c_next, k_next)
+            ms[i] = c + k_next
+        if max(abs(sopt(ms)-k_next_grid)) < conv:
+            c_of_m = CubicSpline(np.concatenate(([0.0], ms)), np.concatenate(([0.0], ms-k_next_grid)), bc_type="natural", extrapolate=True)
+            m_grid = cash_on_hand(k_next_grid)
+            copt = CubicSpline(k_next_grid, c_of_m(m_grid), bc_type="natural", extrapolate=True) 
+            break
+        if verbose:
+            print(
+                "Convergence: {}.".format(max(abs(sopt(ms)-k_next_grid))),
+                "Convergence criterion: {}.".format(conv),
+            )
+        sopt = CubicSpline(np.concatenate(([0.0], ms)), np.concatenate(([0.0], k_next_grid)), bc_type="natural", extrapolate=True)
+    return k_next_grid, copt 
+
+#-------------------------------------------------------------------
 # Simulation
 #-------------------------------------------------------------------
 def simulation(pp, copt, periods=100, start_value=5.0, cons_share=False):
@@ -185,32 +227,47 @@ if __name__ == "__main__":
     TT_REF = 100
 
     # Time iterations 
+    import time
+    start = time.time()
     _, policy_ti = time_iterations(
         pp, grid_points=30, lower_limit=0.1, upper_limit=15., 
         tol=1e-5, conv=0.0001, verbose=False)
+    print(f'Time iterations took {time.time()-start} seconds.')
 
     # VFI
+    start = time.time()
     grid, _, policy_vfi = vfi(pp, grid_points=100, lower_limit=0.1, upper_limit=15., 
                         tol=1e-5, conv=0.001, verbose=False)
+    print(f'VFI took {time.time()-start} seconds.')
+    
+    # EGM
+    start = time.time()
+    grid, policy_egm = egm(pp, grid_points=100, lower_limit=0.1, upper_limit=15., 
+                        conv=0.001, verbose=False)
+    print(f'EGM took {time.time()-start} seconds.')
     
     # Return comparison
     _, _, U_vfi = simulation(pp, policy_vfi, TT_REF, start_value=K_REF, cons_share=True)
     _, _, U_ti = simulation(pp, policy_ti, TT_REF, start_value=K_REF, cons_share=False)
-    print(f'The optimal discounted episode return is: \r\n  TI: {U_ti}      VFI: {U_vfi}')
+    _, _, U_egm = simulation(pp, policy_egm, TT_REF, start_value=K_REF, cons_share=False)
+    print(f'The optimal discounted episode return is: \r\n  TI: {U_ti}      VFI: {U_vfi}      EGM: {U_egm}')
     
     # Euler equation errors
     euler_errors_ti, _ = get_euler_errors(pp, grid, policy_ti, n_eps=100)
     euler_errors_vfi, _ = get_euler_errors(pp, grid, policy_vfi, n_eps=100, cons_share=True)
-    print(f'Max absolute Euler equation error: \r\n  TI: {max(abs(euler_errors_ti))}      VFI: {max(abs(euler_errors_vfi))}')
+    euler_errors_egm, _ = get_euler_errors(pp, grid, policy_egm, n_eps=100, cons_share=False)
+    print(f'Max absolute Euler equation error: \r\n  TI: {max(abs(euler_errors_ti))}      VFI: {max(abs(euler_errors_vfi))}      EGM: {max(abs(euler_errors_egm))}')
     
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
     ax[0].plot(grid, policy_vfi(grid)*pp.pre_decision_next_k(grid), label='Value function iteration')
     ax[0].plot(grid, policy_ti(grid), linestyle='--', color='orange', label='Time iterations')
+    ax[0].plot(grid, policy_egm(grid), linestyle='--', color='green', label='EGM')
     ax[0].set_title('Policy function')
     ax[0].set_xlabel('Capital')
     ax[0].set_ylabel('Consumption')
-    ax[1].hist(np.log10(abs(euler_errors_vfi)), bins=50, label='Value function iteration')
-    ax[1].hist(np.log10(abs(euler_errors_ti)), bins=50, color="orange", alpha=0.5, label='Time iterations')
+    ax[1].hist(np.log10(abs(euler_errors_vfi)), density=True, bins=50, label='Value function iteration')
+    ax[1].hist(np.log10(abs(euler_errors_ti)), density=True, bins=50, color="orange", alpha=0.5, label='Time iterations')
+    ax[1].hist(np.log10(abs(euler_errors_egm)), density=True, bins=50, color="green", alpha=0.5, label='EGM')
     ax[1].set_title('Log10 absolute Euler equation errors')
     ax[1].set_xlabel('Log10 absolute Euler equation error')
     ax[1].set_ylabel('Frequency')
