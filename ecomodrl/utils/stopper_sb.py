@@ -20,18 +20,19 @@ def sync_vecnormalize(dst: VecNormalize, src: VecNormalize):
 def evaluate_policy_discounted(model, eval_env, beta, n_episodes=1, deterministic=True):
     """fixed start + deterministic => 1 episode is fine."""
     eval_env.training = False
-    returns = []
+    avg_return = 0
     for _ in range(n_episodes):
         obs = eval_env.reset()
-        done = np.array([False])
+        dones = np.zeros(eval_env.num_envs, dtype=bool)#np.array([False])
         G, power = 0.0, 1.0
-        while not done.all():
+        while not dones.all():
             action, _ = model.predict(obs, deterministic=deterministic)
-            obs, reward, done, _ = eval_env.step(action)
-            G += float(reward.mean()) * power
+            obs, rewards, done_step, _ = eval_env.step(action)
+            G += float(rewards.mean()) * power
             power *= beta
-        returns.append(G)
-    return float(np.mean(returns))
+            dones |= done_step
+        avg_return += G/n_episodes
+    return avg_return
 
 class EarlyStoppingEvalCallback(BaseCallback):
     """
@@ -66,6 +67,7 @@ class EarlyStoppingEvalCallback(BaseCallback):
         self.patience_counter = 0
         self._last_eval_step = 0
         self.return_history = []
+    
 
     def _on_training_start(self) -> None:
         self._last_eval_step = 0

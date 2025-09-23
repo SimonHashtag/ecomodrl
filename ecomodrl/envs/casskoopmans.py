@@ -38,7 +38,6 @@ class CassKoopmansEnv(gym.Env):
         fixed_start: bool = False,      # if True, always start from RESETSTATE
         k_min: float = 1.0,            # min random start capital (if not fixed)
         k_max: float = 15.0,            # max random start capital (if not fixed)
-        seed: Optional[int] = None,
         floattype = np.float32
         ):
         super().__init__()
@@ -51,7 +50,7 @@ class CassKoopmansEnv(gym.Env):
         self.RESETSTATE = RESETSTATE
         self.floattype = floattype
         self.max_episode_steps = max_episode_steps
-        self.fixed_start = fixed_start
+        self._fixed_start = fixed_start
         self.k_min, self.k_max = k_min, k_max
         
         # action (consumption)
@@ -65,8 +64,8 @@ class CassKoopmansEnv(gym.Env):
             dtype=self.floattype,)
 
         # RNG
-        self._seed = seed
-        self._rng = np.random.default_rng(seed)
+        self._seed: Optional[int] = None
+        self._rng = np.random.default_rng()
         
         # internal counters / state holders
         self._t: int = 0
@@ -89,12 +88,18 @@ class CassKoopmansEnv(gym.Env):
         if seed is not None:
             self._seed = seed
             self._rng = np.random.default_rng(seed)
+            try:
+                self.action_space.seed(self._seed)
+                self.observation_space.seed(self._seed)
+            except Exception:
+                pass
 
         self._t = 0
-        if self.fixed_start or (options and options.get("fixed_start", False)):
-            self._k = self.RESETSTATE
+        
+        if self._fixed_start or (options and options.get("fixed_start", False)):
+            self._k = self.floattype(self.RESETSTATE)
         else:
-            self._k = self._rng.uniform(self.k_min, self.k_max)
+            self._k = self.floattype(self._rng.uniform(self.k_min, self.k_max))
 
         return self._get_obs(), self._get_info()
 
@@ -107,7 +112,7 @@ class CassKoopmansEnv(gym.Env):
         Returns: Tuple[obs, reward, terminated, truncated, info]
         """
         # ensure shape and bounds (avoid failing hard on tiny numeric drift)
-        a = float(np.clip(np.asarray(action, dtype=np.float64).reshape(-1)[0], TOL, 1.0 - TOL))
+        a = float(np.clip(np.asarray(action, dtype=self.floattype).reshape(-1)[0], TOL, 1.0 - TOL))
         assert self._k is not None, "Call reset before using step method."
 
         self._t += 1
