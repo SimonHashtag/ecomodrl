@@ -1,14 +1,15 @@
-#%cd C:\Users\s_haas09\VSC_Python\EcoModRL
-import csv
 import json
-import os
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
 import torch as th
+from dataclasses import dataclass, asdict
+from pathlib import Path
+import logging
 
 from gymnasium.wrappers import TimeLimit, TransformReward
 from scipy.interpolate import CubicSpline
+from scipy.stats import gaussian_kde
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.utils import set_random_seed
@@ -20,39 +21,41 @@ from ecomodrl.benchmarks.casskoopmans.dynopt import egm, get_vfrom_copt, get_eul
 from ecomodrl.utils.params_loader import CassKoopmansParams
 from ecomodrl.utils.metrics.accuracy import wev, cev_crra
 from ecomodrl.utils.stopper_sb import EarlyStoppingEvalCallback
+from ecomodrl.utils.tb_reader import tb_read_scalar
 
-# ─────────────────────────────────────────────────────────────
-# 1. Config
-# ─────────────────────────────────────────────────────────────
-toml_path = "./ecomodrl/experiments/model_params/casskoopmans.toml" # path to TOML file with model params (optional)
-model_params = CassKoopmansParams.load_params(toml_path)
-out_path = "./runs/CassKoopmans/PPO"
-MAX_EPISODE_STEPS = 30
-MAX_EVAL_EPISODE_STEPS = 100
-N_ENVS = 8
-TOTAL_TIMESTEPS = 200_000
-EVAL_EVERY = 5_000 # training steps between evaluations
-PATIENCE = 5
-MIN_DELTA = 1e-3
-BENCHMARK_RET = -11.434657802305646  # from EGM (see benchmarks/casskoopmans/dynopt.py)
-STATE_MIN = 1.0
-STATE_MAX = 15.0
-BASE_SEED = 42
-N_SEEDS = 1
-SEEDS = list(range(BASE_SEED, BASE_SEED + N_SEEDS))
-
-plt.style.use('seaborn-v0_8-colorblind')
+@dataclass
+class RunConfig:
+    toml_path: str = "./ecomodrl/experiments/model_params/casskoopmans.toml"
+    out_dir: Path = Path("D:/ECOMODRL/runs/CassKoopmans/PPO")
+    max_episode_steps: int = 30
+    max_eval_episode_steps: int = 100
+    n_envs: int = 8
+    total_timesteps: int = 200_000
+    eval_every: int = 5_000
+    patience: int = 5
+    min_delta: float = 1e-3
+    state_min: float = 1.0
+    state_max: float = 15.0
+    base_seed: int = 42
+    n_seeds: int = 10
+    @property
+    def seeds(self) -> list[int]:
+        return list(range(self.base_seed, self.base_seed + self.n_seeds))
 
 def make_env(
     params: CassKoopmansParams,
     *,
-    max_episode_steps=MAX_EPISODE_STEPS, 
-    fixed_start=False, 
-    RESETSTATE=5.0,
-    k_min=STATE_MIN,
-    k_max=STATE_MAX,
+    max_episode_steps: int, 
+    fixed_start: bool, 
+    fixed_state: float,
+    k_min: float,
+    k_max: float,
     floattype=np.float32,
-    training=True) -> "CassKoopmansEnv":
+    training: bool
+    ) -> "CassKoopmansEnv":
+    """
+    Factory that returns a thunk creating a configured CassKoopmansEnv.
+    """
     def _thunk():
         env = CassKoopmansEnv(
             max_episode_steps=max_episode_steps,
@@ -60,7 +63,7 @@ def make_env(
             GAMMA=params.crra,          
             DELTA=params.delta,         
             ALPHA=params.alpha,         
-            RESETSTATE=RESETSTATE,
+            RESETSTATE=fixed_state,
             fixed_start=fixed_start,
             k_min=k_min,
             k_max=k_max,
@@ -74,92 +77,82 @@ def make_env(
     return _thunk
 
 def build_envs(
-    model_params,
-    n_envs=N_ENVS,
-    max_eval_episode_steps=MAX_EVAL_EPISODE_STEPS,
-    eval_state_min=STATE_MIN,
-    eval_state_max=STATE_MAX,
-    eval_num_states=20,
-    seed=BASE_SEED,
+    params: CassKoopmansParams,
+    cfg: RunConfig,
+    seed: int,
     ):
-    # Vectorized training env with observation & reward normalization
-    # Seeding: VecEnv seeds each sub-env with seed + env_number
-    train_env = make_vec_env(make_env(model_params, fixed_start=False), n_envs=n_envs, seed=seed)
+    """ 
+    Creates vectorized training env and eval env with normalization and explicit seeding.
+    """
+    train_env = make_vec_env(
+        make_env(
+            params,
+            max_episode_steps=cfg.max_episode_steps,
+            fixed_start=False,
+            fixed_state=float(np.nan),  # ignored when fixed_start=False
+            k_min=cfg.state_min,
+            k_max=cfg.state_max,
+            training=True,
+        ), 
+        n_envs=cfg.n_envs, 
+        seed=seed
+        ) # Seeding: VecEnv seeds each sub-env with seed + env_number
     train_env = VecNormalize(
         train_env, norm_obs=True, norm_reward=True, 
-        clip_obs=10.0, clip_reward=10.0, gamma=model_params.beta,
+        clip_obs=10.0, clip_reward=10.0, gamma=params.beta,
     )
 
     # Eval env: fixed-start grid, deterministic eval
-    eval_grid = np.linspace(eval_state_min, 
-                            eval_state_max, 
-                            num=eval_num_states, 
+    eval_grid = np.linspace(cfg.state_min, 
+                            cfg.state_max, 
+                            num=20, 
                             dtype=np.float32)
     eval_env_thunks = [
         make_env(
-            model_params, max_episode_steps=max_eval_episode_steps, 
-            fixed_start=True, RESETSTATE=k0, training=False) 
+            params,
+            max_episode_steps=cfg.max_eval_episode_steps,
+            fixed_start=True,
+            fixed_state=float(k0),
+            k_min=cfg.state_min,
+            k_max=cfg.state_max,
+            training=False,
+        ) 
         for k0 in eval_grid
         ]
     eval_env_raw = DummyVecEnv(
         eval_env_thunks,
     )
-    _ = eval_env_raw.seed(seed)
     try:
+        eval_env_raw.seed(seed)
         eval_env_raw.action_space.seed(seed)
         eval_env_raw.observation_space.seed(seed)
     except Exception:
         pass
     eval_env = VecNormalize(
         eval_env_raw, training=False, norm_obs=True, norm_reward=False, 
-        clip_obs=10.0, clip_reward=1000.0, gamma=model_params.beta,
+        clip_obs=10.0, clip_reward=1000.0, gamma=params.beta,
     )
     return train_env, eval_env
 
-def get_policy_value_functions(model_path, vecnorm_path, train_env, grid):
-    model = PPO.load(model_path)  # Restores best policy
-    vecnorm = VecNormalize.load(vecnorm_path, train_env)
-    vecnorm.training = False
-
-    obs = grid.reshape(-1, 1)
-    obs_norm = vecnorm.normalize_obs(obs)
-    obs_tensor = th.as_tensor(obs_norm)
-
-    # deterministic policy: actions and value function for normalized observations
-    with th.no_grad():
-        policy_det = model.policy._predict(obs_tensor, deterministic=True).cpu().numpy().squeeze()
-        V_norm = model.policy.predict_values(obs_tensor).cpu().numpy().squeeze()
-
-    c_rl = c_from_next_k(obs.squeeze(), policy_det, vecnorm.get_attr("ALPHA")[0], vecnorm.get_attr("DELTA")[0])
-    policy_rl = CubicSpline(obs.squeeze(), c_rl, bc_type="natural", extrapolate=True)
-
-    # VecNormalize: undo reward normalization to recover true-scale values (count=epsilon to avoid division by zero)
-    V_nn = V_norm * np.sqrt(vecnorm.ret_rms.var + vecnorm.epsilon)
-    value_rl = CubicSpline(obs.squeeze(), V_nn, bc_type="natural", extrapolate=True)
-    return policy_rl, value_rl
-
-def single_training_run(seed: int):
-    out_dir = f"{out_path}/seed_{seed}"
-    os.makedirs(out_dir, exist_ok=True)
-    best_model_path = os.path.join(out_dir, "best_model_ppo.zip")
-    vecnorm_path = os.path.join(out_dir, "best_vecnormalize.pkl")
-    figures_dir = os.path.join(out_dir, "figures")
-    os.makedirs(figures_dir, exist_ok=True)
-    
+def train_single_seed(cfg: RunConfig, params:CassKoopmansParams, seed: int) -> dict:
+    """
+    Train PPO for one seed and save artifacts (model, vecnorm, learning_curve, meta).
+    """
     # global seeding (numpy/torch/python)
     set_random_seed(seed)
     
-    # ────────────────────────────────────────────────────────────
-    # 1. Environment
-    # ────────────────────────────────────────────────────────────
+    # Output dirs
+    out_dir = cfg.out_dir / f"seed_{seed}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    best_model_path = out_dir / "best_model_ppo.zip"
+    vecnorm_path = out_dir / "best_vecnormalize.pkl"
+
     train_env, eval_env = build_envs(
-        model_params, 
+        params, 
+        cfg,
         seed=seed,
         )
     
-    # ─────────────────────────────────────────────────────────────
-    # 2. PPO training
-    # ─────────────────────────────────────────────────────────────
     policy_kwargs = dict(
         activation_fn=th.nn.ReLU, 
         net_arch=dict(pi=[32, 32], vf=[32, 32]), 
@@ -169,9 +162,9 @@ def single_training_run(seed: int):
     model = PPO(
         policy="MlpPolicy",
         env=train_env,
-        gamma=model_params.beta,
-        n_steps=MAX_EPISODE_STEPS,   # per-env rollout length; aligns with episode length
-        batch_size=N_ENVS * MAX_EPISODE_STEPS // 4,  # minibatch size; 4 minibatches per update
+        gamma=params.beta,
+        n_steps=cfg.max_episode_steps,   # per-env rollout length; aligns with episode length
+        batch_size=cfg.n_envs * cfg.max_episode_steps // 4,  # minibatch size; 4 minibatches per update
         learning_rate=3e-4,
         ent_coef=0.0,
         gae_lambda=0.95,
@@ -186,10 +179,10 @@ def single_training_run(seed: int):
 
     callback = EarlyStoppingEvalCallback(
         eval_env=eval_env,
-        beta=model_params.beta,
-        eval_freq=EVAL_EVERY,
-        patience=PATIENCE,
-        min_delta=MIN_DELTA,
+        beta=params.beta,
+        eval_freq=cfg.eval_every,
+        patience=cfg.patience,
+        min_delta=cfg.min_delta,
         n_eval_episodes=1,            # increase for stochastic envs
         deterministic_eval=True,
         best_model_path=best_model_path,
@@ -197,198 +190,369 @@ def single_training_run(seed: int):
         verbose=1,
     )
 
-    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback)
-    # ─────────────────────────────────────────────────────────────
-    # 3. Analyze performance
-    # ─────────────────────────────────────────────────────────────
-
-    # Return curve
-    steps, returns = zip(*callback.return_history)
-    plt.figure(figsize=(9, 4.5))
-    plt.plot(steps, returns, label="Avg true return")
-    plt.axhline(y=callback.best_score, linestyle="--", 
-                label=f"Best = {callback.best_score:.4f}")
-    plt.axhline(y=BENCHMARK_RET, linestyle="--", color="red", 
-                label=f"Benchmark (EGM) = {BENCHMARK_RET:.4f}")
-    plt.xlabel("Timesteps")
-    plt.ylabel("Average discounted episode return (true scale)")
-    plt.title("PPO on Cass–Koopmans (evaluation)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(figures_dir, "return_curve.png"), dpi=150)
-    plt.close()
+    model.learn(total_timesteps=cfg.total_timesteps, callback=callback)
     
-    # Store learning curve (steps/returns) for later aggregation
-    np.savez(os.path.join(out_dir, "learning_curve.npz"),
-             steps=np.array(steps), returns=np.array(returns))
+    train_cfg = {
+        "seed": seed,
+        "best_eval_return": float(callback.best_score),
+        "num_timesteps": int(callback.num_timesteps),
+        "best_model_path": str(best_model_path),
+        "vecnorm_path": str(vecnorm_path),
+        "cfg": asdict(cfg),
+        "params": vars(params)
+    }
+    return train_cfg
 
-    k_min, k_max, n_pts = STATE_MIN, STATE_MAX, 100
-    grid = np.linspace(k_min, k_max, n_pts, dtype=np.float32)
+def train_multiple_seeds(cfg: RunConfig, params: CassKoopmansParams):
+    """ 
+    Train multiple seeds and save summary JSON.
+    """
+    train_cfgs = [train_single_seed(cfg, params, s) for s in cfg.seeds]
+    with open(cfg.out_dir / "train_cfgs.json", "w") as f:
+        json.dump(train_cfgs, f, indent=2, default=str)
 
-    policy_rl, value_rl = get_policy_value_functions(
-        best_model_path, 
-        vecnorm_path, 
-        train_env, 
-        grid
-        )
+def get_policy_value_functions(
+    model_path: Path, 
+    vecnorm_path: Path, 
+    params,
+    grid):
+    """ 
+    Given a trained model and VecNormalize, return policy and value functions
+    as CubicSpline interpolators on the specified grid.
+    """
+    model = PPO.load(model_path)  # Restores best policy
+    # create a dummy VecNormalize with same stats for obs normalization
+    dummy_env = make_vec_env(
+        make_env(
+            params,
+            max_episode_steps=100,
+            fixed_start=False,
+            fixed_state=float(np.nan),  # ignored when fixed_start=False
+            k_min=1.0,
+            k_max=15.0,
+            training=False,
+        ), 
+        n_envs=1, 
+        seed=1234
+        )  # placeholder, not used
+    vecnorm = VecNormalize.load(str(vecnorm_path), dummy_env)
+    vecnorm.training = False
 
-    # Benchmark value and policy functions via egm
-    p = PlanningProblem(
-        σ=model_params.crra,
-        β=model_params.beta,
-        δ=model_params.delta,
-        α=model_params.alpha,
-        A=model_params.A,
+    obs = grid.reshape(-1, 1)
+    obs_norm = vecnorm.normalize_obs(obs)
+    
+    # Get policy function for normalized observations
+    actions, _ = model.predict(obs_norm, deterministic=True)
+    c_rl = c_from_next_k(obs.squeeze(), np.asarray(actions).squeeze(), params.alpha, params.delta)
+    policy_rl = CubicSpline(obs.squeeze(), c_rl, bc_type="natural", extrapolate=True)
+
+    # Get value function for normalized observations
+    with th.no_grad():
+        V_norm = model.policy.predict_values(th.as_tensor(obs_norm)).cpu().numpy().squeeze()
+    ret_rms = getattr(vecnorm, "ret_rms", None)
+    eps = getattr(vecnorm, "epsilon", 1e-8)
+    scale = np.sqrt(getattr(ret_rms, "var", 1.0) + eps) if ret_rms is not None else 1.0
+    V_nn = V_norm * scale
+    value_rl = CubicSpline(obs.squeeze(), V_nn, bc_type="natural", extrapolate=True)
+    return policy_rl, value_rl
+
+def compute_benchmark(params: CassKoopmansParams, k_min: float, k_max: float):
+    p = PlanningProblem(σ=params.crra, β=params.beta, δ=params.delta, α=params.alpha, A=params.A)
+    grid_bm, policy_bm = egm(p, grid_points=200, lower_limit=k_min, upper_limit=k_max, conv=1e-4, verbose=False)
+    V_bm = get_vfrom_copt(p, grid_bm, policy_bm, conv=1e-3)
+    return p, grid_bm, policy_bm, V_bm
+
+def bootstrap_mean_ci(Y: np.ndarray, *, n_boot: int = 1000, alpha: float = 0.05, seed: int = 123):
+    """
+    Y: shape [n_seeds, n_points] -> returns (mean, lower, upper) each [n_points]
+    Two-sided bootstrap over seeds with replacement; reproducible via 'seed'.
+    """
+    rng = np.random.default_rng(seed)
+    n_seeds, _ = Y.shape
+    idx = rng.integers(0, n_seeds, size=(n_boot, n_seeds))
+    samples = Y[idx, :]
+    boot_means = samples.mean(axis=1)
+    mean = Y.mean(axis=0)
+    lower = np.percentile(boot_means, 100 * (alpha / 2), axis=0)
+    upper = np.percentile(boot_means, 100 * (1 - alpha / 2), axis=0)
+    return mean, lower, upper
+
+def analyze_all_seeds(
+    cfg: RunConfig, 
+    params: CassKoopmansParams,
+    *,
+    n_boot: int = 1000,
+    alpha: float = 0.05,
+    bootstrap_seed: int = 123
+    ):
+    """
+    Aggregate analysis and plotting across seeds:
+      1) Policy + Value plots with mean and 95% bootstrap CI (CI only for NN value).
+      2) Euler error histogram (pooled) + per-seed KDE overlays; EGM histogram as reference.
+      3) WEV/CEV plots with mean and 95% bootstrap CI; pooled state histogram on twin axes.
+    Saves: policy_value_agg.png, euler_errors_agg.png, wev_cev_agg.png in cfg.out_dir.
+    """
+    plt.style.use('seaborn-v0_8-colorblind')
+    out_dir = Path(cfg.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # common grid for RL & Benchmark evals
+    grid = np.linspace(cfg.state_min, cfg.state_max, 200, dtype=np.float32)
+    
+    # Grid for average return plot
+    global_steps = np.linspace(0, cfg.total_timesteps, num=100)
+    
+    # Benchmark once
+    p, _, policy_bm, V_bm = compute_benchmark(params, cfg.state_min, cfg.state_max)
+    euler_bm, _, U_bm = get_euler_errors(p, grid, policy_bm, n_eps=100)
+    euler_bm = np.log10(np.abs(euler_bm))
+    
+    # storage across seeds
+    return_curves = []
+    rl_policy_vals = []       
+    rl_value_nn_vals = []     
+    rl_value_from_policy = [] 
+    euler_logabs_list = []    
+    pooled_states = []        
+    Us_rl = []               
+    WEV_mat = []
+    CEV_mat = []
+    WEV_rel_mat = []
+    CEV_rel_mat = []
+    seed_ids = list(cfg.seeds)
+    
+    train_cfgs_path = out_dir / "train_cfgs.json"
+    with open(train_cfgs_path, "r") as f:
+        train_cfgs = json.load(f)   # list of dicts
+
+    # Policy/value/euler/wev/cev per seed
+    for seed_entry in train_cfgs:
+        best_model_path = Path(seed_entry["best_model_path"])
+        vecnorm_path = Path(seed_entry["vecnorm_path"])
+        
+        # average evaluation return/learning curves
+        s = seed_entry["seed"]
+        tb_path = out_dir / f"seed_{s}"
+        steps, returns = tb_read_scalar(tb_path, "eval/avg_discounted_return")
+        
+        # RL policy + value (NN spline)
+        policy_rl, value_rl = get_policy_value_functions(best_model_path, vecnorm_path, params, grid)
+
+        # Value recomputed from policy (for plotting mean only)
+        V_rl = get_vfrom_copt(p, grid, policy_rl, conv=1e-3)
+
+        # Euler errors (RL), states, and U metrics
+        euler_rl, states, U_rl = get_euler_errors(p, grid, policy_rl, n_eps=100)
+        
+        wev_seed = wev(grid, V_bm, V_rl)
+        if wev_seed is not None:
+            wev_on_grid = wev_seed
+            avg_wev_relevant = wev_seed.mean()
+            WEV_mat.append(wev_on_grid)
+            WEV_rel_mat.append(avg_wev_relevant)
+        cev_on_grid = cev_crra(grid, V_bm, V_rl, σ=params.crra)
+        
+        avg_cev_relevant = cev_crra(states, V_bm, V_rl, σ=params.crra).mean()
+        
+        # stash
+        return_curves.append(np.interp(global_steps, steps, returns))
+        rl_policy_vals.append(policy_rl(grid))
+        rl_value_nn_vals.append(value_rl(grid))
+        rl_value_from_policy.append(V_rl(grid))
+        euler_logabs_list.append(np.log10(np.abs(euler_rl)))
+        pooled_states.append(states)
+        Us_rl.append(U_rl)
+        CEV_mat.append(cev_on_grid)
+        CEV_rel_mat.append(avg_cev_relevant)
+
+    # stack for bootstrap shapes [n_seeds, n_grid]
+    return_curves = np.vstack(return_curves)
+    rl_policy_vals = np.vstack(rl_policy_vals)
+    rl_value_nn_vals = np.vstack(rl_value_nn_vals)
+    rl_value_from_policy = np.vstack(rl_value_from_policy)
+    WEV_mat = np.vstack(WEV_mat)  
+    CEV_mat = np.vstack(CEV_mat) 
+    
+    # ----------- Returns ---------------------------
+    # Average Returns for RL policies on k0-grid + CI
+    mean_Us, lo_Us, hi_Us = bootstrap_mean_ci(
+        np.vstack(Us_rl), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
     )
-    grid_bm, policy_bm = egm(
-        p, grid_points=100, lower_limit=k_min, upper_limit=k_max, 
-        conv=0.0001, verbose=False)
-    V_bm = get_vfrom_copt(p, grid_bm, policy_bm, conv=0.001)
-    V_rl = get_vfrom_copt(p, grid, policy_rl, conv=0.001)
+    
+    # Average eval return over training run with IQR
+    mean_return = return_curves.mean(axis=0)
+    q25_return, q75_return = np.percentile(return_curves, [25, 75], axis=0)
 
-    fig, ax = plt.subplots(1, 2, figsize=(10, 4))
-    ax[0].plot(grid, policy_rl(grid), label="RL Policy")
-    ax[0].plot(grid, policy_bm(grid), linestyle="--", label="Benchmark Policy")
+    fig = plt.figure(figsize=(9,4.5))
+    plt.fill_between(global_steps, q25_return, q75_return, alpha=0.3, label="IQR")
+    plt.plot(global_steps, mean_return, label="Mean")
+    plt.xlabel("Timesteps"); plt.ylabel("Avg discounted episode return (true scale)")
+    plt.title("PPO on Cass–Koopmans (evaluation)")
+    plt.legend(); plt.tight_layout()
+    fig.savefig(cfg.out_dir / "learning_curve_agg.png", dpi=150)
+    plt.close(fig)
+    
+    # ---------- 1) Policy + Value aggregate ----------
+    mean_pol, lo_pol, hi_pol = bootstrap_mean_ci(
+        rl_policy_vals, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
+    )
+    mean_Vnn, lo_Vnn, hi_Vnn = bootstrap_mean_ci(
+        rl_value_nn_vals, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed + 1
+    )
+    mean_Vfrom = rl_value_from_policy.mean(axis=0)  # mean only (no CI)
+
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4.5))
+    # Policy
+    ax[0].plot(grid, mean_pol, label="RL Policy (mean)")
+    ax[0].fill_between(grid, lo_pol, hi_pol, alpha=0.25, label="95% CI (bootstrap)")
+    ax[0].plot(grid, policy_bm(grid), linestyle="--", label="Benchmark Policy (EGM)")
     ax[0].set_title("Policy Function")
     ax[0].set_xlabel("Capital k")
     ax[0].set_ylabel("Consumption")
     ax[0].legend()
 
-    ax[1].plot(grid, value_rl(grid), label="RL Value (directly from NN)")
-    ax[1].plot(grid, V_bm(grid), linestyle="--", label="Benchmark Value")
-    ax[1].plot(grid, V_rl(grid), label="RL Value (recomputed from policy)")
-    ax[1].set_title("Value function V(k) ")
+    # Value
+    ax[1].plot(grid, mean_Vnn, label="RL Value (NN mean)")
+    ax[1].fill_between(grid, lo_Vnn, hi_Vnn, alpha=0.25, label="95% CI (bootstrap)")
+    ax[1].plot(grid, V_bm(grid), linestyle="--", label="Benchmark Value (EGM)")
+    ax[1].plot(grid, mean_Vfrom, label="RL Value (from policy mean)")
+    ax[1].set_title("Value Function V(k)")
     ax[1].set_xlabel("Capital k")
     ax[1].set_ylabel("Value")
     ax[1].legend()
 
     plt.tight_layout()
-    fig.savefig(os.path.join(figures_dir, "policy_value.png"), dpi=150)
+    fig.savefig(out_dir / "policy_value_agg.png", dpi=150)
     plt.close(fig)
+
+    # ---------- 2) Euler histogram (pooled) + per-seed KDEs ----------
+    # pool RL errors and EGM errors across seeds
+    mean_max_euler, lo_max_euler, hi_max_euler = bootstrap_mean_ci(
+        np.max(euler_logabs_list, axis=1).reshape(-1, 1), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
+    )
     
-    # Euler equation errors under RL policy
-    euler_errors_rl, states, U_rl = get_euler_errors(p, grid, policy_rl, n_eps=100)
-    euler_errors_bm, _, U_bm = get_euler_errors(p, grid, policy_bm, n_eps=100)
-    plt.hist(np.log10(abs(euler_errors_rl)), bins=50, density=True, alpha=0.7, label='RL policy')
-    plt.hist(np.log10(abs(euler_errors_bm)), bins=50, density=True, color="grey", alpha=0.7, label='EGM')
-    plt.axvline(x=np.log10(abs(euler_errors_rl)).mean(), linestyle='--', linewidth=1)
-    plt.axvline(x=np.log10(abs(euler_errors_bm)).mean(), color='grey', linestyle='--', linewidth=1)
-    plt.title("Log10 Euler equation errors")
-    plt.xlabel("Euler equation error")
+    rl_all = np.concatenate(euler_logabs_list, axis=0)
+
+    fig = plt.figure(figsize=(7.2, 4.5))
+    # pooled histograms
+    plt.hist(rl_all, bins=50, density=True, alpha=0.7, label="RL policy (pooled)")
+    plt.hist(euler_bm, bins=50, density=True, alpha=0.7, label="EGM (pooled)", color="gray")
+
+    # per-seed KDE overlays (subtle)
+    for i, arr in enumerate(euler_logabs_list):
+        try:
+            kde = gaussian_kde(arr)
+            xs = np.linspace(
+                min(np.min(rl_all), np.min(euler_bm)),
+                max(np.max(rl_all), np.max(euler_bm)), 
+                256
+                )
+            plt.plot(xs, kde(xs), alpha=0.2, linewidth=1.0)
+        except Exception:
+            # KDE can fail if variance ~0; skip quietly
+            logging.warning(f"Skipping KDE for seed {seed_ids[i]} due to error.")
+            pass
+
+    plt.title("Log10 Euler Equation Errors")
+    plt.xlabel("log10(|error|)")
     plt.ylabel("Density")
-    plt.tight_layout()
     plt.legend()
-    plt.savefig(os.path.join(figures_dir, "euler_errors.png"), dpi=150)
-    plt.close()
-    
-    # Welfare metrics (Wealth-equivalent (cash-on-hand) and consumption-equivalent variations)
-    CEV = cev_crra(grid, V_bm, V_rl, σ=model_params.crra)
-    WEV = wev(grid, V_bm, V_rl)
+    plt.tight_layout()
+    fig.savefig(out_dir / "euler_errors_agg.png", dpi=150)
+    plt.close(fig)
+
+    # ---------- 3) WEV / CEV with CIs; pooled state hist ----------
+    # Average wev on grid + CI
+    mean_wev, lo_wev, hi_wev = bootstrap_mean_ci(
+        WEV_mat.mean(axis=1).reshape(-1, 1), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
+    )
+    # Average wev for relevant states only + CI
+    mean_rel_wev, lo_rel_wev, hi_rel_wev = bootstrap_mean_ci(
+        np.vstack(WEV_rel_mat), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
+    )
+    # Full wev on grid + CI
+    mean_WEV, lo_WEV, hi_WEV = bootstrap_mean_ci(
+        WEV_mat, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed + 2
+    )
+    # Average cev on grid + CI
+    mean_cev, lo_cev, hi_cev = bootstrap_mean_ci(
+        CEV_mat.mean(axis=1).reshape(-1, 1), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
+    )
+    # Average cev for relevant states only + CI
+    mean_rel_cev, lo_rel_cev, hi_rel_cev = bootstrap_mean_ci(
+        np.vstack(CEV_rel_mat), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
+    )
+    # Full wev on grid + CI
+    mean_CEV, lo_CEV, hi_CEV = bootstrap_mean_ci(
+        CEV_mat, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed + 3
+    )
+
+    # pooled states across seeds
+    states_all = np.concatenate(pooled_states, axis=0)
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].plot(grid, WEV)
+    # WEV
+    ax[0].plot(grid, mean_WEV, label="WEV (mean)")
+    ax[0].fill_between(grid, lo_WEV, hi_WEV, alpha=0.25, label="95% CI (bootstrap)")
     ax[0].set_ylim(bottom=0.0)
     ax[0].set_xlabel("Capital k")
-    ax[0].set_ylabel("WEV", color="blue")
-    ax[0].tick_params(axis='y', labelcolor="blue")
-    ax[0].set_title("Wealth-equivalent variation (WEV)")
+    ax[0].set_ylabel("WEV")
+    ax[0].set_title("Wealth-Equivalent Variation")
+    ax0p = ax[0].twinx()
+    ax0p.hist(states_all, bins=30, density=True, alpha=0.3, color="gray")
+    ax0p.set_ylabel("State density")
 
-    ax0_prime = ax[0].twinx()
-    ax0_prime.hist(states, bins=30, density=True, alpha=0.3, color="gray", label="States visited (simulations)")
-    ax0_prime.set_ylabel("Density", color="gray")
-    ax0_prime.tick_params(axis='y', labelcolor="gray")
-
-    ax[1].plot(grid, CEV)
+    # CEV
+    ax[1].plot(grid, mean_CEV, label="CEV (mean)")
+    ax[1].fill_between(grid, lo_CEV, hi_CEV, alpha=0.25, label="95% CI (bootstrap)")
     ax[1].set_ylim(bottom=0.0)
     ax[1].set_xlabel("Capital k")
-    ax[1].set_ylabel("CEV", color="blue")
-    ax[1].tick_params(axis='y', labelcolor="blue")
-    ax[1].set_title("Consumption-equivalent variation (CEV)")
+    ax[1].set_ylabel("CEV")
+    ax[1].set_title("Consumption-Equivalent Variation")
+    ax1p = ax[1].twinx()
+    ax1p.hist(states_all, bins=30, density=True, alpha=0.3, color="gray")
+    ax1p.set_ylabel("State density")
 
-    ax1_prime = ax[1].twinx()
-    ax1_prime.hist(states, bins=30, density=True, alpha=0.3, color="gray", label="States visited (simulations)")
-    ax1_prime.set_ylabel("Density", color="gray")
-    ax1_prime.tick_params(axis='y', labelcolor="gray")
+    for a in ax:
+        a.legend(loc="best")
 
     fig.tight_layout()
-    fig.savefig(os.path.join(figures_dir, "wev_cev.png"), dpi=150)
+    fig.savefig(out_dir / "wev_cev_agg.png", dpi=150)
     plt.close(fig)
-
-    avg_wev = float(np.mean(WEV))
-    avg_wev_relevant = float(wev(states, V_bm, V_rl).mean())
-    avg_cev = float(np.mean(CEV))
-    avg_cev_relevant = float(cev_crra(states, V_bm, V_rl, σ=model_params.crra).mean())
+    
     
     metrics = {
-        "seed": seed,
-        "best_eval_return": float(callback.best_score),
-        "benchmark_return": float(BENCHMARK_RET),
-        "U_rl": float(U_rl),
         "U_bm": float(U_bm),
-        "max_abs_euler_error_rl": float(np.max(np.abs(euler_errors_rl))),
-        "max_abs_euler_error_bm": float(np.max(np.abs(euler_errors_bm))),
-        "avg_wev": avg_wev,
-        "avg_wev_relevant": avg_wev_relevant,
-        "avg_cev": avg_cev,
-        "avg_cev_relevant": avg_cev_relevant,
-        "best_model_path": best_model_path,
-        "vecnorm_path": vecnorm_path,
+        "mean_U_rl": float(mean_Us[0]),
+        "lo_U_rl": float(lo_Us[0]),
+        "hi_U_rl": float(hi_Us[0]),
+        "mean_wev": float(mean_wev[0]),
+        "lo_wev": float(lo_wev[0]), 
+        "hi_wev": float(hi_wev[0]),
+        "mean_wev_relevant": float(mean_rel_wev[0]),
+        "lo_wev_relevant": float(lo_rel_wev[0]),
+        "hi_wev_relevant": float(hi_rel_wev[0]),
+        "mean_cev": float(mean_cev[0]),
+        "lo_cev": float(lo_cev[0]),
+        "hi_cev": float(hi_cev[0]),
+        "mean_cev_relevant": float(mean_rel_cev[0]),
+        "lo_cev_relevant": float(lo_rel_cev[0]),
+        "hi_cev_relevant": float(hi_rel_cev[0]),
+        "max_abs_euler_error_bm": float(np.max(euler_bm)),
+        "mean_max_abs_euler_error_rl": float(mean_max_euler[0]),
+        "lo_max_abs_euler_error_rl": float(lo_max_euler[0]),
+        "hi_max_abs_euler_error_rl": float(hi_max_euler[0]),
     }
-    with open(os.path.join(out_dir, "metrics.json"), "w") as f:
+    with open(out_dir / "metrics_analysis.json", "w") as f:
         json.dump(metrics, f, indent=2)
 
-    return metrics
-
-def run_multiple_seeds(seeds):
-    all_metrics = []
-    for s in seeds:
-        print(f"\n===== Running seed {s} =====")
-        m = single_training_run(s)
-        all_metrics.append(m)
-        
-    csv_path = f"{out_path}/seed_summary.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "seed",
-                "best_eval_return",
-                "benchmark_return",
-                "U_rl",
-                "U_bm",
-                "max_abs_euler_error_rl",
-                "max_abs_euler_error_bm",
-                "avg_wev",
-                "avg_wev_relevant",
-                "avg_cev",
-                "avg_cev_relevant",
-                "best_model_path",
-                "vecnorm_path",
-            ],
-        )
-        writer.writeheader()
-        writer.writerows(all_metrics)
-    print(f"\nWrote summary to {csv_path}")
-    return all_metrics
-
-
 if __name__ == "__main__":
-    run_multiple_seeds(SEEDS)
-    curves = []
-    global_steps = np.linspace(0, TOTAL_TIMESTEPS, num=100)
-    for s in SEEDS:
-        d = np.load(f"{out_path}/seed_{s}/learning_curve.npz")
-        curves.append(np.interp(global_steps, d["steps"], d["returns"]))
-    curves = np.stack(curves)  # shape [n_seeds, n_eval_points]
-
-    mean = curves.mean(0)
-    # percentiles are calculated with linear interpolation!
-    q25, q75 = np.percentile(curves, [25, 75], axis=0)
-
-    plt.fill_between(global_steps, q25, q75, alpha=0.3, label="IQR")
-    plt.plot(global_steps, mean, label="Mean")
-    plt.legend()
-    plt.show()
+    cfg = RunConfig()
+    params = CassKoopmansParams.load_params(cfg.toml_path)
+    cfg.out_dir.mkdir(parents=True, exist_ok=True)
+    
+    train_multiple_seeds(cfg, params)
+    analyze_all_seeds(cfg, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
 
 # # CI do not make sense for a single deterministic policy and envs!!!
 # # Bias-corrected and accelerated bootstrap CI
@@ -401,4 +565,3 @@ if __name__ == "__main__":
 #     n_resamples=n_bootstraps, method="BCa", 
 #     confidence_level=0.95, random_state=rng)
 # print(f"95% BCa bootstrap CI for average relevant CEV: [{bs_res.confidence_interval[0]:.8f}, {bs_res.confidence_interval[1]:.8f}]")
-# %%

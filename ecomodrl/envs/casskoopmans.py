@@ -1,4 +1,3 @@
-import logging
 from typing import Union, Tuple, Optional
 
 import gymnasium as gym

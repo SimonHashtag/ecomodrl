@@ -73,15 +73,18 @@ class BaseParams:
         return cls(**merged)
 
     @classmethod
-    def load_params(cls, toml_path: str | Path | None = None) -> BaseParams:
+    def load_params(cls, toml_path: str | Path | None = None, params_dict: dict | None = None) -> BaseParams:
         """
         Returns a frozen ModelParams object.
         - If toml_path is None: return defaults from the dataclass.
         - If provided: overrides defaults with values from TOML.
         """
-        if toml_path is None:
+        if toml_path is None and params_dict is None:
             return cls()
-        return cls.load_from_toml(toml_path, base=None, strict=True)
+        elif params_dict is None:
+            return cls.load_from_toml(toml_path, base=None, strict=True)
+        else:
+            return cls.from_dict(params_dict, strict=True)
         
     
 @dataclass(frozen=True)
