@@ -73,7 +73,7 @@ class EarlyStoppingEvalCallback(BaseCallback):
         self._last_eval_step = 0
         if self.verbose:
             print("────────────────────────────────────────────")
-            print("     PPO TRAINING LOOP WITH EARLY STOPPING")
+            print("     TRAINING LOOP WITH EARLY STOPPING")
             print("────────────────────────────────────────────", flush=True)
         
     def _on_step(self) -> bool:
@@ -134,8 +134,6 @@ class EarlyStoppingEvalCallback(BaseCallback):
         # Reload the best policy so the model after learn() matches your loop
         try:
             if self.best_model_path:
-                if self.verbose:
-                    print(f"Loading best model from {self.best_model_path}", flush=True)
                 self.model.set_parameters(self.best_model_path)
         except Exception as e:
             if self.verbose:

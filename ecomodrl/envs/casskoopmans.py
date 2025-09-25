@@ -3,14 +3,11 @@ from typing import Union, Tuple, Optional
 import gymnasium as gym
 from gymnasium.spaces import Box
 import numpy as np
+from ecomodrl.utils.params_loader import CassKoopmansParams
 
 __all__ = ["CassKoopmansEnv"]
 
 # ---- Default parameters (can be overridden via __init__) ----
-A_DEFAULT = 1.0 # technology factor
-GAMMA_DEFAULT = 2 # coefficient of relative risk aversion
-DELTA_DEFAULT = 0.02 # depreciation rate of capital
-ALPHA_DEFAULT = 0.33  # return to capital per capita
 RESET_K_DEFAULT = 5.0  # Capital in first period
 TOL = 1e-3  # Minimum distance to no/complete consumption 
 
@@ -28,29 +25,25 @@ class CassKoopmansEnv(gym.Env):
     """
     def __init__(
         self, 
-        max_episode_steps: int = 100, 
-        A: Union[float, int] = A_DEFAULT,
-        GAMMA: float = GAMMA_DEFAULT,
-        DELTA: float = DELTA_DEFAULT,
-        ALPHA: float = ALPHA_DEFAULT,
-        RESETSTATE: float = RESET_K_DEFAULT,
+        *,
+        model_params: CassKoopmansParams,
         fixed_start: bool = False,      # if True, always start from RESETSTATE
-        k_min: float = 1.0,            # min random start capital (if not fixed)
-        k_max: float = 15.0,            # max random start capital (if not fixed)
+        reset_state: float = RESET_K_DEFAULT,
+        state_min: float = 1.0,            # min random start capital (if not fixed)
+        state_max: float = 15.0,            # max random start capital (if not fixed)
         floattype = np.float32
         ):
         super().__init__()
         
         # parameters
-        self.A = A
-        self.GAMMA = GAMMA
-        self.DELTA = DELTA
-        self.ALPHA = ALPHA
-        self.RESETSTATE = RESETSTATE
-        self.floattype = floattype
-        self.max_episode_steps = max_episode_steps
+        self.A = model_params.A
+        self.GAMMA = model_params.gamma
+        self.DELTA = model_params.delta
+        self.ALPHA = model_params.alpha
         self._fixed_start = fixed_start
-        self.k_min, self.k_max = k_min, k_max
+        self.reset_state = reset_state
+        self.state_min, self.state_max = state_min, state_max
+        self.floattype = floattype
         
         # action (consumption)
         self.action_space = Box(TOL, 1.0-TOL, shape=(1,), dtype=self.floattype)
@@ -96,9 +89,9 @@ class CassKoopmansEnv(gym.Env):
         self._t = 0
         
         if self._fixed_start or (options and options.get("fixed_start", False)):
-            self._k = self.floattype(self.RESETSTATE)
+            self._k = self.floattype(self.reset_state)
         else:
-            self._k = self.floattype(self._rng.uniform(self.k_min, self.k_max))
+            self._k = self.floattype(self._rng.uniform(self.state_min, self.state_max))
 
         return self._get_obs(), self._get_info()
 
@@ -160,7 +153,7 @@ def crra_utility(consumption: float, gamma: float, floattype=np.float32) -> floa
     return floattype(u)
 
 
-def c_from_next_k(k:float, a:float, alpha:float=ALPHA_DEFAULT, delta:Union[float, int]=DELTA_DEFAULT):
+def c_from_next_k(k:float, a:float, alpha:float, delta:Union[float, int]):
     f = k**alpha
     y_res = f + (1.0 - delta) * k
     return np.clip(a, 0.0, 1.0) * y_res
