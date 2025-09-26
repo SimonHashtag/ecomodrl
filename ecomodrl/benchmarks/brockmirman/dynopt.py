@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import RegularGridInterpolator, CubicSpline
 from scipy.optimize import brentq
 import time
 
@@ -115,15 +115,15 @@ def egm(problem: PlanningProblem,
             # 4) Euler inversion at each k': u'(c_t) = beta * E[u'(c_{t+1}) R_{t+1}]
             c_today = problem.inv_u_prime(rhs)                                     # (Nkp,)
 
-            # 5) Endogenous resources implied by (c_t, k'): m_endo = c_t + k'
+            # 5) Endogenous resources implied by (c_t, k'): r_endo = c_t + k'
             r_endo = c_today + kp_grid                                             # (Nkp,)
 
-            # 6) Invert the true resource function m(z,k) to get k = k(m)
+            # 6) Invert the true resource function r(z,k) to get k = k(r)
             r_func = problem.resources(z, k_grid)                                  # (Nk,)
             cs_inv = CubicSpline(r_func, k_grid, bc_type="natural")                # inverse m -> k
             k_endo = cs_inv(r_endo)
 
-            # 7) On the endogenous grid, the policy is a = c / m
+            # 7) On the endogenous grid, the policy is a = c / r
             a_endo = c_today / r_endo
 
             # 8) Interpolate back to the fixed state grid k_grid
@@ -150,6 +150,71 @@ def egm(problem: PlanningProblem,
     c = problem.share_to_consumption(a)
     return a, c, z_grid, k_grid, problem.r_grid
 
+
+def get_V_from_c(problem: PlanningProblem, c_policy, tol=1e-6, max_iter=10_000):
+    
+    """
+    Policy evaluation for a given consumption policy c(z,k) on (problem.z_grid, problem.k_grid).
+
+    Computes V^π as the fixed point of:
+        V(z,k) = u(c(z,k)) + BETA * E_z'[ V(z', k') ],
+        k' = f(z,k) + (1-δ)k - c(z,k)
+
+    Returns
+    -------
+    V : ndarray, shape (Nz, Nk)
+        The evaluated value function on the grid.
+    """
+
+    Nz, Nk = problem.Nz, problem.Nk
+    z_grid, k_grid = problem.z_grid, problem.k_grid
+    gh_w, z_next_all = problem.gh_w, problem.z_next_all
+
+    # Precompute: resources and next-period capital implied by the policy
+    r_grid = problem.r_grid                       # r(z,k) = f(z,k) + (1-δ)k
+    k_next = r_grid - c_policy                    # implied k'(z,k)
+
+    # Initialize and iterate the Bellman policy-evaluation operator
+    V_old = np.zeros((Nz, Nk), dtype=float)
+    u = problem.u
+    BETA = problem.BETA
+    Ngh = problem.Ngh
+
+    for _ in range(max_iter):
+        # Interpolator for V_old over (z,k)
+        V_interp = RegularGridInterpolator(
+            (z_grid, k_grid), V_old, bounds_error=False, fill_value=None
+        )
+
+        V_new = np.empty_like(V_old)
+
+        # Loop over current z; vectorize across all k for that z
+        for i in range(Nz):
+            z_next_vec = z_next_all[i, :]                        # (Ngh,)
+
+            # Build evaluation panels (z', k') with shape (Ngh, Nk)
+            Zp = np.tile(z_next_vec[:, None], (1, Nk))           # (Ngh, Nk)
+            Kp = np.tile(k_next[i, :][None, :], (Ngh, 1))        # (Ngh, Nk)
+
+            # Evaluate V_old(z', k') off-grid via 2D interpolation
+            pts = np.column_stack((Zp.ravel(), Kp.ravel()))      # ((Ngh*Nk), 2)
+            V_next = V_interp(pts).reshape(Ngh, Nk)              # (Ngh, Nk)
+
+            # Expectation over shocks with GH weights
+            EV_next = (gh_w[:, None] * V_next).sum(axis=0)       # (Nk,)
+
+            # Bellman update given fixed policy c(z,k)
+            V_new[i, :] = u(c_policy[i, :]) + BETA * EV_next
+
+        # Convergence check
+        diff = np.max(np.abs(V_new - V_old))
+        if diff < tol:
+            return V_new
+
+        V_old = V_new
+
+    # If not converged within max_iter, return last iterate
+    return V_old
 
 
 # -----------------------
@@ -205,7 +270,7 @@ def simulate_euler_errors(problem: PlanningProblem, a_policy, T=1000, k0=None, z
 # MAIN
 # -----------------------
 if __name__ == "__main__":
-    problem = PlanningProblem(ALPHA=0.36, DELTA=0.025, BETA=0.99,
+    problem = PlanningProblem(ALPHA=0.36, DELTA=0.1, BETA=0.99,
                               GAMMA=1.0, RHO=0.9, SIGMA=0.04)
 
     # Equal setup for both
@@ -228,6 +293,7 @@ if __name__ == "__main__":
         time_limit=time_limit
     )
 
+    ### Euler Error Histograms
     # Simulate and collect Euler errors
     T, n_bins = 1_000, 50
     errs_ti = simulate_euler_errors(problem, a_ti, T=T, seed=42)
@@ -245,5 +311,38 @@ if __name__ == "__main__":
     plt.xlabel("log10 |residual|")
     plt.ylabel("Frequency")
     plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    ### Value Function Plots
+    # Value functions for the TI and EGM policies
+    V_ti = get_V_from_c(problem, c_ti,  tol=1e-6, max_iter=10_000, verbose=False)
+    V_egm = get_V_from_c(problem, c_egm, tol=1e-6, max_iter=10_000, verbose=False)
+
+    # Plot: one subplot per z
+    Nz = len(z_grid)
+    nrows = int(np.ceil(np.sqrt(Nz)))
+    ncols = int(np.ceil(Nz / nrows))
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.2*ncols, 3.2*nrows), sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+
+    for i in range(Nz):
+        ax = axes[i]
+        ax.plot(k_grid, V_ti[i, :],  label="TI", linewidth=3)
+        ax.plot(k_grid, V_egm[i, :], label="EGM")
+        ax.set_title(f"z = {z_grid[i]:.3f}")
+        if i % ncols == 0:
+            ax.set_ylabel("V(z,k)")
+        if i >= (nrows-1)*ncols:
+            ax.set_xlabel("k")
+        if i == 0:
+            ax.legend()
+
+    # Turn off any unused subplots
+    for j in range(Nz, len(axes)):
+        axes[j].axis("off")
+
+    fig.suptitle("Value functions by shock state z")
     plt.tight_layout()
     plt.show()
