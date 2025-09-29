@@ -33,52 +33,64 @@ def get_policy_value_functions(
     as CubicSpline interpolators on the specified grid.
     """
     ALGO = ALGO_REGISTRY[algo_name.lower()]
-    model: BaseAlgorithm = ALGO.load(model_path)  # Restores best policy
+    model: BaseAlgorithm = ALGO.load(model_path, device="auto")
+
     # create a dummy VecNormalize with same stats for obs normalization
     dummy_env, _ = build_envs(
         env,
         params=params, 
         cfg=cfg,
         seed=1234,
-        ) # placeholder, not used
+    )
     vecnorm = VecNormalize.load(str(vecnorm_path), dummy_env)
     vecnorm.training = False
 
+    # Prepare observations (float32) and normalize
     obs = grid.reshape(-1, 1).astype(np.float32, copy=False)
-    obs_norm = vecnorm.normalize_obs(obs)
-    
-    # Get policy function for normalized observations
-    actions, _ = model.predict(obs_norm, deterministic=True)
+    obs_norm = vecnorm.normalize_obs(obs).astype(np.float32, copy=False)
+
+    # keep tensors on policy device; convert back to numpy only at the end
+    with th.no_grad():
+        obs_t, _ = model.policy.obs_to_tensor(obs_norm)  # on correct device
+        actions_t = model.policy._predict(obs_t, deterministic=True)  # on-device
+        actions = actions_t.detach().cpu().numpy().squeeze()
+
     # TODO: Make env-agnostic
     c_rl = c_from_next_k(obs.squeeze(), np.asarray(actions).squeeze(), params.alpha, params.delta)
     policy_rl = CubicSpline(obs.squeeze(), c_rl, bc_type="natural", extrapolate=True)
 
-    # Get value function for normalized observations
+    # Get value function
     value_rl = None
-    if hasattr(getattr(model, "policy", None), "predict_values"): # PPO
+    policy = getattr(model, "policy", None)
+
+    if policy is not None and hasattr(policy, "predict_values"):  # e.g., PPO
         with th.no_grad():
-            V_norm = model.policy.predict_values(th.as_tensor(obs_norm)).cpu().numpy().squeeze()
+            V_norm_t = policy.predict_values(obs_t)  # on-device
+            V_norm = V_norm_t.detach().cpu().numpy().squeeze()
+
         ret_rms = getattr(vecnorm, "ret_rms", None)
         eps = float(getattr(vecnorm, "epsilon", 1e-8))
         scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms is not None else 1.0
         V_nn = V_norm * scale
+
         value_rl = CubicSpline(obs.squeeze(), V_nn, bc_type="natural", extrapolate=True)
+
     else:
         # Off-policy critics: V(s) ≈ min_i Q_i(s, π(s))
-        policy = getattr(model, "policy", None)
         if policy is not None and hasattr(policy, "critic"):
             with th.no_grad():
-                obs_t = th.as_tensor(obs_norm, dtype=th.float32)
-                act_t = th.as_tensor(actions, dtype=th.float32).view(obs_t.shape[0], -1)
-                q_out = policy.critic(obs_t, act_t)
-                if isinstance(q_out, (list, tuple)): # SAC: Twin critics
+                act_t = actions_t if actions_t.dim() > 1 else actions_t.unsqueeze(-1)
+                act_t = act_t.view(obs_t.shape[0], -1)  # ensure (N, act_dim)
+                q_out = policy.critic(obs_t, act_t)  # stays on device
+                if isinstance(q_out, (list, tuple)):  # twin critics (e.g., SAC)
                     qs = [q.flatten() for q in q_out]
                     q_min = th.min(th.stack(qs, dim=0), dim=0).values
-                else: # DDPG/TD3
+                else:
                     q_min = q_out.flatten()
-                V_q = q_min.cpu().numpy()
+                V_q = q_min.detach().cpu().numpy()
+
             value_rl = CubicSpline(obs.squeeze(), V_q, bc_type="natural", extrapolate=True)
-            
+
     return policy_rl, value_rl
 
 # TODO: Refactor for other envs!
