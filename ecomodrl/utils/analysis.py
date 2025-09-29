@@ -11,6 +11,7 @@ from scipy.interpolate import CubicSpline
 from scipy.stats import gaussian_kde
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.utils import get_device
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.envs.setup_envs import build_envs
@@ -32,65 +33,54 @@ def get_policy_value_functions(
     Given a trained model and VecNormalize, return policy and value functions
     as CubicSpline interpolators on the specified grid.
     """
+    device = get_device("auto")
     ALGO = ALGO_REGISTRY[algo_name.lower()]
-    model: BaseAlgorithm = ALGO.load(model_path, device="auto")
-
+    model: BaseAlgorithm = ALGO.load(model_path, device=device)  # Restores best policy
     # create a dummy VecNormalize with same stats for obs normalization
     dummy_env, _ = build_envs(
         env,
         params=params, 
         cfg=cfg,
         seed=1234,
-    )
+        )
     vecnorm = VecNormalize.load(str(vecnorm_path), dummy_env)
     vecnorm.training = False
 
-    # Prepare observations (float32) and normalize
     obs = grid.reshape(-1, 1).astype(np.float32, copy=False)
-    obs_norm = vecnorm.normalize_obs(obs).astype(np.float32, copy=False)
-
-    # keep tensors on policy device; convert back to numpy only at the end
-    with th.no_grad():
-        obs_t, _ = model.policy.obs_to_tensor(obs_norm)  # on correct device
-        actions_t = model.policy._predict(obs_t, deterministic=True)  # on-device
-        actions = actions_t.detach().cpu().numpy().squeeze()
-
+    obs_norm = vecnorm.normalize_obs(obs)
+    
+    # Get policy function for normalized observations
+    actions, _ = model.predict(obs_norm, deterministic=True)
     # TODO: Make env-agnostic
     c_rl = c_from_next_k(obs.squeeze(), np.asarray(actions).squeeze(), params.alpha, params.delta)
     policy_rl = CubicSpline(obs.squeeze(), c_rl, bc_type="natural", extrapolate=True)
 
-    # Get value function
+    # Get value function for normalized observations
     value_rl = None
-    policy = getattr(model, "policy", None)
-
-    if policy is not None and hasattr(policy, "predict_values"):  # e.g., PPO
+    if hasattr(getattr(model, "policy", None), "predict_values"): # PPO
         with th.no_grad():
-            V_norm_t = policy.predict_values(obs_t)  # on-device
-            V_norm = V_norm_t.detach().cpu().numpy().squeeze()
-
+            V_norm = model.policy.predict_values(th.as_tensor(obs_norm, dtype=th.float32, device=device)).cpu().numpy().squeeze()
         ret_rms = getattr(vecnorm, "ret_rms", None)
         eps = float(getattr(vecnorm, "epsilon", 1e-8))
         scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms is not None else 1.0
         V_nn = V_norm * scale
-
         value_rl = CubicSpline(obs.squeeze(), V_nn, bc_type="natural", extrapolate=True)
-
     else:
         # Off-policy critics: V(s) ≈ min_i Q_i(s, π(s))
+        policy = getattr(model, "policy", None)
         if policy is not None and hasattr(policy, "critic"):
             with th.no_grad():
-                act_t = actions_t if actions_t.dim() > 1 else actions_t.unsqueeze(-1)
-                act_t = act_t.view(obs_t.shape[0], -1)  # ensure (N, act_dim)
-                q_out = policy.critic(obs_t, act_t)  # stays on device
-                if isinstance(q_out, (list, tuple)):  # twin critics (e.g., SAC)
+                obs_t = th.as_tensor(obs_norm, dtype=th.float32, device=device)
+                act_t = th.as_tensor(actions, dtype=th.float32, device=device).view(obs_t.shape[0], -1)
+                q_out = policy.critic(obs_t, act_t)
+                if isinstance(q_out, (list, tuple)): # SAC: Twin critics
                     qs = [q.flatten() for q in q_out]
                     q_min = th.min(th.stack(qs, dim=0), dim=0).values
-                else:
+                else: # DDPG/TD3
                     q_min = q_out.flatten()
-                V_q = q_min.detach().cpu().numpy()
-
+                V_q = q_min.cpu().numpy()
             value_rl = CubicSpline(obs.squeeze(), V_q, bc_type="natural", extrapolate=True)
-
+            
     return policy_rl, value_rl
 
 # TODO: Refactor for other envs!
