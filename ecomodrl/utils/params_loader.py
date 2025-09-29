@@ -73,15 +73,18 @@ class BaseParams:
         return cls(**merged)
 
     @classmethod
-    def load_params(cls, toml_path: str | Path | None = None) -> BaseParams:
+    def load_params(cls, toml_path: str | Path | None = None, params_dict: dict | None = None) -> BaseParams:
         """
         Returns a frozen ModelParams object.
         - If toml_path is None: return defaults from the dataclass.
         - If provided: overrides defaults with values from TOML.
         """
-        if toml_path is None:
+        if toml_path is None and params_dict is None:
             return cls()
-        return cls.load_from_toml(toml_path, base=None, strict=True)
+        elif params_dict is None:
+            return cls.load_from_toml(toml_path, base=None, strict=True)
+        else:
+            return cls.from_dict(params_dict, strict=True)
         
     
 @dataclass(frozen=True)
@@ -91,7 +94,7 @@ class CassKoopmansParams(BaseParams):
 
     Attributes
     ----------
-    crra : float
+    gamma : float
         Coefficient of relative risk aversion σ.
         Must be > 0. The σ=1 case corresponds to log utility as a limit.
     beta : float
@@ -102,19 +105,16 @@ class CassKoopmansParams(BaseParams):
         Capital share α (output elasticity of capital) in (0, 1).
     A : float
         Productivity / technology level A > 0 in y = A * k^α.
-    reset_k : float
-        Initial capital used by the RL environment when resetting. Must be ≥ 0.
     """
-    crra: float = 2.0
+    gamma: float = 2.0
     beta: float = 0.95
     delta: float = 0.02
     alpha: float = 0.33
     A: float = 1.0
-    reset_k: float = 5.0
 
     # -------- Validation --------
     def __post_init__(self):
-        if not (self.crra > 0):
+        if not (self.gamma > 0):
             raise ValueError("crra (σ) must be > 0")
         if not (0 < self.beta < 1):
             raise ValueError("beta (β) must be in (0, 1)")
@@ -124,5 +124,3 @@ class CassKoopmansParams(BaseParams):
             raise ValueError("alpha (α) must be in (0, 1)")
         if not (self.A > 0):
             raise ValueError("A must be > 0")
-        if not (self.reset_k >= 0):
-            raise ValueError("reset_k must be ≥ 0")

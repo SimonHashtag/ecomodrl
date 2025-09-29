@@ -1,10 +1,16 @@
+import logging
 import numpy as np
 from scipy.interpolate import CubicSpline
 from typing import Union
 
 def inverse_cubic_interpolation(fn, x:np.ndarray, extrapolate:bool=True):
     """Inverse interpolation via cubic splines"""
-    cs = CubicSpline(fn(x), x, bc_type="natural", extrapolate=extrapolate)
+    try:
+        cs = CubicSpline(fn(x), x, bc_type="natural", extrapolate=extrapolate)
+    except Exception:
+        logging.warning("Skipping inverse interpolation: Function is not monotone! Inverse interpolation is not well-defined globally.")
+        cs = None
+        pass
     return cs
 
 def wev(x:Union[np.ndarray, float], V_bm, V) -> Union[np.ndarray, float]:
@@ -20,6 +26,8 @@ def wev(x:Union[np.ndarray, float], V_bm, V) -> Union[np.ndarray, float]:
     Interpretation 2: Distance between the two value functions in terms of capital (cash-on-hand)
     """
     V_inv = inverse_cubic_interpolation(V, np.sort(x))
+    if V_inv is None:
+        return None
     return V_inv(V_bm(x)) - x
 
 def cev_crra(states:Union[np.ndarray, float], V_bm, V, σ:float) -> Union[np.ndarray, float]:

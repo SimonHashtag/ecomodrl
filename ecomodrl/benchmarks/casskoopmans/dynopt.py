@@ -215,11 +215,13 @@ def get_euler_errors(p, grid, policy, n_eps=100, cons_share=False):
     grid_len = len(grid)
     states = np.empty((grid_len, n_eps+1), dtype=float)
     euler_errors = np.empty((grid_len, n_eps-1), dtype=float)
+    avg_return = 0
     for i, k in enumerate(grid):
-        cons_path, state_path, _ = simulation(p, policy, n_eps, start_value=k, cons_share=cons_share)
+        cons_path, state_path, U = simulation(p, policy, n_eps, start_value=k, cons_share=cons_share)
         states[i,:] = state_path
         euler_errors[i,:] = calculate_euler_errors(cons_path, state_path)
-    return euler_errors.ravel(), states.ravel()
+        avg_return += U/grid_len
+    return euler_errors.ravel(), states.ravel(), avg_return
 
 if __name__ == "__main__":
     pp = PlanningProblem()
@@ -246,17 +248,12 @@ if __name__ == "__main__":
                         conv=0.001, verbose=False)
     print(f'EGM took {time.time()-start} seconds.')
     
-    # Return comparison
-    _, _, U_vfi = simulation(pp, policy_vfi, TT_REF, start_value=K_REF, cons_share=True)
-    _, _, U_ti = simulation(pp, policy_ti, TT_REF, start_value=K_REF, cons_share=False)
-    _, _, U_egm = simulation(pp, policy_egm, TT_REF, start_value=K_REF, cons_share=False)
-    print(f'The optimal discounted episode return is: \r\n  TI: {U_ti}      VFI: {U_vfi}      EGM: {U_egm}')
-    
-    # Euler equation errors
-    euler_errors_ti, _ = get_euler_errors(pp, grid, policy_ti, n_eps=100)
-    euler_errors_vfi, _ = get_euler_errors(pp, grid, policy_vfi, n_eps=100, cons_share=True)
-    euler_errors_egm, _ = get_euler_errors(pp, grid, policy_egm, n_eps=100, cons_share=False)
+    # Euler equation errors & return comparison
+    euler_errors_ti, _, U_ti = get_euler_errors(pp, grid, policy_ti, n_eps=100)
+    euler_errors_vfi, _, U_vfi = get_euler_errors(pp, grid, policy_vfi, n_eps=100, cons_share=True)
+    euler_errors_egm, _, U_egm = get_euler_errors(pp, grid, policy_egm, n_eps=100, cons_share=False)
     print(f'Max absolute Euler equation error: \r\n  TI: {max(abs(euler_errors_ti))}      VFI: {max(abs(euler_errors_vfi))}      EGM: {max(abs(euler_errors_egm))}')
+    print(f'The optimal average discounted episode return is: \r\n  TI: {U_ti}      VFI: {U_vfi}      EGM: {U_egm}')
     
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
     ax[0].plot(grid, policy_vfi(grid)*pp.pre_decision_next_k(grid), label='Value function iteration')
