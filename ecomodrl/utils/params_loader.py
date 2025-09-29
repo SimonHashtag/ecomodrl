@@ -124,3 +124,51 @@ class CassKoopmansParams(BaseParams):
             raise ValueError("alpha (α) must be in (0, 1)")
         if not (self.A > 0):
             raise ValueError("A must be > 0")
+
+
+@dataclass(frozen=True)
+class BrockMirmanParams(BaseParams):
+    """
+    Canonical, frozen configuration for the (stochastic) Brock–Mirman model.
+
+    Technology:
+        y_t = z_t * k_t^α ,   log z_{t+1} = ρ log z_t + σ ε_{t+1},   ε ~ N(0,1)
+
+    Attributes
+    ----------
+    gamma : float
+        Coefficient of relative risk aversion σ (CRRA). Must be > 0.
+        The σ=1 case corresponds to log utility as a limit.
+    beta : float
+        Subjective discount factor β. Must lie in (0, 1).
+    delta : float
+        Capital depreciation rate δ per period in [0, 1].
+        (In the classic Brock–Mirman setup δ=1 is common.)
+    alpha : float
+        Capital share α (output elasticity of capital) in (0, 1).
+    rho : float
+        AR(1) persistence ρ of log z. Must satisfy |ρ| < 1.
+    sigma : float
+        Innovation std. dev. σ of log z. Must be ≥ 0.
+    """
+    gamma: float = 2.0
+    beta: float = 0.95
+    delta: float = 0.02
+    alpha: float = 0.33
+    rho: float = 0.95
+    sigma: float = 0.007
+
+    # -------- Validation --------
+    def __post_init__(self):
+        if not (self.gamma > 0):
+            raise ValueError("gamma (σ) must be > 0")
+        if not (0 < self.beta < 1):
+            raise ValueError("beta (β) must be in (0, 1)")
+        if not (0 <= self.delta <= 1):
+            raise ValueError("delta (δ) must be in [0, 1]")
+        if not (0 < self.alpha < 1):
+            raise ValueError("alpha (α) must be in (0, 1)")
+        if not (abs(self.rho) < 1):
+            raise ValueError("rho (ρ) must satisfy |ρ| < 1")
+        if not (self.sigma >= 0):
+            raise ValueError("sigma (σ, shock std) must be ≥ 0")

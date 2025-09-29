@@ -11,6 +11,7 @@ from scipy.interpolate import CubicSpline
 from scipy.stats import gaussian_kde
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.utils import get_device
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.envs.setup_envs import build_envs
@@ -32,15 +33,16 @@ def get_policy_value_functions(
     Given a trained model and VecNormalize, return policy and value functions
     as CubicSpline interpolators on the specified grid.
     """
+    device = get_device("auto")
     ALGO = ALGO_REGISTRY[algo_name.lower()]
-    model: BaseAlgorithm = ALGO.load(model_path)  # Restores best policy
+    model: BaseAlgorithm = ALGO.load(model_path, device=device)  # Restores best policy
     # create a dummy VecNormalize with same stats for obs normalization
     dummy_env, _ = build_envs(
         env,
         params=params, 
         cfg=cfg,
         seed=1234,
-        ) # placeholder, not used
+        )
     vecnorm = VecNormalize.load(str(vecnorm_path), dummy_env)
     vecnorm.training = False
 
@@ -57,7 +59,7 @@ def get_policy_value_functions(
     value_rl = None
     if hasattr(getattr(model, "policy", None), "predict_values"): # PPO
         with th.no_grad():
-            V_norm = model.policy.predict_values(th.as_tensor(obs_norm)).cpu().numpy().squeeze()
+            V_norm = model.policy.predict_values(th.as_tensor(obs_norm, dtype=th.float32, device=device)).cpu().numpy().squeeze()
         ret_rms = getattr(vecnorm, "ret_rms", None)
         eps = float(getattr(vecnorm, "epsilon", 1e-8))
         scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms is not None else 1.0
@@ -68,8 +70,8 @@ def get_policy_value_functions(
         policy = getattr(model, "policy", None)
         if policy is not None and hasattr(policy, "critic"):
             with th.no_grad():
-                obs_t = th.as_tensor(obs_norm, dtype=th.float32)
-                act_t = th.as_tensor(actions, dtype=th.float32).view(obs_t.shape[0], -1)
+                obs_t = th.as_tensor(obs_norm, dtype=th.float32, device=device)
+                act_t = th.as_tensor(actions, dtype=th.float32, device=device).view(obs_t.shape[0], -1)
                 q_out = policy.critic(obs_t, act_t)
                 if isinstance(q_out, (list, tuple)): # SAC: Twin critics
                     qs = [q.flatten() for q in q_out]
