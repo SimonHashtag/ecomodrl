@@ -53,7 +53,7 @@ class PlanningProblem():
 
         return (k / (A * α)) ** (1 / (α - 1))
     
-    def pre_decision_next_k(self, k):
+    def cash_on_hand(self, k):
         ''''
         Given the current capital Kt, computes Kt+1 by state transition law
         assuming no consumption (for upper bound of consumption)
@@ -92,7 +92,7 @@ class PlanningProblem():
     def bellman(self, c, k, value, cons_share=True):
         'Bellman equation for c = consumption share'
         if cons_share:
-            c = c * self.pre_decision_next_k(k)
+            c = c * self.cash_on_hand(k)
         new_k = self.next_k(k, c)
         if new_k<0:
             return np.inf

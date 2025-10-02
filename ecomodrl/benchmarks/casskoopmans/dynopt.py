@@ -82,7 +82,7 @@ def time_iterations(pp, grid_points:int = 1000, lower_limit:float=0.1, upper_lim
             obj = minimize(
                 pp.sq_euler_error,
                 x0 = cs[i],
-                bounds=((0.001, pp.pre_decision_next_k(grid[i])-0.001),),
+                bounds=((0.001, pp.cash_on_hand(grid[i])-0.001),),
                 args=(
                     grid[i],
                     copt,
@@ -145,7 +145,7 @@ def egm(pp, grid_points:int = 1000, lower_limit:float=0.1, upper_limit:float=15.
     
     return: grid and optimal consumption policy as CubicSpline object
     """
-    cash_on_hand = pp.pre_decision_next_k
+    cash_on_hand = pp.cash_on_hand
     euler_egm = pp.euler_egm
     
     k_next_grid = np.linspace(lower_limit, upper_limit, grid_points)
@@ -183,7 +183,7 @@ def simulation(pp, copt, periods=100, start_value=5.0, cons_share=False):
     start_value: starting value of capital
     cons_share: if True, copt returns consumption share of pre-decision capital next period
     """
-    next_k, pre_decision_next_k = pp.next_k, pp.pre_decision_next_k
+    next_k, cash_on_hand = pp.next_k, pp.cash_on_hand
     u = pp.u
     β = pp.β
     
@@ -195,7 +195,7 @@ def simulation(pp, copt, periods=100, start_value=5.0, cons_share=False):
     for t in range(periods):
         if cons_share:
             action = copt(state[t])
-            cons[t] = pre_decision_next_k(state[t])*action
+            cons[t] = cash_on_hand(state[t])*action
         else:
             cons[t] = copt(state[t])
         state[t+1] = next_k(state[t], cons[t])
@@ -256,7 +256,7 @@ if __name__ == "__main__":
     print(f'The optimal average discounted episode return is: \r\n  TI: {U_ti}      VFI: {U_vfi}      EGM: {U_egm}')
     
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].plot(grid, policy_vfi(grid)*pp.pre_decision_next_k(grid), label='Value function iteration')
+    ax[0].plot(grid, policy_vfi(grid)*pp.cash_on_hand(grid), label='Value function iteration')
     ax[0].plot(grid, policy_ti(grid), linestyle='--', color='orange', label='Time iterations')
     ax[0].plot(grid, policy_egm(grid), linestyle='--', color='green', label='EGM')
     ax[0].set_title('Policy function')

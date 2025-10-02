@@ -6,13 +6,13 @@ from scipy.interpolate import CubicSpline
 from scipy.optimize import brentq
 
 # --- Helper for inverse cubic interpolation (1D case) ---
-def inverse_cubic_interpolation(fn: Callable[[np.ndarray], np.ndarray],
-                                x: np.ndarray,
+def inverse_cubic_interpolation(V: Callable[[np.ndarray], np.ndarray],
+                                k: np.ndarray,
                                 extrapolate: bool = True) -> Union[CubicSpline, None]:
-    """Inverse interpolation via cubic splines. Builds k = cs(v) with cs(V(k)) ≈ k on x."""
+    """Inverse interpolation via cubic splines. Builds k = cs(v) with cs(V(k)) ≈ k on k-grid."""
     try:
         # Attempt to construct spline mapping from values back to capital
-        cs = CubicSpline(fn(x), x, bc_type="natural", extrapolate=extrapolate)
+        cs = CubicSpline(V(k), k, bc_type="natural", extrapolate=extrapolate)
     except Exception:
         # If monotonicity fails, log a warning and return None
         logging.warning("Skipping inverse interpolation: Function is not monotone! "
