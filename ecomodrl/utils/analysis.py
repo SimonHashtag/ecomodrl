@@ -17,8 +17,8 @@ from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.envs.setup_envs import build_envs
 from ecomodrl.envs.casskoopmans import c_from_next_k
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
-from ecomodrl.benchmarks.casskoopmans.dynopt import egm, get_vfrom_copt, get_euler_errors
 from ecomodrl.utils.metrics.accuracy import wev, cev_crra
+from ecomodrl.utils.metrics.performance import interquartile_range, interquartile_mean
 from ecomodrl.utils.tb_reader import tb_read_scalar
 
 def get_policy_value_functions(
@@ -90,8 +90,8 @@ def compute_benchmark(
     k_max: float
     ):
     p = PlanningProblem(σ=params.gamma, β=params.beta, δ=params.delta, α=params.alpha, A=params.A)
-    grid_bm, policy_bm = egm(p, grid_points=200, lower_limit=k_min, upper_limit=k_max, conv=1e-4, verbose=False)
-    V_bm = get_vfrom_copt(p, grid_bm, policy_bm, conv=1e-3)
+    grid_bm, policy_bm = p.egm(grid_points=200, lower_limit=k_min, upper_limit=k_max, conv=1e-4, verbose=False)
+    V_bm = p.get_vfrom_copt(grid_bm, policy_bm, conv=1e-3)
     return p, grid_bm, policy_bm, V_bm
 
 # TODO: Bias-corrected and accelerated bootstrap CI? 
@@ -144,7 +144,7 @@ def analyze_all_seeds(
     
     # Benchmark once
     p, _, policy_bm, V_bm = compute_benchmark(params, cfg.state_min, cfg.state_max)
-    euler_bm, _, U_bm = get_euler_errors(p, grid, policy_bm, n_eps=100)
+    euler_bm, _, U_bm = p.get_euler_errors(grid, policy_bm, n_eps=100)
     euler_bm = np.log10(np.abs(euler_bm))
     
     # storage across seeds
@@ -183,15 +183,15 @@ def analyze_all_seeds(
         )
 
         # Value recomputed from policy (for plotting mean only)
-        V_rl = get_vfrom_copt(p, grid, policy_rl, conv=1e-3)
+        V_rl = p.get_vfrom_copt(grid, policy_rl, conv=1e-3)
 
         # Euler errors (RL), states, and U metrics
-        euler_rl, states, U_rl = get_euler_errors(p, grid, policy_rl, n_eps=100)
+        euler_rl, states, U_rl = p.get_euler_errors(grid, policy_rl, n_eps=100)
         
         wev_seed = wev(grid, V_bm, V_rl)
         if wev_seed is not None:
             wev_on_grid = wev_seed
-            avg_wev_relevant = wev_seed.mean()
+            avg_wev_relevant = wev(states, V_bm, V_rl).mean()
             WEV_mat.append(wev_on_grid)
             WEV_rel_mat.append(avg_wev_relevant)
         cev_on_grid = cev_crra(grid, V_bm, V_rl, σ=params.gamma)
@@ -224,12 +224,18 @@ def analyze_all_seeds(
     )
     
     # Average eval return over training run with IQR
-    mean_return = return_curves.mean(axis=0)
-    q25_return, q75_return = np.percentile(return_curves, [25, 75], axis=0)
-
+    iqm_return = interquartile_mean(return_curves)
+    q25_return, q75_return = interquartile_range(return_curves) #np.percentile(return_curves, [25, 75], axis=0, method="interpolated_inverted_cdf")
+    # Benchmark return: Grid differs for evaluation during training (only 20 grid points!)
+    _, _, return_bm = p.get_euler_errors( 
+        np.linspace(cfg.state_min, cfg.state_max, 20), 
+        policy_bm, 
+        n_eps=100)
+    
     fig = plt.figure(figsize=(9,4.5))
     plt.fill_between(global_steps, q25_return, q75_return, alpha=0.3, label="IQR")
-    plt.plot(global_steps, mean_return, label="Mean")
+    plt.plot(global_steps, iqm_return, label="Interquartile Mean")
+    plt.axhline(return_bm, linestyle="-.", color="darkorange", label="Benchmark")
     plt.xlabel("Timesteps"); plt.ylabel("Avg discounted episode return (true scale)")
     plt.title("PPO on Cass–Koopmans (evaluation)")
     plt.legend(); plt.tight_layout()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable, Any, Union, Mapping
 
 import numpy as np
@@ -67,6 +68,9 @@ def build_envs(
     seed: seed
     reward_floor: In training mode, reward is clipped from below (at -reward_floor) to stabilize training
     """
+    # Avoid SubProcVecEnv when parallelizing across multiple seeds.
+    vec_cls = DummyVecEnv if os.getenv("ECOMODRL_SEED_PARALLEL") == "1" else None
+    
     train_env = make_vec_env(
         make_env(
             env_class,
@@ -80,7 +84,8 @@ def build_envs(
             reward_floor=reward_floor,
         ), 
         n_envs=cfg.n_envs, 
-        seed=seed
+        seed=seed,
+        vec_env_cls=vec_cls,
         ) # Seeding: VecEnv seeds each sub-env with seed + env_number
     train_env = VecNormalize(
         train_env, norm_obs=True, norm_reward=True, 
