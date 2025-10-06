@@ -22,21 +22,55 @@ def inverse_cubic_interpolation(V: Callable[[np.ndarray], np.ndarray],
     # Return the inverse spline
     return cs
 
-# --- Unified WEV function for both Cass–Koopmans (1D) and Brock–Mirman (>=2D) ---
+# --- Wealth-Equivalent Variation (WEV) ---
 def wev(
     s: Union[float, np.ndarray, Tuple[float, ...]],
     V_bm: Callable[[np.ndarray], np.ndarray],
     V: Callable[[np.ndarray], np.ndarray],
     m: Callable[..., np.ndarray]
 ) -> Union[float, np.ndarray, None]:
+    
     """
     Wealth-Equivalent Variation (WEV) in basis points.
 
-    Auto-detects problem dimension from `s`:
-      - 1D (Cass–Koopmans): `s` is scalar k or array of k's. Uses inversion of V_RL(k).
-      - >=2D (e.g., Brock–Mirman): `s` is (k,z,...) or array of shape (N,d).
+    Auto-detects problem dimension from s:
+      - 1D (Cass–Koopmans): s is scalar k or array of k's. Uses inversion of V_RL(k).
+      - >=2D (e.g., Brock–Mirman): s is (k,z,...) or array of shape (N,d).
         Root-solves in k holding the other state components fixed.
+
+    Interpretation 1: The additional capital that would make the agent indifferent between the two value functions
+                      If RL is worse than benchmark, WEV > 0 (need more capital to be as well off as with benchmark)
+    Interpretation 2: Distance between the two value functions in terms of capital (cash-on-hand).
+                      In >=2D, this “distance” is taken along the capital dimension only, with other states fixed (z, …).
+
+    Parameters
+    ----------
+    s : float | np.ndarray | tuple
+        State(s) at which to measure WEV.
+        - 1D (Cass–Koopmans): s is a scalar k or a 1D array of capital values k_vec.
+        - >=2D (Brock–Mirman etc.): s is a tuple/array like (k, z, ...) or an array of shape (N, d>=2),
+          where the first component is capital k and the remaining components are other states (e.g. productivity z).
+    V_bm : Callable[[np.ndarray], np.ndarray]
+        Benchmark value function V_bm(s) evaluated at the same state format as s.
+        In 1D, it is called as V_bm(k); in >=2D, as V_bm([k, z, ...]).
+    V : Callable[[np.ndarray], np.ndarray]
+        RL (or alternative) value function with the same calling convention as V_bm.
+        Used either for inversion (1D) or in the root equation V([k, z, ...]) - V_bm([k0, z, ...]) = 0 (>=2D).
+    m : Callable[..., np.ndarray]
+        Resource mapping used to convert capital (and, in >=2D, the full state) into “cash on hand”. 
+        This is the scale in which WEV is reported:
+          - 1D: m(k) -> array_like.
+          - >=2D: m(k, z, ...) -> array_like (the first argument is always k; additional arguments match s[1:]).
+        - Usage inside this function:
+          - 1D: Δm = m(k_RL) - m(k0), WEV(bp) = 10_000 * Δm / m(k0).
+          - >=2D: Δm = m(k*, z, ...) - m(k0, z, ...), with k* the root-found capital level that equalizes values.
+
+    Returns
+    -------
+    float | np.ndarray
+        WEV in basis points (bp). Returns a scalar if the input corresponds to a single state, otherwise an array.
     """
+
     # Convert input state(s) into a numpy array
     s_arr = np.asarray(s, dtype=float)
 
@@ -76,7 +110,7 @@ def wev(
         single = (s_arr.shape[0] == 1)
     else:
         # Invalid shape
-        raise ValueError("`s` must be scalar/1D for Cass, or (N,d>=2) for multi-D.")
+        raise ValueError("s must be scalar/1D for Cass, or (N,d>=2) for multi-D.")
 
     # Ensure there is at least one shock/state dimension beyond k
     if s_arr.shape[1] < 2:
@@ -136,7 +170,7 @@ def wev(
     return bps[0] if single else bps
 
 
-# --- Unified WEV function for both Cass–Koopmans (1D) and Brock–Mirman (>=2D) ---
+# --- Consumption-Equivalent Variation (CEV) ---
 def cev_crra(
     states: Union[np.ndarray, float],
     V_bm: Callable[[np.ndarray], np.ndarray],
@@ -152,7 +186,7 @@ def cev_crra(
     For gamma == 1 (log utility):
         CEV(s) = exp((1 - beta) * (V_bm(s) - V(s))) - 1
 
-    Works for any state dimensionality as long as V_bm and V are defined on 'states'.
+    Works for any state dimensionality as long as V_bm and V are defined on states.
     """
     # Ensure input state(s) are a NumPy array
     s = np.asarray(states)
