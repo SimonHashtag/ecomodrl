@@ -3,12 +3,44 @@ Economic modeling meets deep reinforcement learning - an empirical analysis
 
 ### 1. Project setup
 
-#### 1.1 pip-compile
-We use pip-compile for requirements.
-First install dependency.
-If you would like to add a new module to the project add it to requirements.in.
-Then you can update requirements.txt with the given requirements.in file.
+#### 1.1 conda-lock
+We use conda-lock to install the requirements of this project. 
+This ensures full reproducibility of the code.
 
+First install conda-lock via condax (safer):
+```
+conda install condax
+condax install conda-lock
+```
+
+Create a new conda environment "YOURENV" or install the packages into your preexisting conda env "YOURENV" by
+```
+conda-lock install -n YOURENV requirements.conda-lock.yml
+```
+
+To update a single package to the latest version compatible with the version constraints in the source:
+```
+conda-lock lock  --lockfile requirements.conda-lock.yml --update PACKAGE
+```
+
+To re-solve the entire environment (produce a new requirements.conda-lock.yml), e.g. after changing a version constraint or adding a package in the source file:
+```
+conda-lock -f requirements.yml --lockfile requirements.conda-lock.yml
+```
+
+#### 1.2 pip-compile
+You can also use pip to reproduce our results.
+Simply run:
+```
+pip install -r requirements.txt
+```
+
+If you want to make your work reproducible as well, follow these steps:
+1. First install pip-tools
+2. If you would like to add a new module to the project add it to requirements.in.
+3. Then you can update requirements.txt with the given requirements.in file.
+
+The code:
 ```
 pip install pip-tools
 pip-compile requirements.in
@@ -23,7 +55,7 @@ pip-compile --upgrade
 
 #### 1.2 pre-commit
 We use pre-commit for code style and preventing large files in our project.
-Install pre-commit in git hoooks to check if our code and files
+Install pre-commit in git hooks to check if our code and files
 are in line with our definitions in pre-commit-config.yaml.
 ```
 pre-commit install
