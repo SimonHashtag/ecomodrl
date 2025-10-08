@@ -262,7 +262,7 @@ def simulate_euler_errors(problem: PlanningProblem, a_policy, T=1000, k0=None, z
         # Capital transition
         c_t = a_t * r_t
         k_t = r_t - c_t
-
+    # TODO: Discuss whether a burn-in makes sense!
     return err_log10[int(0.1*T):] # use first 10% as burn-in to reduce dependency on starting value
 
 
@@ -296,6 +296,7 @@ if __name__ == "__main__":
     ### Euler Error Histograms
     # Simulate and collect Euler errors
     T, n_bins = 1_000, 50
+    # TODO: Discuss, whether euler errors on a grid or random choice
     errs_ti = simulate_euler_errors(problem, a_ti, T=T, seed=42)
     errs_egm = simulate_euler_errors(problem, a_egm, T=T, seed=42)
 
