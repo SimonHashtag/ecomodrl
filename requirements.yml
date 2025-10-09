@@ -1,0 +1,20 @@
+name: ecomodrl
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11.8
+  - gymnasium
+  - matplotlib
+  - numpy
+  - tensorboard
+  - ConfigSpace
+  - pip
+  - pip:
+      - dehb
+      - torch
+      - stable-baselines3
+platforms:
+  #- linux-64
+  #- osx-64
+  - win-64

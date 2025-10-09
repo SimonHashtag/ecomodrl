@@ -172,3 +172,60 @@ class BrockMirmanParams(BaseParams):
             raise ValueError("rho (ρ) must satisfy |ρ| < 1")
         if not (self.sigma >= 0):
             raise ValueError("sigma (σ, shock std) must be ≥ 0")
+
+
+@dataclass(frozen=True)
+class BufferStockParams(BaseParams):
+    """
+    Canonical configuration for the (normalized) Buffer-Stock Savings model (Carroll, 1997).
+
+    Variables are normalized by current permanent labor income. Dynamics (normalized):
+        m_{t+1} = (R / (G * ψ_{t+1})) * (m_t - c_t) + θ_{t+1}
+
+    Attributes
+    ----------
+    gamma : float
+        CRRA coefficient σ (> 0). σ=1 corresponds to log utility as a limit.
+    beta : float
+        Subjective discount factor β in (0, 1).
+    r : float
+        Net interest rate r per period (R = 1 + r). Must satisfy r > -1.
+    g : float
+        Growth rate of permanent income g per period (G = 1 + g). Must satisfy g > -1.
+    sigma_tran : float
+        Std. dev. of transitory shock in logs (σ_θ) ≥ 0.
+    sigma_perm : float
+        Std. dev. of permanent shock in logs (σ_ψ) ≥ 0.
+    unemployment_prob : float
+        Probability p of unemployment (point mass at θ_low). Must be in [0, 1).
+    theta_low : float
+        Transitory income when unemployed θ_low, normalized. Must lie in [0, 1].
+    """
+    gamma: float = 2.0
+    beta: float = 0.95
+    r: float = 0.02
+    g: float = 0.01
+    sigma_tran: float = 0.1
+    sigma_perm: float = 0.1
+    unemployment_prob: float = 0.005
+    theta_low: float = 0.3
+
+    # -------- Validation --------
+    def __post_init__(self):
+        if not (self.gamma > 0):
+            raise ValueError("gamma (σ) must be > 0")
+        if not (0 < self.beta < 1):
+            raise ValueError("beta (β) must be in (0, 1)")
+        if not (self.r > -1.0):
+            raise ValueError("r must be > -1 so that R = 1 + r > 0")
+        if not (self.g > -1.0):
+            raise ValueError("g must be > -1 so that G = 1 + g > 0")
+        if not (self.sigma_tran >= 0):
+            raise ValueError("sigma_tran (transitory log-std) must be ≥ 0")
+        if not (self.sigma_perm >= 0):
+            raise ValueError("sigma_perm (permanent log-std) must be ≥ 0")
+        if not (0 <= self.unemployment_prob < 1):
+            raise ValueError("unemployment_prob must be in [0, 1)")
+        if not (0 <= self.theta_low <= 1):
+            raise ValueError("theta_low must lie in [0, 1]")
+
