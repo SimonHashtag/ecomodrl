@@ -93,10 +93,9 @@ class PlanningProblem():
 
         return k_next, c_next
     
-    def bellman(self, c, k, value, cons_share=True):
+    def bellman(self, c, k, value):
         'Bellman equation for c = consumption share'
-        if cons_share:
-            c = c * self.pre_decision_next_k(k)
+        c = c * self.pre_decision_next_k(k)
         new_k = self.next_k(k, c)
         if new_k<0:
             return np.inf
@@ -170,14 +169,13 @@ class PlanningProblem():
                 if abs(obj.x - 0.0001) < 0.0001 or abs(obj.x - grid[i]) < 0.00001:
                     print(f"Corner point solution! State: {grid[i]}; Action: {obj.x[0]}")
             if max(abs(Vn - V(grid))) < conv:
-                break
+                return grid, V, CubicSpline(grid, copt, bc_type="natural", extrapolate=True)
             if verbose:
                 print(
                     "Convergence: {}.".format(max(abs(Vn - V(grid)))),
                     "Convergence criterion: {}.".format(conv),
                 )
             V = CubicSpline(grid, Vn, bc_type="natural", extrapolate=True)
-        return grid, V, CubicSpline(grid, copt, bc_type="natural", extrapolate=True)
 
     #-------------------------------------------------------------------
     # Time iterations
@@ -218,17 +216,16 @@ class PlanningProblem():
                 cs[i] = obj.x[0]
                 if abs(obj.x - 0.0001) < 0.0001 or abs(obj.x - grid[i]) < 0.00001:
                     print(f"Corner point solution! State: {grid[i]}; Action: {obj.x[0]}")
-            if max(abs(copt(grid)-cs)) < conv:
-                break
             if verbose:
                 print(
                     "Convergence: {}.".format(max(abs(copt(grid)-cs))),
                     "Absolute Euler Error: {}.".format(max(np.sqrt(sq_euler))),
                     "Convergence criterion: {}.".format(conv),
                 )
-            
+            if max(abs(copt(grid)-cs)) < conv:
+                return grid, CubicSpline(grid, cs/self.pre_decision_next_k(grid), bc_type="natural", extrapolate=True)
             copt = CubicSpline(grid, cs, bc_type="natural", extrapolate=True)
-        return grid, copt
+        
 
     #-------------------------------------------------------------------
     # EGM
@@ -258,30 +255,29 @@ class PlanningProblem():
                 c_next = m_next - sopt(m_next)
                 c = euler_egm(c_next, k_next)
                 ms[i] = c + k_next
-            if max(abs(sopt(ms)-k_next_grid)) < conv:
-                c_of_m = CubicSpline(np.concatenate(([0.0], ms)), np.concatenate(([0.0], ms-k_next_grid)), bc_type="natural", extrapolate=True)
-                m_grid = cash_on_hand(k_next_grid)
-                copt = CubicSpline(k_next_grid, c_of_m(m_grid), bc_type="natural", extrapolate=True) 
-                break
             if verbose:
                 print(
                     "Convergence: {}.".format(max(abs(sopt(ms)-k_next_grid))),
                     "Convergence criterion: {}.".format(conv),
                 )
+            if max(abs(sopt(ms)-k_next_grid)) < conv:
+                c_of_m = CubicSpline(np.concatenate(([0.0], ms)), np.concatenate(([0.0], ms-k_next_grid)), bc_type="natural", extrapolate=True)
+                m_grid = cash_on_hand(k_next_grid)
+                copt = CubicSpline(k_next_grid, c_of_m(m_grid)/m_grid, bc_type="natural", extrapolate=True) 
+                return k_next_grid, copt 
             sopt = CubicSpline(np.concatenate(([0.0], ms)), np.concatenate(([0.0], k_next_grid)), bc_type="natural", extrapolate=True)
-        return k_next_grid, copt 
+        
 
     #-------------------------------------------------------------------
     # Simulation
     #-------------------------------------------------------------------
-    def simulation(self, copt, periods=100, start_value=5.0, cons_share=False):
+    def simulation(self, copt, periods=100, start_value=5.0):
         """
         Simulate consumption path over number of periods
         
         copt: consumption policy as CubicSpline object
         periods: number of periods to simulate
         start_value: starting value of capital
-        cons_share: if True, copt returns consumption share of pre-decision capital next period
         """
         next_k, pre_decision_next_k = self.next_k, self.pre_decision_next_k
         u = self.u
@@ -293,11 +289,8 @@ class PlanningProblem():
         U = 0
         power = 1.0
         for t in range(periods):
-            if cons_share:
-                action = copt(state[t])
-                cons[t] = pre_decision_next_k(state[t])*action
-            else:
-                cons[t] = copt(state[t])
+            action = copt(state[t])
+            cons[t] = pre_decision_next_k(state[t])*action
             state[t+1] = next_k(state[t], cons[t])
             U += power * u(cons[t])
             power *= β
@@ -318,7 +311,7 @@ class PlanningProblem():
         V = CubicSpline(grid, Vn, bc_type="natural", extrapolate=True)
         while True:
             for i in range(len(grid)):
-                Vn[i] = -bellman(copt(grid[i]), grid[i], V, cons_share=False)
+                Vn[i] = -bellman(copt(grid[i]), grid[i], V)
             if max(abs(Vn - V(grid))) < conv:
                 break
             V = CubicSpline(grid, Vn, bc_type="natural", extrapolate=True)
@@ -327,7 +320,7 @@ class PlanningProblem():
     #-------------------------------------------------------------------
     # Euler equation errors
     #-------------------------------------------------------------------
-    def get_euler_errors(self, grid, policy, n_eps=100, cons_share=False):
+    def get_euler_errors(self, grid, policy, n_eps=100):
         '''
         Given a grid of capital values and a consumption policy, computes Euler equation errors
         over n_eps periods for each initial capital value in the grid.
@@ -338,7 +331,7 @@ class PlanningProblem():
         euler_errors = np.empty((grid_len, n_eps-1), dtype=float)
         avg_return = 0
         for i, k in enumerate(grid):
-            cons_path, state_path, U = self.simulation(policy, n_eps, start_value=k, cons_share=cons_share)
+            cons_path, state_path, U = self.simulation(policy, n_eps, start_value=k)
             states[i,:] = state_path
             euler_errors[i,:] = calculate_euler_errors(cons_path, state_path)
             avg_return += U/grid_len
