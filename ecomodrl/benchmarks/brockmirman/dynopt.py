@@ -106,7 +106,7 @@ def egm(problem: PlanningProblem,
             a_next = rgi(pts).reshape(problem.Ngh, problem.Nkp)      # (Ngh, Nkp)
 
             # 3) Construct next-period objects
-            r_next = problem.resources(Zp, Kp)
+            r_next = problem.cash_on_hand(Zp, Kp)
             c_next = a_next * r_next
             up_next = problem.u_prime(c_next)
             R_next = (1.0 - problem.DELTA) + problem.f_prime(Zp, Kp)
@@ -115,11 +115,11 @@ def egm(problem: PlanningProblem,
             # 4) Euler inversion at each k': u'(c_t) = beta * E[u'(c_{t+1}) R_{t+1}]
             c_today = problem.inv_u_prime(rhs)                                     # (Nkp,)
 
-            # 5) Endogenous resources implied by (c_t, k'): r_endo = c_t + k'
+            # 5) Endogenous cash_on_hand implied by (c_t, k'): r_endo = c_t + k'
             r_endo = c_today + kp_grid                                             # (Nkp,)
 
             # 6) Invert the true resource function r(z,k) to get k = k(r)
-            r_func = problem.resources(z, k_grid)                                  # (Nk,)
+            r_func = problem.cash_on_hand(z, k_grid)                                  # (Nk,)
             cs_inv = CubicSpline(r_func, k_grid, bc_type="natural")                # inverse m -> k
             k_endo = cs_inv(r_endo)
 
@@ -170,7 +170,7 @@ def get_V_from_c(problem: PlanningProblem, c_policy, tol=1e-6, max_iter=10_000):
     z_grid, k_grid = problem.z_grid, problem.k_grid
     gh_w, z_next_all = problem.gh_w, problem.z_next_all
 
-    # Precompute: resources and next-period capital implied by the policy
+    # Precompute: cash_on_hand and next-period capital implied by the policy
     r_grid = problem.r_grid                       # r(z,k) = f(z,k) + (1-δ)k
     k_next = r_grid - c_policy                    # implied k'(z,k)
 
@@ -244,8 +244,8 @@ def simulate_euler_errors(problem: PlanningProblem, a_policy, T=1000, k0=None, z
     RHO, SIGMA = problem.RHO, problem.SIGMA
 
     for t in range(T):
-        # Resources and current policy
-        r_t = problem.resources(z_t, k_t)
+        # cash_on_hand and current policy
+        r_t = problem.cash_on_hand(z_t, k_t)
         a_t = float(rgi((z_t, k_t)))
 
         # GH nodes for z_{t+1} around current z_t

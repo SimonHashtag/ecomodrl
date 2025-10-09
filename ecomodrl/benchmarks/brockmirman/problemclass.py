@@ -40,7 +40,7 @@ class PlanningProblem:
     def f_prime(self, z, k):
         return self.ALPHA * z * (k ** (self.ALPHA - 1))
 
-    def resources(self, z, k):
+    def cash_on_hand(self, z, k):
         return self.f(z, k) + (1.0 - self.DELTA) * k
 
     # --------- setup ----------
@@ -49,7 +49,7 @@ class PlanningProblem:
                     k_min=0.05, k_max=None,
                     Nkprime=None):
         """
-        Build grids, GH nodes/weights, resources grid, and z_{t+1} panels.
+        Build grids, GH nodes/weights, cash_on_hand grid, and z_{t+1} panels.
         Set Nkprime to use a distinct k'-grid for EGM.
         """
         self.Nz, self.Nk, self.Ngh, self.Nkp = Nz, Nk, Ngh, Nkprime if Nkprime is not None else Nk
@@ -66,9 +66,9 @@ class PlanningProblem:
         self.k_grid  = np.exp(np.linspace(np.log(k_min), np.log(k_max), Nk))
         self.kp_grid = np.exp(np.linspace(np.log(k_min), np.log(k_max), self.Nkp))
 
-        # Mesh Z, K + resources on grid
+        # Mesh Z, K + cash_on_hand on grid
         self.Z, self.K = np.meshgrid(self.z_grid, self.k_grid, indexing="ij")
-        self.r_grid = self.resources(self.Z, self.K)
+        self.r_grid = self.cash_on_hand(self.Z, self.K)
 
         # GH nodes & weights for N(0,1)
         gh_x, gh_w = hermgauss(Ngh)
@@ -102,7 +102,7 @@ class PlanningProblem:
         a_next_vec = rgi(points)
 
         # next-period consumption and MU
-        c_next_vec = a_next_vec * self.resources(z_next_vec, k_next)
+        c_next_vec = a_next_vec * self.cash_on_hand(z_next_vec, k_next)
         up_next_vec = self.u_prime(c_next_vec)
 
         rhs = self.BETA * np.dot(

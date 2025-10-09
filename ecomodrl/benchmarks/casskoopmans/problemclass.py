@@ -57,7 +57,7 @@ class PlanningProblem():
 
         return (k / (A * α)) ** (1 / (α - 1))
     
-    def pre_decision_next_k(self, k):
+    def cash_on_hand(self, k):
         ''''
         Given the current capital Kt, computes Kt+1 by state transition law
         assuming no consumption (for upper bound of consumption)
@@ -95,7 +95,7 @@ class PlanningProblem():
     
     def bellman(self, c, k, value):
         'Bellman equation for c = consumption share'
-        c = c * self.pre_decision_next_k(k)
+        c = c * self.cash_on_hand(k)
         new_k = self.next_k(k, c)
         if new_k<0:
             return np.inf
@@ -204,7 +204,7 @@ class PlanningProblem():
                 obj = minimize(
                     self.sq_euler_error,
                     x0 = cs[i],
-                    bounds=((0.001, self.pre_decision_next_k(grid[i])-0.001),),
+                    bounds=((0.001, self.cash_on_hand(grid[i])-0.001),),
                     args=(
                         grid[i],
                         copt,
@@ -223,7 +223,7 @@ class PlanningProblem():
                     "Convergence criterion: {}.".format(conv),
                 )
             if max(abs(copt(grid)-cs)) < conv:
-                return grid, CubicSpline(grid, cs/self.pre_decision_next_k(grid), bc_type="natural", extrapolate=True)
+                return grid, CubicSpline(grid, cs/self.cash_on_hand(grid), bc_type="natural", extrapolate=True)
             copt = CubicSpline(grid, cs, bc_type="natural", extrapolate=True)
         
 
@@ -243,7 +243,7 @@ class PlanningProblem():
         
         return: grid and optimal consumption policy as CubicSpline object
         """
-        cash_on_hand = self.pre_decision_next_k
+        cash_on_hand = self.cash_on_hand
         euler_egm = self.euler_egm
         
         k_next_grid = np.linspace(lower_limit, upper_limit, grid_points)
@@ -279,7 +279,7 @@ class PlanningProblem():
         periods: number of periods to simulate
         start_value: starting value of capital
         """
-        next_k, pre_decision_next_k = self.next_k, self.pre_decision_next_k
+        next_k, cash_on_hand = self.next_k, self.cash_on_hand
         u = self.u
         β = self.β
         
@@ -290,7 +290,7 @@ class PlanningProblem():
         power = 1.0
         for t in range(periods):
             action = copt(state[t])
-            cons[t] = pre_decision_next_k(state[t])*action
+            cons[t] = cash_on_hand(state[t])*action
             state[t+1] = next_k(state[t], cons[t])
             U += power * u(cons[t])
             power *= β

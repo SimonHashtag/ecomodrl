@@ -188,15 +188,15 @@ def analyze_all_seeds(
         # Euler errors (RL), states, and U metrics
         euler_rl, states, U_rl = p.get_euler_errors(grid, policy_rl, n_eps=100)
         
-        wev_seed = wev(grid, V_bm, V_rl)
+        wev_seed = wev(grid, V_bm, V_rl, p.cash_on_hand)
         if wev_seed is not None:
             wev_on_grid = wev_seed
             avg_wev_relevant = wev(states, V_bm, V_rl).mean()
             WEV_mat.append(wev_on_grid)
             WEV_rel_mat.append(avg_wev_relevant)
-        cev_on_grid = cev_crra(grid, V_bm, V_rl, σ=params.gamma)
+        cev_on_grid = cev_crra(grid, V_bm, V_rl, gamma=params.gamma)
         
-        avg_cev_relevant = cev_crra(states, V_bm, V_rl, σ=params.gamma).mean()
+        avg_cev_relevant = cev_crra(states, V_bm, V_rl, gamma=params.gamma).mean()
         
         # stash
         return_curves.append(np.interp(global_steps, steps, returns))

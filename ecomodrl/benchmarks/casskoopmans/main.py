@@ -36,9 +36,9 @@ if __name__ == "__main__":
     print(f'The optimal average discounted episode return is: \r\n  TI: {U_ti}      VFI: {U_vfi}      EGM: {U_egm}')
     
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].plot(grid, policy_vfi(grid)*pp.pre_decision_next_k(grid), label='Value function iteration')
-    ax[0].plot(grid, policy_ti(grid)*pp.pre_decision_next_k(grid), linestyle='--', color='orange', label='Time iterations')
-    ax[0].plot(grid, policy_egm(grid)*pp.pre_decision_next_k(grid), linestyle='--', color='green', label='EGM')
+    ax[0].plot(grid, policy_vfi(grid)*pp.cash_on_hand(grid), label='Value function iteration')
+    ax[0].plot(grid, policy_ti(grid)*pp.cash_on_hand(grid), linestyle='--', color='orange', label='Time iterations')
+    ax[0].plot(grid, policy_egm(grid)*pp.cash_on_hand(grid), linestyle='--', color='green', label='EGM')
     ax[0].set_title('Policy function')
     ax[0].set_xlabel('Capital')
     ax[0].set_ylabel('Consumption')
