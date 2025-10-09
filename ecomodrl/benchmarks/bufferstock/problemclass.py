@@ -33,7 +33,7 @@ class PlanningProblem():
         '''
         σ = self.σ
 
-        return (c ** (1 - σ) - 1) / (1 - σ) if σ!= 1 else np.log(c)
+        return (c ** (1 - σ)) / (1 - σ) if σ!= 1 else np.log(c)
     
     def u_prime(self, c):
         'Derivative of utility'
@@ -49,11 +49,13 @@ class PlanningProblem():
     
     def bellman(self, action, state, value):
         'Bellman equation for c = consumption share'
-        new_state = self.eom(state-action)
+        consumption = state * action
+        a = state * (1.0 - action)
+        new_state = self.eom(a)
         if new_state<0:
             return np.inf
         else:
-            return self.u(action) + self.β * value(new_state)
+            return self.u(consumption) + self.β * value(new_state)
     
     def set_gh(self, n_knots:int):
         gh_x, gh_w = hermgauss(n_knots)
@@ -97,16 +99,16 @@ class PlanningProblem():
     def euler_egm(self, c_next):
         return self.u_prime_inv(self.β * self.R/self.G * np.dot(self.probs, self.u_prime(c_next/self.ψ)))
     
-    def euler_residual(self, c:float, x:float, policy:PchipInterpolator):
+    def euler_residual(self, c_share:float, x:float, policy:PchipInterpolator):
         eom = self.eom
         u_prime = self.u_prime
 
-        a = x - c
+        a = x * (1.0-c_share)
         x_next = eom(a)
-        c_next = policy(x_next)
+        c_next = x_next * policy(x_next)
 
         rhs = self.β * self.R/self.G * np.dot(self.probs, u_prime(c_next/self.ψ))
-        return u_prime(c) - rhs
+        return u_prime(x*c_share) - rhs
     
     def calculate_euler_errors(self, c_path, x_path, policy):
         'Calculate Euler equation errors given paths of consumption and wealth and a policy'
@@ -116,7 +118,7 @@ class PlanningProblem():
             if 1-c/x < 10e-3:
                 euler_errors[i] = None
             else:
-                euler_errors[i] = np.log10(max(1e-18, abs(euler_residual(c, x, policy))))
+                euler_errors[i] = np.log10(max(1e-18, abs(euler_residual(c/x, x, policy))))
         return euler_errors
     
     #-------------------------------------------------------------------
@@ -147,26 +149,26 @@ class PlanningProblem():
         euler_egm = self.euler_egm
         
         a_grid = np.linspace(lower_limit, upper_limit, grid_points)
-        copt = PchipInterpolator(np.concatenate(([0.0], a_grid)), np.concatenate(([0.0], a_grid*0.2)), extrapolate=True)
-        copt_old = PchipInterpolator(np.concatenate(([0.0], a_grid)), np.concatenate(([0.0], a_grid*0.1)), extrapolate=True)
+        copt = PchipInterpolator(np.concatenate(([0.0], a_grid)), np.concatenate(([1.0], np.ones(grid_points)*0.1)), extrapolate=True)
+        copt_old = PchipInterpolator(np.concatenate(([0.0], a_grid)), np.concatenate(([1.0], np.ones(grid_points)*0.2)), extrapolate=True)
         xs = a_grid.copy()
         cs = np.empty(grid_points)
         while max(abs(copt_old(xs)-copt(xs))) > conv:
             copt_old = copt
             for i, a in enumerate(a_grid):
                 xs_next = eom(a)
-                cs_next = copt(xs_next)
+                cs_next = copt(xs_next) * xs_next
                 cs[i] = euler_egm(cs_next)
                 xs[i] = a + cs[i]
             order = np.argsort(xs)
             xs_sorted, cs_sorted = xs[order], cs[order]
-            copt = PchipInterpolator(np.concatenate(([0.0], xs_sorted)), np.concatenate(([0.0], cs_sorted)), extrapolate=True)
+            copt = PchipInterpolator(np.concatenate(([0.0], xs_sorted)), np.concatenate(([1.0], cs_sorted/xs_sorted)), extrapolate=True)
             if verbose:
                 print(
                     "Convergence: {}.".format(max(abs(copt_old(xs)-copt(xs)))),
                     "Convergence criterion: {}.".format(conv),
                 )
-        return a_grid, copt
+        return a_grid, PchipInterpolator(np.concatenate(([0.0], xs_sorted)), np.concatenate(([1.0], cs_sorted/xs_sorted)), extrapolate=True)
     
     #-------------------------------------------------------------------
     # Time iterations
@@ -199,14 +201,14 @@ class PlanningProblem():
 
         self.set_gh(n_knots)
         grid = np.linspace(lower_limit, upper_limit, grid_points)
-        copt = PchipInterpolator(np.concatenate(([0], grid)), np.concatenate(([0], grid*0.01)), extrapolate=True)
+        copt = PchipInterpolator(np.concatenate(([0.0], grid)), np.concatenate(([1.0], np.ones(grid_points)*0.1)), extrapolate=True)
         cs = copt(grid)
         euler_residual = self.euler_residual
         
         while True:
             for i, x in enumerate(grid):
-                lo = TOL
-                hi = max(TOL*2, x - TOL)  # ensure lo < hi
+                lo = 1e-6
+                hi = max(1e-6, 1.0)  # ensure lo < hi
 
                 flo = euler_residual(lo, x, copt)
                 fhi = euler_residual(hi, x, copt)
@@ -226,8 +228,8 @@ class PlanningProblem():
                     "Convergence criterion: {}.".format(conv),
                 )
             
-            copt = PchipInterpolator(np.concatenate(([0], grid)), np.concatenate(([0], cs)), extrapolate=True)
-        return grid, copt
+            copt = PchipInterpolator(np.concatenate(([0.], grid)), np.concatenate(([1.0], cs)), extrapolate=True)
+        return grid, PchipInterpolator(np.concatenate(([0.], grid)), np.concatenate(([1.0], cs)), extrapolate=True)
     
     def get_vfrom_copt(self, grid, copt, conv):
         """
@@ -271,7 +273,7 @@ class PlanningProblem():
         U = 0
         power = 1.0
         for t in range(periods):
-            cons[t] = copt(state[t])
+            cons[t] = state[t] * copt(state[t])
             a = state[t]-cons[t]
             θ, ψ = draw_shocks()
             state[t+1] = eom(a, θ, ψ)
@@ -288,12 +290,13 @@ class PlanningProblem():
         over n_eps periods for each initial capital value in the grid.
         '''
         calculate_euler_errors = self.calculate_euler_errors
+        simulation = self.simulation
         grid_len = len(grid)
         states = np.empty((grid_len, n_eps+1), dtype=float)
         euler_errors = np.empty((grid_len, n_eps), dtype=float)
         avg_return = 0
         for i, k in enumerate(grid):
-            cons_path, state_path, U = self.simulation(policy, n_eps, start_value=k)
+            cons_path, state_path, U = simulation(policy, n_eps, start_value=k)
             states[i,:] = state_path
             euler_errors[i,:] = calculate_euler_errors(cons_path, state_path, policy)
             avg_return += U/grid_len

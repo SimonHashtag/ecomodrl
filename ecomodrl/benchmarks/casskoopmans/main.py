@@ -30,15 +30,15 @@ if __name__ == "__main__":
     
     # Euler equation errors & return comparison
     euler_errors_ti, _, U_ti = pp.get_euler_errors(grid, policy_ti, n_eps=100)
-    euler_errors_vfi, _, U_vfi = pp.get_euler_errors(grid, policy_vfi, n_eps=100, cons_share=True)
-    euler_errors_egm, _, U_egm = pp.get_euler_errors(grid, policy_egm, n_eps=100, cons_share=False)
+    euler_errors_vfi, _, U_vfi = pp.get_euler_errors(grid, policy_vfi, n_eps=100)
+    euler_errors_egm, _, U_egm = pp.get_euler_errors(grid, policy_egm, n_eps=100)
     print(f'Max absolute Euler equation error: \r\n  TI: {max(abs(euler_errors_ti))}      VFI: {max(abs(euler_errors_vfi))}      EGM: {max(abs(euler_errors_egm))}')
     print(f'The optimal average discounted episode return is: \r\n  TI: {U_ti}      VFI: {U_vfi}      EGM: {U_egm}')
     
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
     ax[0].plot(grid, policy_vfi(grid)*pp.pre_decision_next_k(grid), label='Value function iteration')
-    ax[0].plot(grid, policy_ti(grid), linestyle='--', color='orange', label='Time iterations')
-    ax[0].plot(grid, policy_egm(grid), linestyle='--', color='green', label='EGM')
+    ax[0].plot(grid, policy_ti(grid)*pp.pre_decision_next_k(grid), linestyle='--', color='orange', label='Time iterations')
+    ax[0].plot(grid, policy_egm(grid)*pp.pre_decision_next_k(grid), linestyle='--', color='green', label='EGM')
     ax[0].set_title('Policy function')
     ax[0].set_xlabel('Capital')
     ax[0].set_ylabel('Consumption')

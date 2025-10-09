@@ -317,8 +317,8 @@ if __name__ == "__main__":
 
     ### Value Function Plots
     # Value functions for the TI and EGM policies
-    V_ti = get_V_from_c(problem, c_ti,  tol=1e-6, max_iter=10_000, verbose=False)
-    V_egm = get_V_from_c(problem, c_egm, tol=1e-6, max_iter=10_000, verbose=False)
+    V_ti = get_V_from_c(problem, c_ti,  tol=1e-6, max_iter=10_000)
+    V_egm = get_V_from_c(problem, c_egm, tol=1e-6, max_iter=10_000)
 
     # Plot: one subplot per z
     Nz = len(z_grid)

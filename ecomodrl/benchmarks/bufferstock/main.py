@@ -17,19 +17,20 @@ if __name__ == "__main__":
     # EGM
     start = time.time()
     _, policy_egm = pp.egm(grid_points=100, n_knots=8, lower_limit=1e-6, upper_limit=15., 
-                        conv=1e-10, verbose=True)
+                        conv=1e-10, verbose=False)
     print(f'EGM took {time.time()-start} seconds.')
 
-    grid = np.linspace(1., 15., 1000)
+    grid = np.linspace(1.5, 15., 1000)
     # Euler equation errors & return comparison
     euler_errors_ti, states_ti, U_ti = pp.get_euler_errors(grid, policy_ti, n_eps=10)
     euler_errors_egm, states_egm, U_egm = pp.get_euler_errors(grid, policy_egm, n_eps=10)
     print(f'Mean absolute Euler equation error: \r\n  TI: {np.mean(euler_errors_ti)}       EGM: {np.mean(euler_errors_egm)}')
     print(f'The optimal average discounted episode return is: \r\n  TI: {U_ti}      EGM: {U_egm}')
     
+    grid = np.concatenate(([0], grid))
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].plot(np.concatenate(([0], grid)), policy_ti(np.concatenate(([0], grid))), linestyle='--', color='orange', label='Time iterations')
-    ax[0].plot(np.concatenate(([0], grid)), policy_egm(np.concatenate(([0], grid))), linestyle='--', color='green', label='EGM')
+    ax[0].plot(grid, policy_ti(grid)*grid, linestyle='--', color='orange', label='Time iterations')
+    ax[0].plot(grid, policy_egm(grid)*grid, linestyle='--', color='green', label='EGM')
     ax[0].set_title('Policy function')
     ax[0].set_xlabel('Normalized gross wealth')
     ax[0].set_ylabel('Normalized Consumption')

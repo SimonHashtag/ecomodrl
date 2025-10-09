@@ -1,5 +1,6 @@
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import multiprocessing as mp
@@ -10,10 +11,17 @@ from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.utils.params_loader import CassKoopmansParams
 from ecomodrl.utils.analysis import analyze_all_seeds
 
+# ----------------------------
+# Run configuration
+# ----------------------------
+# NOTE: set custom RUNRESULTS_PATH 
+#       on your Windows system via setx RUNRESULTS_PATH "my_custom_tune_results_path" (close & reopen terminal afterwards)
+#       on your mac/linux: export RUNRESULTS_PATH="my_custom_tune_results_path"
+#       otherwise defaults to relative path "./ecomodrl/runs/CassKoopmans"
 @dataclass
 class RunConfig:
     toml_path: str = "./ecomodrl/experiments/model_params/casskoopmans.toml"
-    out_dir: Path = Path("D:/ECOMODRL/runs/CassKoopmans/PPO")
+    out_dir: Path = Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans"))
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
@@ -37,7 +45,6 @@ if __name__ == "__main__":
         )
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
-    cfg.out_dir.mkdir(parents=True, exist_ok=True)
     
     algo_cfg = AlgoConfig(
         name="ppo",
@@ -81,5 +88,8 @@ if __name__ == "__main__":
     #     },
     # )
     
+    cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
+    cfg.out_dir.mkdir(parents=True, exist_ok=True)
+
     train_multiple_seeds(cfg, algo_cfg, CassKoopmansEnv, params)
     analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
