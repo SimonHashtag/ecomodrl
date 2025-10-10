@@ -15,7 +15,6 @@ from stable_baselines3.common.utils import get_device
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.envs.casskoopmans import c_from_next_k
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.utils.metrics.accuracy import wev, cev_crra
 from ecomodrl.utils.metrics.performance import interquartile_range, interquartile_mean
@@ -52,8 +51,8 @@ def get_policy_value_functions(
     # Get policy function for normalized observations
     actions, _ = model.predict(obs_norm, deterministic=True)
     # TODO: Make env-agnostic
-    c_rl = c_from_next_k(obs.squeeze(), np.asarray(actions).squeeze(), params.alpha, params.delta)
-    policy_rl = CubicSpline(obs.squeeze(), c_rl, bc_type="natural", extrapolate=True)
+    a_rl = np.asarray(actions).squeeze()
+    policy_rl = CubicSpline(obs.squeeze(), a_rl, bc_type="natural", extrapolate=True)
 
     # Get value function for normalized observations
     value_rl = None
@@ -191,7 +190,7 @@ def analyze_all_seeds(
         wev_seed = wev(grid, V_bm, V_rl, p.cash_on_hand)
         if wev_seed is not None:
             wev_on_grid = wev_seed
-            avg_wev_relevant = wev(states, V_bm, V_rl).mean()
+            avg_wev_relevant = wev(states, V_bm, V_rl, p.cash_on_hand).mean()
             WEV_mat.append(wev_on_grid)
             WEV_rel_mat.append(avg_wev_relevant)
         cev_on_grid = cev_crra(grid, V_bm, V_rl, gamma=params.gamma)
