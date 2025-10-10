@@ -1,126 +1,163 @@
-import logging
-from typing import List, Tuple, Optional
+from typing import Union, Tuple, Optional
 
 import gymnasium as gym
 from gymnasium.spaces import Box
 import numpy as np
+from ecomodrl.utils.params_loader import BrockMirmanParams
 
 __all__ = ["BrockMirmanEnv"]
 
-GAMMA = 1 # coefficient of relative risk aversion
-DELTA = 0.02 # depreciation rate of capital
-ALPHA = 0.33  # return to capital per capita
-RESETSTATE = 5.0  # Capital in first period
-MU = 1.0 # Mean of lognormally distributed productivity shock
-SD = 0.1 # Standard deviation of lognormally distributed productivity shock
-TOL = 1e-6  # Minimum distance to no/complete consumption 
+# ---- Default parameters (can be overridden via __init__) ----
+RESET_K_DEFAULT = 5.0  # Capital in first period
+TOL = 1e-3             # Minimum distance to no/complete consumption 
 
 
 class BrockMirmanEnv(gym.Env):
+    """
+    Stochastic Brock–Mirman growth environment with a single control:
+    action a_t in (0,1) is the fraction of available resources consumed.
+    State s_t is (z_t, k_t) with multiplicative technology shock z_t.
+
+    Dynamics:
+        y_t = z_t * k_t^alpha
+        resources_t = (1 - delta) * k_t + y_t
+        c_t = a_t * resources_t
+        k_{t+1} = resources_t - c_t
+        log z_{t+1} = rho * log z_t + sigma * eps_{t+1},   eps ~ N(0,1)
+
+    Reward r_t = u(c_t) (CRRA utility).
+    """
     def __init__(
-        self, 
-        max_episode_steps=100, 
-        finite=False,
-        GAMMA=GAMMA,
-        DELTA=DELTA,
-        ALPHA=ALPHA,
-        RESETSTATE=RESETSTATE,
-        MU=MU,
-        SD=SD):
-        
+        self,
+        *,
+        model_params: BrockMirmanParams,
+        fixed_start: bool = False,      # if True, always start from RESETSTATE (for k)
+        reset_state: float = RESET_K_DEFAULT,
+        state_min: float = 1.0,         # min random start capital (if not fixed)
+        state_max: float = 15.0,        # max random start capital (if not fixed)
+        floattype = np.float32
+    ):
+        super().__init__()
+
         # parameters
-        self.GAMMA = GAMMA
-        self.DELTA = DELTA
-        self.ALPHA = ALPHA
-        self.RESETSTATE = RESETSTATE
-        self.MU = MU
-        self.SD = SD
-        
-        # action (consumption)
-        self.action_space = Box(TOL, 1.0-TOL, shape=(1,), dtype=np.float32)
+        self.GAMMA = model_params.gamma
+        self.DELTA = model_params.delta
+        self.ALPHA = model_params.alpha
+        self.RHO   = model_params.rho
+        self.SIGMA = model_params.sigma
 
-        # states (capital)
-        self.observation_space = Box(low=0.0, high=np.inf, shape=(1,), dtype=np.float32)
+        self._fixed_start = fixed_start
+        self.reset_state = reset_state
+        self.state_min, self.state_max = state_min, state_max
+        self.floattype = floattype
 
-        self.max_episode_steps = max_episode_steps
-        self._finite = finite
+        # action (consumption share)
+        self.action_space = Box(TOL, 1.0 - TOL, shape=(1,), dtype=self.floattype)
 
-    def _get_obs(self):
-        return np.array([np.float32(self._capital)])
+        # states (z, k)
+        self.observation_space = Box(
+            low=np.array([0.0, 0.0], dtype=self.floattype),
+            high=np.array([np.finfo(self.floattype).max, np.finfo(self.floattype).max], dtype=self.floattype),
+            shape=(2,),
+            dtype=self.floattype,
+        )
 
-    def _get_info(self):
+        # RNG
+        self._seed: Optional[int] = None
+        self._rng = np.random.default_rng()
+
+        # internal counters / state holders
+        self._t: int = 0
+        self._k: Optional[float] = None
+        self._z: Optional[float] = None
+
+    def _get_obs(self) -> np.ndarray:
+        assert self._z is not None and self._k is not None
+        return np.array([self._z, self._k], dtype=self.floattype)
+
+    def _get_info(self) -> dict:
         return {
-            "capital": self._capital,
+            "z": self._z,
+            "capital": self._k,
+            "seed": self._seed,
+            "DELTA": self.DELTA,
+            "GAMMA": self.GAMMA,
+            "ALPHA": self.ALPHA,
+            "RHO": self.RHO,
+            "SIGMA": self.SIGMA,
         }
 
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
+        if seed is not None:
+            self._seed = seed
+            self._rng = np.random.default_rng(seed)
+            try:
+                self.action_space.seed(self._seed)
+                self.observation_space.seed(self._seed)
+            except Exception:
+                pass
 
-        self.period_iter = 0
-        self._capital = np.float32(self.RESETSTATE)  # capital
+        self._t = 0
 
-        observations = self._get_obs()
-        info = self._get_info()
+        # capital
+        if self._fixed_start or (options and options.get("fixed_start", False)):
+            self._k = self.floattype(self.reset_state)
+        else:
+            self._k = self.floattype(self._rng.uniform(self.state_min, self.state_max))
 
-        return observations, info
+        # technology
+        self._z = self.floattype(1.0)
 
-    def step(self, action: float) -> Tuple[dict, float, bool, bool, Optional[dict]]:
+        return self._get_obs(), self._get_info()
+
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, dict]:
         """
-        Update capital.
-        Calculate the reward (crra utility function) and determine whether episode is to be truncated.
+        Update (z, k), compute reward, and return transition tuple.
         Args:
-            action: float consumption (share of available capital)
+            action: float consumption share a_t in (TOL, 1-TOL)
         Returns: Tuple[obs, reward, terminated, truncated, info]
         """
-        assert self.action_space.contains(action), f"{action!r} ({type(action)}) invalid"
-        assert self._capital is not None, "Call reset before using step method."
+        # ensure shape and bounds
+        a = float(np.clip(np.asarray(action, dtype=self.floattype).reshape(-1)[0], TOL, 1.0 - TOL))
+        assert self._k is not None and self._z is not None, "Call reset before using step method."
 
-        self.period_iter += 1
-        
-        # get consumption and reward
-        consumption = self._capital * action[0]
-        reward = crra_utility(consumption, gamma=self.GAMMA)
-        
-        # get production
-        r = np.random.lognormal(self.MU, self.SD, 1)
-        y = r * self._capital ** self.ALPHA
+        self._t += 1
 
-        # update capital
-        self._capital *= 1 - self.DELTA
-        self._capital += y
-        self._capital -= consumption
-        
-        assert self._capital >= 0.0, f"capital is not allowed to be smaller than {0.0} but is {self._capital} " f"A {A} " f"DELTA {DELTA} " f"consumption {consumption} " f"reward {reward} "
+        # production and resources before consumption
+        y = float(self._z) * (float(self._k) ** self.ALPHA)
+        resources = (1.0 - self.DELTA) * float(self._k) + y
 
-        observations = self._get_obs()
-        terminated = self._finite and self.period_iter >= self.max_episode_steps
-        truncated = not self._finite and self.period_iter >= self.max_episode_steps
+        # consumption and reward
+        c = a * resources
+        r = crra_utility(c, gamma=self.GAMMA, floattype=self.floattype)
+
+        # capital transition
+        self._k = resources - c
+        self._k = float(max(self._k, 0.0))
+
+        # technology shock: log z_{t+1} = rho log z_t + sigma * eps, eps ~ N(0,1)
+        eps = self._rng.normal()
+        logz_next = self.RHO * np.log(float(self._z)) + self.SIGMA * eps
+        self._z = float(np.exp(logz_next))
+
+        obs = self._get_obs()
+        terminated = False
+        truncated = False
         info = self._get_info()
-        info["consumption_frac"] = action[0]
-        info["consumption"] = consumption
-        info["reward"] = reward
-        info["productivity_shock"] = r
-        info["production"] = y
-        info["DELTA"] = self.DELTA
-        info["GAMMA"] = self.GAMMA
-        info["ALPHA"] = self.ALPHA
+        info.update({
+            "consumption_frac": a,
+            "consumption": c,
+            "reward": r,
+        })
 
-        return observations, reward, terminated, truncated, info
+        return obs, float(r), terminated, truncated, info
 
 
-def crra_utility(consumption: float, gamma: float = GAMMA) -> float:
-    """Get the utility based on consumption.
-    For consumption ~ 0.0 return a very small utility (not -inf however).
-    For consumption above 0.0 return the log utility
-    Args:
-        consumption: the consumption of risky asset of the period
-    Returns:
-        float: the utility
-    """
-    assert consumption > 0.0, "Non-positive consumption not allowed"
-    
+def crra_utility(consumption: float, gamma: float, floattype=np.float32) -> float:
+    """CRRA utility"""
+    c = float(np.maximum(consumption, TOL))
     if gamma == 1:
-        u = np.log(consumption, dtype=np.float32)
+        u = np.log(c)
     else:
-        u = np.float32((consumption ** (1 - gamma)) / (1 - gamma))
-    return u
+        u = (c ** (1 - gamma)) / (1 - gamma)
+    return floattype(u)

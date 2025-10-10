@@ -4,161 +4,121 @@
 #
 #    pip-compile requirements.in
 #
-absl-py==2.1.0
+absl-py==2.3.1
+    # via tensorboard
+click==8.3.0
     # via
-    #   mujoco
-    #   tensorboard
-aiosignal==1.3.1
-    # via ray
-attrs==23.2.0
+    #   dask
+    #   distributed
+cloudpickle==3.1.1
     # via
-    #   jsonschema
-    #   referencing
-certifi==2024.7.4
-    # via requests
-cfgv==3.4.0
-    # via pre-commit
-charset-normalizer==3.3.2
-    # via requests
-click==8.1.7
-    # via ray
-cloudpickle==3.0.0
-    # via
+    #   dask
+    #   distributed
     #   gymnasium
     #   stable-baselines3
 colorama==0.4.6
     # via
     #   click
-    #   tyro
-configspace==0.7.1
-    # via -r requirements.in
-contourpy==1.2.1
+    #   loguru
+configspace==1.2.1
+    # via
+    #   -r requirements.in
+    #   dehb
+contourpy==1.3.3
     # via matplotlib
 cycler==0.12.1
     # via matplotlib
-distlib==0.3.8
-    # via virtualenv
-docstring-parser==0.16
-    # via tyro
-etils[epath,epy]==1.9.2
-    # via mujoco
+dask==2025.9.1
+    # via
+    #   dehb
+    #   distributed
+dehb==0.1.2
+    # via -r requirements.in
+distributed==2025.9.1
+    # via dehb
 farama-notifications==0.0.4
     # via gymnasium
-filelock==3.15.4
-    # via
-    #   ray
-    #   torch
-    #   virtualenv
-fonttools==4.53.1
+filelock==3.19.1
+    # via torch
+fonttools==4.60.1
     # via matplotlib
-frozenlist==1.4.1
+fsspec==2025.9.0
     # via
-    #   aiosignal
-    #   ray
-fsspec==2024.6.1
-    # via
-    #   etils
-    #   ray
+    #   dask
     #   torch
-glfw==2.7.0
-    # via mujoco
-grpcio==1.64.1
+grpcio==1.75.1
     # via tensorboard
-gymnasium[mujoco]==0.29.1
+gymnasium==1.2.1
     # via
     #   -r requirements.in
     #   stable-baselines3
-identify==2.6.0
-    # via pre-commit
-idna==3.7
-    # via requests
-imageio==2.34.2
-    # via gymnasium
-importlib-resources==6.4.0
-    # via etils
-intel-openmp==2021.4.0
-    # via mkl
-jinja2==3.1.4
-    # via torch
-jsonschema==4.23.0
-    # via ray
-jsonschema-specifications==2023.12.1
-    # via jsonschema
-kiwisolver==1.4.5
+importlib-metadata==8.7.0
+    # via dask
+jinja2==3.1.6
+    # via
+    #   distributed
+    #   torch
+kiwisolver==1.4.9
     # via matplotlib
-markdown==3.6
+locket==1.0.0
+    # via
+    #   distributed
+    #   partd
+loguru==0.7.3
+    # via dehb
+markdown==3.9
     # via tensorboard
-markdown-it-py==3.0.0
-    # via rich
-markupsafe==2.1.5
+markupsafe==3.0.3
     # via
     #   jinja2
     #   werkzeug
-matplotlib==3.9.1
+matplotlib==3.10.6
     # via
     #   -r requirements.in
     #   stable-baselines3
-mdurl==0.1.2
-    # via markdown-it-py
-mkl==2021.4.0
-    # via torch
-more-itertools==10.3.0
+more-itertools==10.8.0
     # via configspace
 mpmath==1.3.0
     # via sympy
-msgpack==1.0.8
-    # via ray
-mujoco==3.1.6
-    # via gymnasium
-networkx==3.3
+msgpack==1.1.1
+    # via distributed
+networkx==3.5
     # via torch
-nodeenv==1.9.1
-    # via pre-commit
-numpy==2.0.0
+numpy==1.26.4
     # via
     #   -r requirements.in
     #   configspace
     #   contourpy
+    #   dehb
     #   gymnasium
-    #   imageio
     #   matplotlib
-    #   mujoco
     #   pandas
-    #   pyarrow
-    #   ray
     #   scipy
     #   stable-baselines3
     #   tensorboard
-    #   tensorboardx
-packaging==24.1
+packaging==25.0
     # via
+    #   dask
+    #   distributed
     #   matplotlib
-    #   ray
-    #   tensorboardx
-pandas==2.2.2
-    # via
-    #   ray
-    #   stable-baselines3
-pillow==10.4.0
-    # via
-    #   imageio
-    #   matplotlib
-platformdirs==4.2.2
-    # via virtualenv
-pre-commit==3.7.1
-    # via -r requirements.in
-protobuf==4.25.3
-    # via
-    #   ray
     #   tensorboard
-    #   tensorboardx
-pyarrow==16.1.0
-    # via ray
-pygments==2.18.0
-    # via rich
-pyopengl==3.1.7
-    # via mujoco
-pyparsing==3.1.2
+pandas==2.3.3
+    # via
+    #   dehb
+    #   stable-baselines3
+partd==1.4.2
+    # via dask
+pillow==11.3.0
+    # via
+    #   matplotlib
+    #   tensorboard
+protobuf==6.32.1
+    # via tensorboard
+psutil==7.1.0
+    # via distributed
+pyarrow==21.0.0
+    # via dehb
+pyparsing==3.2.5
     # via
     #   configspace
     #   matplotlib
@@ -166,69 +126,57 @@ python-dateutil==2.9.0.post0
     # via
     #   matplotlib
     #   pandas
-pytz==2024.1
+pytz==2025.2
     # via pandas
-pyyaml==6.0.1
+pyyaml==6.0.3
     # via
-    #   pre-commit
-    #   ray
-ray[data,tune]==2.31.0
-    # via -r requirements.in
-referencing==0.35.1
-    # via
-    #   jsonschema
-    #   jsonschema-specifications
-requests==2.32.3
-    # via ray
-rich==13.7.1
-    # via tyro
-rpds-py==0.19.0
-    # via
-    #   jsonschema
-    #   referencing
-scipy==1.14.0
+    #   dask
+    #   distributed
+scipy==1.16.2
     # via configspace
-shtab==1.7.1
-    # via tyro
-six==1.16.0
-    # via
-    #   python-dateutil
-    #   tensorboard
-stable-baselines3==2.3.2
+six==1.17.0
+    # via python-dateutil
+sortedcontainers==2.4.0
+    # via distributed
+stable-baselines3==2.7.0
     # via -r requirements.in
-sympy==1.13.0
+sympy==1.14.0
     # via torch
-tbb==2021.13.0
-    # via mkl
-tensorboard==2.17.0
+tblib==3.1.0
+    # via distributed
+tensorboard==2.20.0
     # via -r requirements.in
 tensorboard-data-server==0.7.2
     # via tensorboard
-tensorboardx==2.6.2.2
-    # via ray
-torch==2.3.1
+toolz==1.0.0
+    # via
+    #   dask
+    #   distributed
+    #   partd
+torch==2.8.0
     # via
     #   -r requirements.in
     #   stable-baselines3
-typing-extensions==4.12.2
+tornado==6.5.2
+    # via distributed
+typing-extensions==4.15.0
     # via
     #   configspace
-    #   etils
+    #   grpcio
     #   gymnasium
     #   torch
-    #   tyro
-tyro==0.8.5
-    # via -r requirements.in
-tzdata==2024.1
+tzdata==2025.2
     # via pandas
-urllib3==2.2.2
-    # via requests
-virtualenv==20.26.3
-    # via pre-commit
-werkzeug==3.0.3
+urllib3==2.5.0
+    # via distributed
+werkzeug==3.1.3
     # via tensorboard
-zipp==3.19.2
-    # via etils
+win32-setctime==1.2.0
+    # via loguru
+zict==3.0.0
+    # via distributed
+zipp==3.23.0
+    # via importlib-metadata
 
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools

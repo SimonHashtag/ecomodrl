@@ -73,15 +73,18 @@ class BaseParams:
         return cls(**merged)
 
     @classmethod
-    def load_params(cls, toml_path: str | Path | None = None) -> BaseParams:
+    def load_params(cls, toml_path: str | Path | None = None, params_dict: dict | None = None) -> BaseParams:
         """
         Returns a frozen ModelParams object.
         - If toml_path is None: return defaults from the dataclass.
         - If provided: overrides defaults with values from TOML.
         """
-        if toml_path is None:
+        if toml_path is None and params_dict is None:
             return cls()
-        return cls.load_from_toml(toml_path, base=None, strict=True)
+        elif params_dict is None:
+            return cls.load_from_toml(toml_path, base=None, strict=True)
+        else:
+            return cls.from_dict(params_dict, strict=True)
         
     
 @dataclass(frozen=True)
@@ -91,7 +94,7 @@ class CassKoopmansParams(BaseParams):
 
     Attributes
     ----------
-    crra : float
+    gamma : float
         Coefficient of relative risk aversion σ.
         Must be > 0. The σ=1 case corresponds to log utility as a limit.
     beta : float
@@ -102,19 +105,16 @@ class CassKoopmansParams(BaseParams):
         Capital share α (output elasticity of capital) in (0, 1).
     A : float
         Productivity / technology level A > 0 in y = A * k^α.
-    reset_k : float
-        Initial capital used by the RL environment when resetting. Must be ≥ 0.
     """
-    crra: float = 2.0
+    gamma: float = 2.0
     beta: float = 0.95
     delta: float = 0.02
     alpha: float = 0.33
     A: float = 1.0
-    reset_k: float = 5.0
 
     # -------- Validation --------
     def __post_init__(self):
-        if not (self.crra > 0):
+        if not (self.gamma > 0):
             raise ValueError("crra (σ) must be > 0")
         if not (0 < self.beta < 1):
             raise ValueError("beta (β) must be in (0, 1)")
@@ -124,5 +124,108 @@ class CassKoopmansParams(BaseParams):
             raise ValueError("alpha (α) must be in (0, 1)")
         if not (self.A > 0):
             raise ValueError("A must be > 0")
-        if not (self.reset_k >= 0):
-            raise ValueError("reset_k must be ≥ 0")
+
+
+@dataclass(frozen=True)
+class BrockMirmanParams(BaseParams):
+    """
+    Canonical, frozen configuration for the (stochastic) Brock–Mirman model.
+
+    Technology:
+        y_t = z_t * k_t^α ,   log z_{t+1} = ρ log z_t + σ ε_{t+1},   ε ~ N(0,1)
+
+    Attributes
+    ----------
+    gamma : float
+        Coefficient of relative risk aversion σ (CRRA). Must be > 0.
+        The σ=1 case corresponds to log utility as a limit.
+    beta : float
+        Subjective discount factor β. Must lie in (0, 1).
+    delta : float
+        Capital depreciation rate δ per period in [0, 1].
+        (In the classic Brock–Mirman setup δ=1 is common.)
+    alpha : float
+        Capital share α (output elasticity of capital) in (0, 1).
+    rho : float
+        AR(1) persistence ρ of log z. Must satisfy |ρ| < 1.
+    sigma : float
+        Innovation std. dev. σ of log z. Must be ≥ 0.
+    """
+    gamma: float = 2.0
+    beta: float = 0.95
+    delta: float = 0.02
+    alpha: float = 0.33
+    rho: float = 0.95
+    sigma: float = 0.007
+
+    # -------- Validation --------
+    def __post_init__(self):
+        if not (self.gamma > 0):
+            raise ValueError("gamma (σ) must be > 0")
+        if not (0 < self.beta < 1):
+            raise ValueError("beta (β) must be in (0, 1)")
+        if not (0 <= self.delta <= 1):
+            raise ValueError("delta (δ) must be in [0, 1]")
+        if not (0 < self.alpha < 1):
+            raise ValueError("alpha (α) must be in (0, 1)")
+        if not (abs(self.rho) < 1):
+            raise ValueError("rho (ρ) must satisfy |ρ| < 1")
+        if not (self.sigma >= 0):
+            raise ValueError("sigma (σ, shock std) must be ≥ 0")
+
+
+@dataclass(frozen=True)
+class BufferStockParams(BaseParams):
+    """
+    Canonical configuration for the (normalized) Buffer-Stock Savings model (Carroll, 1997).
+
+    Variables are normalized by current permanent labor income. Dynamics (normalized):
+        m_{t+1} = (R / (G * ψ_{t+1})) * (m_t - c_t) + θ_{t+1}
+
+    Attributes
+    ----------
+    gamma : float
+        CRRA coefficient σ (> 0). σ=1 corresponds to log utility as a limit.
+    beta : float
+        Subjective discount factor β in (0, 1).
+    r : float
+        Net interest rate r per period (R = 1 + r). Must satisfy r > -1.
+    g : float
+        Growth rate of permanent income g per period (G = 1 + g). Must satisfy g > -1.
+    sigma_tran : float
+        Std. dev. of transitory shock in logs (σ_θ) ≥ 0.
+    sigma_perm : float
+        Std. dev. of permanent shock in logs (σ_ψ) ≥ 0.
+    unemployment_prob : float
+        Probability p of unemployment (point mass at θ_low). Must be in [0, 1).
+    theta_low : float
+        Transitory income when unemployed θ_low, normalized. Must lie in [0, 1].
+    """
+    gamma: float = 2.0
+    beta: float = 0.95
+    r: float = 0.02
+    g: float = 0.01
+    sigma_tran: float = 0.1
+    sigma_perm: float = 0.1
+    unemployment_prob: float = 0.005
+    theta_low: float = 0.3
+
+    # -------- Validation --------
+    def __post_init__(self):
+        if not (self.gamma > 0):
+            raise ValueError("gamma (σ) must be > 0")
+        if not (0 < self.beta < 1):
+            raise ValueError("beta (β) must be in (0, 1)")
+        if not (self.r > -1.0):
+            raise ValueError("r must be > -1 so that R = 1 + r > 0")
+        if not (self.g > -1.0):
+            raise ValueError("g must be > -1 so that G = 1 + g > 0")
+        if not (self.sigma_tran >= 0):
+            raise ValueError("sigma_tran (transitory log-std) must be ≥ 0")
+        if not (self.sigma_perm >= 0):
+            raise ValueError("sigma_perm (permanent log-std) must be ≥ 0")
+        if not (0 <= self.unemployment_prob < 1):
+            raise ValueError("unemployment_prob must be in [0, 1)")
+        if not (0 <= self.theta_low <= 1):
+            raise ValueError("theta_low must lie in [0, 1]")
+

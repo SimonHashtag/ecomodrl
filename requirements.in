@@ -1,13 +1,8 @@
 gymnasium
-gymnasium[mujoco]
 matplotlib
 numpy
-pre-commit
 tensorboard
 torch
-tyro
 stable_baselines3
-ray[tune, data]
 ConfigSpace
 dehb
-rliable
