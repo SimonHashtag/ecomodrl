@@ -1,5 +1,3 @@
-from typing import Union
-
 import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.optimize import minimize
@@ -10,228 +8,281 @@ from scipy.optimize import minimize
 class PlanningProblem():
     def __init__(
         self, 
-        σ:float=2,      # Coefficient of relative risk aversion
-        β:float=0.95,   # Discount factor
-        δ:float=0.02,   # Depreciation rate on capital
-        α:float=0.33,   # Return to capital per capita
-        A:int=1):       # Technology
+        sigma: float = 2,     # Coefficient of relative risk aversion
+        beta: float = 0.95,   # Discount factor
+        delta: float = 0.02,  # Depreciation rate on capital
+        alpha: float = 0.33,  # Return to capital per capita
+        A: int = 1            # Technology
+    ):
+        self.sigma, self.beta = sigma, beta                 # Preferences
+        self.delta, self.alpha, self.A = delta, alpha, A    # Production
 
-        self.σ, self.β = σ, β
-        self.δ, self.α, self.A = δ, α, A
+    # ------------------------------------------------------------------
+    # Model primitives (preferences & technology)
+    # ------------------------------------------------------------------
 
     def u(self, c):
-        '''
-        Utility function
-        '''
-        σ = self.σ
-
-        return c ** (1 - σ) / (1 - σ) if σ!= 1 else np.log(c)
+        """CRRA utility function"""
+        sigma = self.sigma
+        return c ** (1 - sigma) / (1 - sigma) if sigma != 1 else np.log(c)
 
     def u_prime(self, c):
-        'Derivative of utility'
-        σ = self.σ
-
-        return c ** (-σ)
+        """Derivative of utility"""
+        sigma = self.sigma
+        return c ** (-sigma)
 
     def u_prime_inv(self, c):
-        'Inverse of derivative of utility'
-        σ = self.σ
-
-        return c ** (-1 / σ)
+        """Inverse of derivative of utility"""
+        sigma = self.sigma
+        return c ** (-1 / sigma)
 
     def f(self, k):
-        'Production function'
-        α, A = self.α, self.A
-
-        return A * k ** α
+        """Production function"""
+        alpha, A = self.alpha, self.A
+        return A * k ** alpha
 
     def f_prime(self, k):
-        'Derivative of production function'
-        α, A = self.α, self.A
+        """Derivative of production function"""
+        alpha, A = self.alpha, self.A
+        return alpha * A * k ** (alpha - 1)
 
-        return α * A * k ** (α - 1)
+    def f_prime_inv(self, mpk):
+        """Inverse of f'(k)=alpha*A*k^(alpha-1). Returns k given mpk>0."""
+        alpha, A = self.alpha, self.A
+        return (mpk / (alpha * A)) ** (1.0 / (alpha - 1.0))
 
-    def f_prime_inv(self, k):
-        'Inverse of derivative of production function'
-        α, A = self.α, self.A
 
-        return (k / (A * α)) ** (1 / (α - 1))
-    
+    # ------------------------------------------------------------------
+    # State transitions / resource accounting
+    # ------------------------------------------------------------------
+
     def cash_on_hand(self, k):
-        ''''
-        Given the current capital Kt, computes Kt+1 by state transition law
-        assuming no consumption (for upper bound of consumption)
-        '''
-        δ = self.δ
-        f = self.f
+        """Compute current cash-on-hand (available resources) given capital stock k_t"""
+        f, delta = self.f, self.delta
+        return f(k) + (1 - delta) * k
 
-        k_next = f(k) + (1 - δ) * k
-
-        return k_next
-        
     def next_k(self, k, c):
-        ''''
-        Given the current capital Kt and an arbitrary feasible
-        consumption choice Ct, computes Kt+1 by state transition law.
-        '''
-        k_next = self.f(k) + (1 - self.δ) * k - c
-        
-        return k_next
+        """Compute next-period capital stock k_{t+1} given current capital k_t and feasible consumption c_t"""
+        f, delta = self.f, self.delta
+        return f(k) + (1 - delta) * k - c
 
     def next_k_c(self, k, c):
-        ''''
-        Given the current capital Kt and an arbitrary feasible
-        consumption choice Ct, computes Kt+1 by state transition law
-        and optimal Ct+1 by Euler equation.
-        '''
-        β, δ = self.β, self.δ
+        """Compute (k_{t+1}, c_{t+1}) given current capital k_t and feasible consumption c_t using the Euler equation"""
+        beta, delta = self.beta, self.delta
         u_prime, u_prime_inv = self.u_prime, self.u_prime_inv
         f_prime = self.f_prime
-
         k_next = self.next_k(k, c)
-        c_next = u_prime_inv(u_prime(c) / (β * (f_prime(k_next) + (1 - δ))))
-
+        c_next = u_prime_inv(u_prime(c) / (beta * (f_prime(k_next) + (1 - delta))))
         return k_next, c_next
     
-    def bellman(self, c, k, value):
-        'Bellman equation for c = consumption share'
-        c = c * self.cash_on_hand(k)
-        new_k = self.next_k(k, c)
-        if new_k<0:
-            return np.inf
-        else:
-            return -(self.u(c) + self.β * value(new_k))
+    def share_to_total(self, a, m):
+        """Map consumption share a(k) to total consumption c(k) using resources m(k)."""
+        return a * m
     
-    def sq_euler_error(self, c, k, policy):
-        '''
-        Given current consumption and capital, computes the Euler equation error
-        '''
-        β, δ = self.β, self.δ
-        u_prime = self.u_prime
-        f_prime = self.f_prime
+    def total_to_share(self, c, m):
+        """Map total consumption c(k) to consumption share a(k) using resources m(k)."""
+        return c / m
 
+    # ------------------------------------------------------------------
+    # Bellman functionality
+    # ------------------------------------------------------------------
+
+    def bellman(self, a, k, value):
+        """Bellman equation: evaluate value function for consumption share a_t given capital k_t"""
+        cash_on_hand, next_k, share_to_total = self.cash_on_hand, self.next_k, self.share_to_total
+        u, beta = self.u, self.beta
+        c = share_to_total(a, cash_on_hand(k))
+        k_next = next_k(k, c)
+        return u(c) + beta * value(k_next)
+
+    # ------------------------------------------------------------------
+    # Euler functionality
+    # ------------------------------------------------------------------
+
+    def _euler_residual(self, c_t, c_next, k_next):
+        """Core Euler residual. Works with scalars or numpy arrays."""
+        beta, sigma, delta = self.beta, self.sigma, self.delta
+        f_prime = self.f_prime
+        return beta * (c_t / c_next) ** sigma * (f_prime(k_next) + (1 - delta)) - 1.0
+
+    def euler_error(self, c, k, policy):
+        """Euler equation error for given consumption c_t and capital k_t, using a policy for c_{t+1}."""
         k_next = self.next_k(k, c)
-        if k_next < 0:
-            return np.inf
         c_next = policy(k_next)
+        return self._euler_residual(c, c_next, k_next)
 
-        return (β * u_prime(c_next/c) * (f_prime(k_next) + (1 - δ)) - 1)**2
-    
-    def euler_egm(self, c_next, k_next):
-        β, δ = self.β, self.δ
-        u_prime = self.u_prime
-        f_prime = self.f_prime
-        u_prime_inv = self.u_prime_inv
-        
-        return u_prime_inv(β*u_prime(c_next)*(f_prime(k_next)+(1-δ)))
-    
+    def sq_euler_error(self, c, k, policy):
+        """Squared Euler error for given consumption c_t and capital k_t."""
+        return self.euler_error(c, k, policy) ** 2
+
     def calculate_euler_errors(self, c_path, k_path):
-        'Calculate Euler equation errors given paths of consumption and capital'
-        euler_errors = self.β * (c_path[:-1]/c_path[1:])**(self.σ) * (self.f_prime(k_path[1:-1]) + (1 - self.δ)) - 1
-        
-        return euler_errors
-    
-    #-------------------------------------------------------------------
+        """Euler equation errors along given consumption and capital paths."""
+        c, c_next = c_path[:-1], c_path[1:]
+        k_next = k_path[1:]
+        return self._euler_residual(c, c_next, k_next)
+
+    def euler_egm(self, c_next, k_next):
+        """Compute current optimal consumption c_t from Euler equation given c_{t+1} and k_{t+1}."""
+        beta, delta = self.beta, self.delta
+        u_prime, u_prime_inv = self.u_prime, self.u_prime_inv
+        f_prime = self.f_prime
+        return u_prime_inv(beta * u_prime(c_next) * (f_prime(k_next) + (1 - delta)))
+
+
+    # ------------------------------------------------------------------
     # Value function iteration
-    #-------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
-    def vfi(self, grid_points: int = 1000, lower_limit: float = 0.1, upper_limit: float= 15., tol: float = 1e-5, conv: float = 0.1, verbose: bool=True):
-        """ 
-        Computes optimal consumption policy by value function iteration
-        grid_points: number of grid points
-        lower_limit: lower limit of grid
-        upper_limit: upper limit of grid
-        tol: tolerance level for minimization
-        conv: convergence criterion
-        verbose: if True, prints convergence information
+    def VFI(
+        self,
+        grid_points: int = 1000,
+        lower_limit: float = 0.1,
+        upper_limit: float = 15.0,
+        tol: float = 1e-5,
+        conv: float = 1e-5,
+        verbose: bool = False
+    ) -> CubicSpline:
         
-        return: grid, value function and optimal consumption policy as CubicSpline objects"""
+        'Compute optimal consumption policy by value function iteration (returns optimal consumption-share policy)'
+        
+        # --- Setup -------------------------------------------------------
+        # Small positive floor to keep the share in (0,1) and avoid infeasible points
+        MIN_SHARE = 1e-6
+        # Capital grid k_t over which we solve the fixed point
         grid = np.linspace(lower_limit, upper_limit, grid_points)
-        V = CubicSpline(grid, np.zeros(grid_points), bc_type="natural", extrapolate=True)
-        Vn = np.zeros(grid_points)
-        copt = np.linspace(0.001, 1, grid_points)
-        
+        # Initial value function V_0(k) = 0
+        V = CubicSpline(grid, np.zeros(grid_points), bc_type='natural', extrapolate=True)
+        # Working array for the pointwise-updated shares a_t(k); seed with constant 20%
+        a_new = 0.2 * np.ones_like(grid)
+        # Empty buffer for updated value function
+        V_new = np.empty(grid_points)
+
+        # --- Iteration ---------------------------------------------------
+        it = 0
         while True:
-            for i in range(0, grid_points):
-                obj = minimize(
-                    self.bellman,
-                    x0 = copt[i],
-                    bounds=((0.001, 1.0),),
-                    args=(
-                        grid[i],
-                        V,
-                    ),
-                    method="Powell",
+            it += 1
+            a_old = a_new.copy() # Keep previous iterate to measure policy movement (sup norm)
+            V_old = V(grid) # Previous value function evaluation
+
+            # Pointwise policy improvement: minimize Bellman residual at each grid node
+            for i, k in enumerate(grid):
+                # Feasible bracket for consumption share a ∈ [eps, 1-eps]
+                lower, upper = MIN_SHARE, 1.0 - MIN_SHARE
+
+                res = minimize(
+                    -self.bellman, # Objective: negative Bellman value at (k, a)
+                    x0=np.clip(a_new[i], lower, upper), # Robust starting value
+                    bounds=((lower, upper),), # Enforce feasibility directly in the optimizer
+                    args=(k, V), # k is the state; V provides the continuation value
+                    method='Powell',
                     tol=tol,
                 )
-                Vn[i] = -obj.fun
-                copt[i] = obj.x[0]
-                if abs(obj.x - 0.0001) < 0.0001 or abs(obj.x - grid[i]) < 0.00001:
-                    print(f"Corner point solution! State: {grid[i]}; Action: {obj.x[0]}")
-            if max(abs(Vn - V(grid))) < conv:
-                return grid, V, CubicSpline(grid, copt, bc_type="natural", extrapolate=True)
+
+                # Updated pointwise optimum a*(k)
+                a_new[i] = float(res.x[0])
+                # Updated value function value at grid point
+                V_new[i] = -float(res.fun)
+
+            # --- Convergence check ---------------------------------------
+            delta_policy = np.max(np.abs(a_old - a_new))  # ∥a^{new} - a^{old}∥
             if verbose:
+                delta_value = np.max(np.abs(V_old - V_new))  # max-norm difference of value functions
                 print(
-                    "Convergence: {}.".format(max(abs(Vn - V(grid)))),
-                    "Convergence criterion: {}.".format(conv),
+                    f'Iter {it:4d} | Δa = {delta_policy:.3e} | '
+                    f'ΔV = {delta_value:.3e} | target = {conv:.3e}'
                 )
-            V = CubicSpline(grid, Vn, bc_type="natural", extrapolate=True)
 
-    #-------------------------------------------------------------------
-    # Time iterations
-    #-------------------------------------------------------------------
+            if delta_policy < conv:
+                # Converged: return the share policy spline a(k)
+                return CubicSpline(grid, a_new, bc_type='natural', extrapolate=True)
 
-    def time_iterations(self, grid_points:int = 1000, lower_limit:float=0.1, upper_limit:float=15., tol:float=1e-5, conv:float=0.1, verbose:bool=True) -> Union[np.ndarray, CubicSpline]:
-        """ 
-        Computes optimal consumption policy by time iterations
+            # Policy iteration step: update continuation value function for next sweep
+            V = CubicSpline(grid, V_new, bc_type='natural', extrapolate=True)
+
+
+
+    # ------------------------------------------------------------------
+    # Time iteration
+    # ------------------------------------------------------------------
+
+    def TI(
+        self,
+        grid_points: int = 1000,
+        lower_limit: float = 0.1,
+        upper_limit: float = 15.0,
+        tol: float = 1e-5,
+        conv: float = 1e-5,
+        verbose: bool = False
+    ) -> CubicSpline:
         
-        grid_points: number of grid points
-        lower_limit: lower limit of grid
-        upper_limit: upper limit of grid
-        tol: tolerance level for minimization
-        conv: convergence criterion
-        verbose: if True, prints convergence information
+        'Compute optimal consumption policy by time iteration (returns optimal consumption-share policy)'
         
-        return: grid and optimal consumption policy as CubicSpline object
-        """
+        # --- Setup -------------------------------------------------------
+        # Small positive floor to avoid numerical issues
+        MIN_CONS = 1e-6
+        # Capital grid k_t over which we solve the fixed point
         grid = np.linspace(lower_limit, upper_limit, grid_points)
-        sq_euler = np.zeros(grid_points)
-        copt = CubicSpline(grid, grid*0.2, bc_type="natural", extrapolate=True)
-        cs = copt(grid)
-        
+        # Resources m_t(k) = f(k) + (1-delta)k available before choosing c_t
+        m = self.cash_on_hand(grid)
+        # Initial policy guess: consume a constant 20% of available resources
+        c_policy = CubicSpline(grid, 0.2 * m, bc_type='natural', extrapolate=True) 
+        # Working array for the pointwise-updated consumption levels c_t(k)
+        c_new = c_policy(grid)
+        # Empty array to record squared Euler errors for diagnostics
+        sq_err = np.empty(grid_points)
+
+        # --- Iteration ---------------------------------------------------
+        it = 0
         while True:
-            for i in range(0, grid_points):
-                obj = minimize(
-                    self.sq_euler_error,
-                    x0 = cs[i],
-                    bounds=((0.001, self.cash_on_hand(grid[i])-0.001),),
-                    args=(
-                        grid[i],
-                        copt,
-                    ),
-                    method="Powell",
+            it += 1
+            c_old = c_new.copy() # Keep previous iterate to measure policy movement (sup norm)
+
+            # Pointwise policy improvement: minimize squared Euler error at each grid node
+            for i, k in enumerate(grid):
+                upper = max(MIN_CONS, m[i] - MIN_CONS)  # Feasible bracket: c ∈ [ε, m(k)-ε] ensures k_{t+1} ≥ 0 and c>0
+
+                res = minimize(
+                    self.sq_euler_error, # Objective: squared Euler residual at (k, c), given current policy as continuation
+                    x0=np.clip(c_new[i], MIN_CONS, upper), # Robust starting value: clamp previous iterate to the feasible bracket
+                    bounds=((MIN_CONS, upper),), # Enforce feasibility directly in the optimizer
+                    args=(k, c_policy), # k is the state; c_policy provides c_{t+1} via policy(k_{t+1})
+                    method='Powell',
                     tol=tol,
                 )
-                sq_euler[i] = obj.fun
-                cs[i] = obj.x[0]
-                if abs(obj.x - 0.0001) < 0.0001 or abs(obj.x - grid[i]) < 0.00001:
-                    print(f"Corner point solution! State: {grid[i]}; Action: {obj.x[0]}")
+
+                # Updated pointwise optimum c*(k)
+                c_new[i] = float(res.x[0])
+                # Store residual for logging (max |Euler| = sqrt(max sq_err))              
+                sq_err[i] = float(res.fun)
+
+            # --- Convergence check -----------
+            a_old = self.total_to_share(c_old, m) # previous share policy
+            a_new = self.total_to_share(c_new, m) # updated share policy
+            delta_policy = np.max(np.abs(a_old - a_new)) # ∥a^{new} - a^{old}∥
+
             if verbose:
+                abs_euler = np.sqrt(np.max(sq_err)) # worst-case absolute Euler error
                 print(
-                    "Convergence: {}.".format(max(abs(copt(grid)-cs))),
-                    "Absolute Euler Error: {}.".format(max(np.sqrt(sq_euler))),
-                    "Convergence criterion: {}.".format(conv),
+                    f'Iter {it:4d} | deltaa = {delta_policy:.3e} | '
+                    f'max |Euler| = {abs_euler:.3e} | target = {conv:.3e}'
                 )
-            if max(abs(copt(grid)-cs)) < conv:
-                return grid, CubicSpline(grid, cs/self.cash_on_hand(grid), bc_type="natural", extrapolate=True)
-            copt = CubicSpline(grid, cs, bc_type="natural", extrapolate=True)
+
+            if delta_policy < conv:
+                # Converged: return the share policy spline a(k)
+                return CubicSpline(grid, a_new, bc_type='natural', extrapolate=True)
+
+            # Policy iteration step: use the updated total consumption policy for continuation
+            c_policy = CubicSpline(grid, c_new, bc_type='natural', extrapolate=True)
+
+
+
         
 
     #-------------------------------------------------------------------
     # EGM
     #-------------------------------------------------------------------
 
-    def egm(self, grid_points:int = 1000, lower_limit:float=0.1, upper_limit:float=15., conv:float=0.1, verbose:bool=True):
+    def EGM(self, grid_points:int = 1000, lower_limit:float=0.1, upper_limit:float=15., conv:float=0.1, verbose:bool=True):
         """
         Computes optimal consumption policy by endogenous grid method (EGM)
         
@@ -281,7 +332,7 @@ class PlanningProblem():
         """
         next_k, cash_on_hand = self.next_k, self.cash_on_hand
         u = self.u
-        β = self.β
+        beta = self.beta
         
         state = np.empty(periods+1)
         state[0] = start_value
@@ -293,7 +344,7 @@ class PlanningProblem():
             cons[t] = cash_on_hand(state[t])*action
             state[t+1] = next_k(state[t], cons[t])
             U += power * u(cons[t])
-            power *= β
+            power *= beta
         return cons, state, U
     
     def get_vfrom_copt(self, grid, copt, conv):
@@ -311,7 +362,7 @@ class PlanningProblem():
         V = CubicSpline(grid, Vn, bc_type="natural", extrapolate=True)
         while True:
             for i in range(len(grid)):
-                Vn[i] = -bellman(copt(grid[i]), grid[i], V)
+                Vn[i] = bellman(copt(grid[i]), grid[i], V)
             if max(abs(Vn - V(grid))) < conv:
                 break
             V = CubicSpline(grid, Vn, bc_type="natural", extrapolate=True)
