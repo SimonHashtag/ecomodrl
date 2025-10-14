@@ -9,7 +9,7 @@ if __name__ == "__main__":
 
     # Model and solvers
     model   = PlanningProblem()
-    solvers = PlanningSolvers(grid_points=100,
+    solvers = PlanningSolvers(grid_points=1000,
                               lower_limit=0.1,
                               upper_limit=15.0,
                               tol=1e-5,         # optimization tolerance
@@ -62,8 +62,9 @@ if __name__ == "__main__":
     print(f"EGM: {U_egm:.6f}")
 
     # Consumption policies on the same grid for reference
-    m_vals = model.cash_on_hand(grid)
-    c_vfi, c_ti, c_egm = (a * m_vals for a in (a_vfi, a_ti, a_egm))
+    c_vfi, c_ti, c_egm = (
+        model.consumption_from_share(a, grid) for a in (a_vfi, a_ti, a_egm)
+    )
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
 

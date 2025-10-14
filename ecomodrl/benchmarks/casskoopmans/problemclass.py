@@ -227,17 +227,20 @@ class PlanningSolvers:
             for i, k in enumerate(grid):
                 lower, upper = self.min_share, 1.0 - self.min_share
 
-                def objective(a_candidate):
-                    # Negative of Bellman for minimization
-                    return -model.bellman(a_candidate, k, V)
+                # Negative of Bellman for minimization
+                objective = lambda a, k=k, V=V: -model.bellman(a, k, V)
 
                 a_star, neg_val = optimize_1d(objective, lower, upper, tol=self.tol)
                 a_new[i] = a_star
                 V_grid[i] = -neg_val
 
+            # Interpolate consumption share policy
+            a_policy = make_spline(grid, a_new)
+
             # --- Convergence check ---------------------------------------
+            a_new = a_policy(grid)
             if np.max(np.abs(a_old - a_new)) < self.conv:
-                return make_spline(grid, a_new)
+                return a_policy
 
             # Value update
             V = make_spline(grid, V_grid)
@@ -279,12 +282,14 @@ class PlanningSolvers:
 
                 a_new[i], sq_err[i] = optimize_1d(objective, lower, upper, tol=self.tol)
 
-            # --- Convergence check ---------------------------------------
-            if np.max(np.abs(a_old - a_new)) < self.conv:
-                return make_spline(grid, a_new)
-
-            # Policy iteration step: update continuation share policy for next sweep
+            # Interpolate consumption share policy
             a_policy = make_spline(grid, a_new)
+
+            # --- Convergence check ---------------------------------------
+            a_new = a_policy(grid)
+            if np.max(np.abs(a_old - a_new)) < self.conv:
+                return a_policy
+
 
 
     # ------------------------------------------------------------------
@@ -301,35 +306,34 @@ class PlanningSolvers:
         k_of_m = make_spline(m_grid, grid)
 
         # policy as spline; arrays as *_new / *_old
-        a_spline = make_spline(grid, 0.2 * np.ones_like(grid))
-        a_new = a_spline(grid)
+        a_policy = make_spline(grid, 0.2 * np.ones_like(grid))
+        a_new = a_policy(grid)
 
-        # let both grids be the same
-        k_next_grid = grid.copy()
+        k_next = grid.copy()
         it = 0
         while True:
             it += 1
             a_old = a_new.copy()
 
             # 1) continuation at k'
-            a_next = a_spline(k_next_grid)
-            m_next = model.cash_on_hand(k_next_grid)
+            a_next = a_policy(k_next)
+            m_next = model.cash_on_hand(k_next)
             c_next = a_next * m_next
 
             # 2) current c from Euler at k'
-            c_t = model.euler_egm(c_next, k_next_grid) # c_t(k')
+            c_t = model.euler_egm(c_next, k_next) # c_t(k')
 
             # 3) map back to current k via inverse m(k)
-            m_t = c_t + k_next_grid # budget: m_t = c_t + k_{t+1}
-            k_t = k_of_m(m_t)       # invert to current k_t
+            m_t = c_t + k_next # budget: m_t = c_t + k_{t+1}
+            k_t = k_of_m(m_t)  # invert to current k_t
 
-            # 4) current share a_t = c_t / m_t (clipped)
+            # 4) current share a_t = c_t / m_t
             a_t = c_t / m_t
 
-            # 5) interpolate (k_t, a_t)
-            a_spline = make_spline(k_t, np.clip(a_t, self.min_share, 1 - self.min_share))
+            # 5) # Interpolate consumption share policy
+            a_policy = make_spline(k_t, a_t)
 
             # --- Convergence check ---------------------------------------
-            a_new = a_spline(grid)
+            a_new = a_policy(grid)
             if np.max(np.abs(a_old - a_new)) < self.conv:
-                return a_spline
+                return a_policy
