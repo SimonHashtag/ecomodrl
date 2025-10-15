@@ -8,8 +8,8 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningSolvers, make_
 if __name__ == "__main__":
 
     # Model and solvers
-    model   = PlanningProblem()
-    solvers = PlanningSolvers(grid_points=1000,
+    model   = PlanningProblem(delta=1.0, sigma=1.0)
+    solvers = PlanningSolvers(grid_points=100,
                               lower_limit=0.1,
                               upper_limit=15.0,
                               tol=1e-5,         # optimization tolerance
