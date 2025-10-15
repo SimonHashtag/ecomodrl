@@ -8,7 +8,7 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningSolvers, make_
 if __name__ == "__main__":
 
     # Model and solvers
-    model   = PlanningProblem() # delta=1.0, sigma=1.0 for closed-form sanity check
+    model   = PlanningProblem() # delta=1.0, gamma=1.0 for closed-form sanity check
     solvers = PlanningSolvers(grid_points=1000,
                               lower_limit=0.1,
                               upper_limit=15.0,

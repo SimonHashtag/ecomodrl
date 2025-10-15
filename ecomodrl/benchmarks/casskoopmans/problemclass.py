@@ -28,13 +28,13 @@ def optimize_1d(obj, lower, upper, tol=1e-5):
 class PlanningProblem():
     def __init__(
         self, 
-        sigma: float = 2,     # Coefficient of relative risk aversion
+        gamma: float = 2,     # Coefficient of relative risk aversion
         beta: float = 0.95,   # Discount factor
         delta: float = 0.02,  # Depreciation rate on capital
         alpha: float = 0.33,  # Return to capital per capita
         A: int = 1            # Technology
     ):
-        self.sigma, self.beta = sigma, beta                 # Preferences
+        self.gamma, self.beta = gamma, beta                 # Preferences
         self.delta, self.alpha, self.A = delta, alpha, A    # Production
 
 
@@ -44,15 +44,15 @@ class PlanningProblem():
 
     def u(self, c):
         """CRRA utility function"""
-        return c ** (1 - self.sigma) / (1 - self.sigma) if self.sigma != 1 else np.log(c)
+        return c ** (1 - self.gamma) / (1 - self.gamma) if self.gamma != 1 else np.log(c)
 
     def u_prime(self, c):
         """Derivative of utility"""
-        return c ** (-self.sigma)
+        return c ** (-self.gamma)
 
     def u_prime_inv(self, c):
         """Inverse of derivative of utility"""
-        return c ** (-1 / self.sigma)
+        return c ** (-1 / self.gamma)
 
     def f(self, k):
         """Production function"""
@@ -97,7 +97,7 @@ class PlanningProblem():
 
     def euler_residual(self, c_t, c_next, k_next):
         """Euler residual."""
-        return self.beta * (c_t / c_next) ** self.sigma * (self.f_prime(k_next) + (1 - self.delta)) - 1.0
+        return self.beta * (c_t / c_next) ** self.gamma * (self.f_prime(k_next) + (1 - self.delta)) - 1.0
 
     def c_from_euler(self, c_next, k_next):
         """Compute current optimal consumption c_t from Euler equation given c_{t+1} and k_{t+1}."""
