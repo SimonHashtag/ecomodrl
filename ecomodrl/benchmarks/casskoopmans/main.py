@@ -1,18 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from time import time
-
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningSolvers, make_grid
+from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, PlanningSolvers
 
 if __name__ == "__main__":
 
     # Model and solvers
-    model   = PlanningProblem() # delta=1.0, gamma=1.0 for closed-form sanity check
-    solvers = PlanningSolvers(grid_points=1000,
-                              lower_limit=0.1,
-                              upper_limit=15.0,
-                              tol=1e-5,         # optimization tolerance
+    model   = PlanningProblem()                 # delta=1.0, gamma=1.0 for closed-form sanity check
+    solvers = PlanningSolvers(grid_points=1000, # number of grid points for state space
+                              tol=1e-5,         # optimization tolerance (root finding in time iteration)
                               conv=1e-5)        # convergence tolerance (consumption share policy)
 
     # Solve with timing
@@ -20,18 +16,20 @@ if __name__ == "__main__":
         t0 = time()
         policy = solver(model)
         t1 = time()
-        print(f'{method_name} converged in {t1 - t0:.3f} seconds.')
+        print(f'{method_name} converged in {t1 - t0:.5f} seconds.')
         return policy
 
     # Policies as spline objects
     policy_ti  = timed_solve('TI',  solvers.TI,  model)
     policy_egm = timed_solve('EGM', solvers.EGM, model)
 
-    # Evaluate policies on their grid
-    grid  = make_grid(solvers.grid_points, solvers.lower_limit, solvers.upper_limit)
+    # ------------------------------------------------------------------
+    # Plot 1: Optimal consumption share policies a(k)
+    # ------------------------------------------------------------------
+
+    grid = model.make_grid(points=solvers.grid_points)
     a_ti, a_egm = (p(grid) for p in (policy_ti, policy_egm))
 
-    # Plot
     plt.figure()
     plt.plot(grid, a_ti,  linewidth=5, label="TI policy a(k)")
     plt.plot(grid, a_egm, linewidth=2, label="EGM policy a(k)")
@@ -42,19 +40,26 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    # ------------------------------------------------------------------
-    # Euler equation errors & return comparison (histograms)
-    # ------------------------------------------------------------------
-    euler_errors_ti,  _, U_ti   = model.get_euler_errors(grid, policy_ti,  episodes=100)
-    euler_errors_egm, _, U_egm  = model.get_euler_errors(grid, policy_egm, episodes=100)
+    euler_errors_ti,  states_ti,  U_ti   = model.get_euler_errors(grid, policy_ti,  episodes=100)
+    euler_errors_egm, states_egm, U_egm  = model.get_euler_errors(grid, policy_egm, episodes=100)
 
-    print("Max absolute Euler equation error:")
-    print(f"TI:  {np.max(np.abs(euler_errors_ti)):.6f}")
-    print(f"EGM: {np.max(np.abs(euler_errors_egm)):.6f}")
+    # find precision up to first differing decimal between two floats
+    prec = lambda a,b: next((i - f"{a:.20f}".index('.') for i,(x,y) in enumerate(zip(f"{a:.20f}", f"{b:.20f}")) if x!=y), 0)
 
-    print("\nAverage discounted episode return:")
-    print(f"TI:  {U_ti:.6f}")
-    print(f"EGM: {U_egm:.6f}")
+    print("Max absolute Euler equation error")
+    ti_err, egm_err = np.max(np.abs(euler_errors_ti)), np.max(np.abs(euler_errors_egm))
+    p = prec(ti_err, egm_err)
+    print(f"TI:  {ti_err:.{p}f}")
+    print(f"EGM: {egm_err:.{p}f}")
+
+    print("\nAverage discounted episode return")
+    p = prec(U_ti, U_egm)
+    print(f"TI:  {U_ti:.{p}f}")
+    print(f"EGM: {U_egm:.{p}f}")
+
+    # ------------------------------------------------------------------
+    # Plot 2: Consumption policies and Euler error histograms
+    # ------------------------------------------------------------------
 
     # Consumption policies on the same grid for reference
     c_ti, c_egm = (model.consumption_from_share(a, grid) for a in (a_ti, a_egm))
@@ -69,7 +74,7 @@ if __name__ == "__main__":
     ax[0].set_xlabel('Capital')
     ax[0].set_ylabel('Consumption')
 
-    # Right: histograms of log10 absolute Euler errors, restricted to the 95% CI
+    # Right: histograms of log10 absolute Euler errors, restricted to the CI
     def log_errors_ci(errors, width=0.95):
         logs = np.log10(np.abs(errors))
         alpha = (1 - width) / 2

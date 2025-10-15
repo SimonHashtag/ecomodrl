@@ -1,25 +1,6 @@
 import numpy as np
 from scipy.interpolate import PchipInterpolator
-from scipy.optimize import minimize_scalar
-
-
-#-------------------------------------------------------------------
-# Shared numerics (grid / spline / optimizer)
-#-------------------------------------------------------------------
-
-def make_grid(grid_points: int, lower_limit: float, upper_limit: float):
-    """Unified grid setup."""
-    return np.linspace(lower_limit, upper_limit, grid_points)
-
-def make_spline(grid, y, extrapolate=True):
-    """Wrap spline construction (PCHIP: monotone, shape-preserving)."""
-    return PchipInterpolator(grid, y, extrapolate=extrapolate)
-
-def optimize_1d(obj, lower, upper, tol=1e-5):
-    """Lightweight bounded 1-D optimizer. Returns (x_star, obj(x_star))."""
-    res = minimize_scalar(obj, bounds=(lower, upper), method='bounded', options={'xatol': tol})
-    return res.x, res.fun
-
+from scipy.optimize import brentq
 
 #-------------------------------------------------------------------
 # Cass-Koopmans planning problem (preferences, technology, accounting, Euler helpers)
@@ -36,6 +17,25 @@ class PlanningProblem():
     ):
         self.gamma, self.beta = gamma, beta                 # Preferences
         self.delta, self.alpha, self.A = delta, alpha, A    # Production
+
+
+    # ------------------------------------------------------------------
+    # Steady state, grid setup, and spline construction
+    # ------------------------------------------------------------------
+
+    @property
+    def k_ss(self) -> float:
+        numerator = self.alpha * self.A
+        denominator = 1.0 / self.beta - (1.0 - self.delta)
+        return (numerator / denominator) ** (1.0 / (1.0 - self.alpha))
+
+    def make_grid(self, points: int = 1000, span=(0.2, 5.0)):
+        k_min, k_max = (s * self.k_ss for s in span)
+        return np.linspace(k_min, k_max, points)
+
+    def make_spline(self, grid, y, extrapolate=True):
+        """PCHIP spline (monotone, shape-preserving)."""
+        return PchipInterpolator(grid, y, extrapolate=extrapolate)
 
 
     # ------------------------------------------------------------------
@@ -121,7 +121,6 @@ class PlanningProblem():
             power = 1.0
 
             for t in range(episodes):
-                # a_t = policy(k_t), c_t = a_t * m(k_t)
                 a_t = policy(state_path[t])
                 cons_path[t] = self.cash_on_hand(state_path[t]) * a_t
                 state_path[t+1] = self.next_k(state_path[t], cons_path[t])
@@ -130,7 +129,7 @@ class PlanningProblem():
 
             states[i, :] = state_path
             c, c_next = cons_path[:-1], cons_path[1:]
-            k_next = state_path[1:-1] # state path is longer because k_0 exists
+            k_next = state_path[1:-1]
             euler_errors[i, :] = self.euler_residual(c, c_next, k_next)
             avg_return += U / grid_len
 
@@ -138,29 +137,21 @@ class PlanningProblem():
 
 
     #-------------------------------------------------------------------
-    # Policy evaluation: value function from share policy
+    # Policy evaluation: value function from policy
     #-------------------------------------------------------------------
 
-    def V_from_a(self, grid, a_policy, conv):
-        """
-        Computes value function on grid by iterating the Bellman equation under a fixed share policy.
-
-        grid: grid on which value function is computed
-        a_policy: consumption-share policy a(k), callable (e.g. PchipInterpolator)
-        conv: convergence criterion (max-norm)
-
-        return: PchipInterpolator V(k)
-        """
+    def V_from_a(self, grid, a_policy, conv) -> PchipInterpolator:
+        """Computes value function on grid by iterating the Bellman equation under a fixed policy."""
         Vn = np.zeros(len(grid))
-        V = make_spline(grid, Vn)
+        V = self.make_spline(grid, Vn)
         while True:
             for i in range(len(grid)):
                 a_i = a_policy(grid[i])
                 Vn[i] = self.bellman(a_i, grid[i], V)
             if np.max(np.abs(Vn - V(grid))) < conv:
                 break
-            V = make_spline(grid, Vn)
-        return make_spline(grid, Vn)
+            V = self.make_spline(grid, Vn)
+        return self.make_spline(grid, Vn)
 
 
 #-------------------------------------------------------------------
@@ -171,34 +162,32 @@ class PlanningSolvers:
     def __init__(
         self,
         grid_points: int = 1000,    # number of capital grid points
-        lower_limit: float = 0.1,   # k_min
-        upper_limit: float = 15.0,  # k_max
         tol: float = 1e-5,          # optimization tolerance
         conv: float = 1e-5,         # convergence tolerance (consumption share policy)
         min_share: float = 1e-6     # feasibility guard for shares
     ):
         self.grid_points = grid_points
-        self.lower_limit = lower_limit
-        self.upper_limit = upper_limit
         self.tol = tol
         self.conv = conv
         self.min_share = min_share
+
 
     # ------------------------------------------------------------------
     # Helper functions
     # ------------------------------------------------------------------
 
-    def _init_policy(self):
+    def _init_policy(self, model: PlanningProblem):
         """Initialize grid, consumption share array and spline policy."""
-        grid = make_grid(self.grid_points, self.lower_limit, self.upper_limit)
-        a_new = np.full_like(grid, 0.2) # start with 20% consumption share policy
-        a_policy = make_spline(grid, a_new)
+        grid = model.make_grid(points=self.grid_points)
+        a_new = np.full_like(grid, 0.2)
+        a_policy = model.make_spline(grid, a_new)
         return grid, a_new, a_policy
 
     def _check_convergence(self, a_old, a_policy, grid):
         """Check convergence of consumption share policy."""
         a_new = a_policy(grid)
         return np.max(np.abs(a_old - a_new)) < self.conv, a_new
+
 
     # ------------------------------------------------------------------
     # Time iteration (TI)
@@ -207,8 +196,7 @@ class PlanningSolvers:
     def TI(self, model: PlanningProblem) -> PchipInterpolator:
         """Compute optimal consumption share policy by time iteration."""
         # --- Setup -------------------------------------------------------
-        grid, a_new, a_policy = self._init_policy()
-        sq_err = np.empty(self.grid_points)
+        grid, a_new, a_policy = self._init_policy(model)
 
         # --- Iteration ---------------------------------------------------
         it = 0
@@ -216,27 +204,27 @@ class PlanningSolvers:
             it += 1
             a_old = a_new.copy()
 
-            # Pointwise policy improvement: minimize squared Euler error in share space
+            # Pointwise policy improvement: root-finding on the Euler residual
             for i, k in enumerate(grid):
 
-                def objective(a_candidate):
+                def euler_root(a_candidate):
                     c_t = model.consumption_from_share(a_candidate, k)
                     k_next = model.next_k(k, c_t)
                     a_next = a_policy(k_next)
                     c_next = model.consumption_from_share(a_next, k_next)
-                    r = model.euler_residual(c_t, c_next, k_next)
-                    return r ** 2
+                    return model.euler_residual(c_t, c_next, k_next)
 
-                a_new[i], sq_err[i] = optimize_1d(objective, 
-                                                  lower=self.min_share, upper=1.0-self.min_share, 
-                                                  tol=self.tol)
+                a_new[i] = brentq(euler_root,
+                                  self.min_share, 1.0 - self.min_share,
+                                  xtol=self.tol)
 
-            a_policy = make_spline(grid, a_new)
+            a_policy = model.make_spline(grid, a_new)
 
             # --- Convergence check ---------------------------------------
             converged, a_new = self._check_convergence(a_old, a_policy, grid)
             if converged:
                 return a_policy
+
 
     # ------------------------------------------------------------------
     # Endogenous Grid Method (EGM)
@@ -245,9 +233,9 @@ class PlanningSolvers:
     def EGM(self, model: PlanningProblem) -> PchipInterpolator:
         """Compute optimal consumption share policy by endogenous grid method."""
         # --- Setup -------------------------------------------------------
-        grid, a_new, a_policy = self._init_policy()
+        grid, a_new, a_policy = self._init_policy(model)
         m_grid = model.cash_on_hand(grid)
-        k_of_m = make_spline(m_grid, grid)
+        k_of_m = model.make_spline(m_grid, grid)
 
         k_next = grid.copy()
         it = 0
@@ -271,7 +259,7 @@ class PlanningSolvers:
 
             # 5) Interpolate consumption share policy
             sort_idx = np.argsort(k_t)
-            a_policy = make_spline(k_t[sort_idx], a_t[sort_idx])
+            a_policy = model.make_spline(k_t[sort_idx], a_t[sort_idx])
 
             # --- Convergence check ---------------------------------------
             converged, a_new = self._check_convergence(a_old, a_policy, grid)
