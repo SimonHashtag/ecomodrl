@@ -43,19 +43,14 @@ if __name__ == "__main__":
     euler_errors_ti,  states_ti,  U_ti   = model.get_euler_errors(grid, policy_ti,  episodes=100)
     euler_errors_egm, states_egm, U_egm  = model.get_euler_errors(grid, policy_egm, episodes=100)
 
-    # find precision up to first differing decimal between two floats
-    prec = lambda a,b: next((i - f"{a:.20f}".index('.') for i,(x,y) in enumerate(zip(f"{a:.20f}", f"{b:.20f}")) if x!=y), 0)
-
-    print("Max absolute Euler equation error")
     ti_err, egm_err = np.max(np.abs(euler_errors_ti)), np.max(np.abs(euler_errors_egm))
-    p = prec(ti_err, egm_err)
-    print(f"TI:  {ti_err:.{p}f}")
-    print(f"EGM: {egm_err:.{p}f}")
+    print("Max absolute Euler equation error")
+    print(f"TI:  {ti_err:.9f}")
+    print(f"EGM: {egm_err:.9f}")
 
     print("\nAverage discounted episode return")
-    p = prec(U_ti, U_egm)
-    print(f"TI:  {U_ti:.{p}f}")
-    print(f"EGM: {U_egm:.{p}f}")
+    print(f"TI:  {U_ti:.9f}")
+    print(f"EGM: {U_egm:.9f}")
 
     # ------------------------------------------------------------------
     # Plot 2: Consumption policies and Euler error histograms

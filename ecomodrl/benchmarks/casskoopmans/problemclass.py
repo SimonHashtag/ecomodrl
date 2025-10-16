@@ -33,9 +33,9 @@ class PlanningProblem():
         k_min, k_max = (s * self.k_ss for s in span)
         return np.linspace(k_min, k_max, points)
 
-    def make_spline(self, grid, y, extrapolate=True):
+    def make_spline(self, grid, y):
         """PCHIP spline (monotone, shape-preserving)."""
-        return PchipInterpolator(grid, y, extrapolate=extrapolate)
+        return PchipInterpolator(grid, y, extrapolate=True)
 
 
     # ------------------------------------------------------------------
@@ -47,11 +47,11 @@ class PlanningProblem():
         return c ** (1 - self.gamma) / (1 - self.gamma) if self.gamma != 1 else np.log(c)
 
     def u_prime(self, c):
-        """Derivative of utility"""
+        """Marginal utility of consumption"""
         return c ** (-self.gamma)
 
     def u_prime_inv(self, c):
-        """Inverse of derivative of utility"""
+        """Inverse marginal utility"""
         return c ** (-1 / self.gamma)
 
     def f(self, k):
@@ -59,7 +59,7 @@ class PlanningProblem():
         return self.A * k ** self.alpha
 
     def f_prime(self, k):
-        """Derivative of production function"""
+        """Marginal productivity of capital"""
         return self.alpha * self.A * k ** (self.alpha - 1)
 
 
@@ -72,7 +72,7 @@ class PlanningProblem():
         return self.f(k) + (1 - self.delta) * k
 
     def consumption_from_share(self, a, k):
-        """Reusable helper: c(k) from share a(k) using m(k)=f(k)+(1-δ)k."""
+        """Derive total consumption from consumption share."""
         return a * self.cash_on_hand(k)
 
     def next_k(self, k, c):
@@ -122,7 +122,7 @@ class PlanningProblem():
 
             for t in range(episodes):
                 a_t = policy(state_path[t])
-                cons_path[t] = self.cash_on_hand(state_path[t]) * a_t
+                cons_path[t] = self.consumption_from_share(a_t, state_path[t])
                 state_path[t+1] = self.next_k(state_path[t], cons_path[t])
                 U += power * self.u(cons_path[t])
                 power *= self.beta
@@ -141,17 +141,20 @@ class PlanningProblem():
     #-------------------------------------------------------------------
 
     def V_from_a(self, grid, a_policy, conv) -> PchipInterpolator:
-        """Computes value function on grid by iterating the Bellman equation under a fixed policy."""
+        """Compute value function on grid by iterating the Bellman equation under a fixed policy."""
         Vn = np.zeros(len(grid))
         V = self.make_spline(grid, Vn)
         while True:
+            # Policy evaluation step: compute Bellman operator under fixed policy
             for i in range(len(grid)):
                 a_i = a_policy(grid[i])
                 Vn[i] = self.bellman(a_i, grid[i], V)
-            if np.max(np.abs(Vn - V(grid))) < conv:
-                break
+            # Check convergence and update spline
+            err = np.max(np.abs(Vn - V(grid)))
             V = self.make_spline(grid, Vn)
-        return self.make_spline(grid, Vn)
+            if err < conv:
+                break
+        return V
 
 
 #-------------------------------------------------------------------
@@ -214,10 +217,17 @@ class PlanningSolvers:
                     c_next = model.consumption_from_share(a_next, k_next)
                     return model.euler_residual(c_t, c_next, k_next)
 
-                a_new[i] = brentq(euler_root,
-                                  self.min_share, 1.0 - self.min_share,
-                                  xtol=self.tol)
+                a_lo, a_hi = self.min_share, 1.0 - self.min_share
+                f_lo, f_hi = euler_root(a_lo), euler_root(a_hi)
 
+                if f_lo * f_hi < 0.0:
+                    # Sign change: use brentq root solver
+                    a_new[i] = brentq(euler_root, a_lo, a_hi, xtol=self.tol)
+                else:
+                    # No sign change: shift in direction with smaller residual magnitude
+                    a_new[i] = a_lo if abs(f_lo) < abs(f_hi) else a_hi
+
+            # Update policy
             a_policy = model.make_spline(grid, a_new)
 
             # --- Convergence check ---------------------------------------
