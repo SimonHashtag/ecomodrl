@@ -4,27 +4,24 @@ Buffer-stock saving model with permanent-income normalization.
 Notation (all variables normalized by permanent income P_t):
   - m_t : cash-on-hand (resources at start of period t)
   - rs_t := (1 - a_t(m_t)) * m_t = m_t - c_t : resources saved / carried to next period before shocks
-  - a_t(m) ∈ [0,1] : consumption share policy; consumption is a fraction of m
+  - a(m) ∈ [0,1] : consumption share policy; consumption is a fraction of m
   - c_t : consumption level = a_t(m_t) * m_t
 
 Law of motion for next period's cash-on-hand (given transitory Θ and permanent Ψ shocks):
-  - m_{t+1} = (R / (G Ψ_{t+1})) * rs_t + Θ_{t+1}.
+  - m_{t+1} = (R / (G Ψ_{t+1})) * (m_t - c_t) + Θ_{t+1}
+  -         = (R / (G Ψ_{t+1})) * rs_t + Θ_{t+1}
 
 Euler equation under CRRA and normalization:
-  - u'(c_t) = (β R / G) * E[ u'(c_{t+1}) / Ψ_{t+1} ].
+  - u'(c_t) = (β R / G^γ) * E[ u'(c_{t+1}) * Ψ_{t+1}^{-γ} ]
 
 EGM step (working on a grid of resources saved rs):
   1) m^{next}(rs; Θ,Ψ) = (R / (G Ψ)) * rs + Θ
   2) c^{next} = a_t(m^{next}) * m^{next}
   3) c(rs) = u'^{-1}( (β R / G) * E[ u'(c^{next}) / Ψ ] )
-  4) m = rs + c(rs),  a_t(m) = c(rs) / m
+  4) m = rs + c(rs),  a(m) = c(rs) / m
 
-This file enforces the following naming scheme:
-  c = total consumption level, a_t = consumption share policy,
-  m = cash-on-hand, rs = resources saved to next period.
 """
 
-from typing import Union
 import numpy as np
 import time
 import matplotlib.pyplot as plt
@@ -94,9 +91,9 @@ class PlanningProblem:
         """
         Create a PCHIP interpolator for the policy function a(m).
         Prepends the point (0, 1) to enforce the boundary condition that
-        at zero cash-on-hand (m=0), the consumption share is 1 (a_t=1).
+        at zero cash-on-hand (m=0), the consumption share is 1.
         """
-        # Prepend boundary condition: a_t(0) = 1
+        # Prepend boundary condition: a(0) = 1
         x_ext = np.insert(x, 0, 0.0)
         y_ext = np.insert(y, 0, 1.0)
 
@@ -106,28 +103,28 @@ class PlanningProblem:
     # Model primitives (preferences & technology)
     # ------------------------------------------------------------------
 
-    def u(self, c: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
-        """CRRA utility function: u(c)."""
+    def u(self, c):
+        """CRRA utility function"""
         return c ** (1 - self.gamma) / (1 - self.gamma) if self.gamma != 1 else np.log(c)
 
-    def u_prime(self, c: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
-        """Marginal utility of consumption: u'(c)."""
+    def u_prime(self, c):
+        """Marginal utility of consumption"""
         return c ** (-self.gamma)
 
-    def u_prime_inv(self, mu: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
-        """Inverse marginal utility: given μ = u'(c), return c = u'^{-1}(μ)."""
-        return mu ** (-1 / self.gamma)
+    def u_prime_inv(self, c):
+        """Inverse marginal utility"""
+        return c ** (-1 / self.gamma)
 
     # ------------------------------------------------------------------
     # State transitions / resource accounting (single entrypoint: m_next)
     # ------------------------------------------------------------------
 
-    def m_next(self, rs: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    def m_next(self, rs):
         """Next-period cash-on-hand: m_{t+1} = (R / (G Ψ_{t+1})) * rs_t + Θ_{t+1} with rs_t = m_t - c_t"""
         return self.R / (self.G * self.psi) * rs + self.theta
 
-    def consumption_from_share(self, a: Union[float, np.ndarray], m: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
-        """Map share a_t(m) to consumption level:c_t = a_t(m_t) * m_t."""
+    def consumption_from_share(self, a, m):
+        """Map share a(m) to consumption level:c_t = a_t(m_t) * m_t."""
         return a * m
 
     # ---------------------------
@@ -135,31 +132,22 @@ class PlanningProblem:
     # ---------------------------
 
     def demu_next(self, c_next: np.ndarray) -> float:
-        """
-        DEMU (Discounted Expected Marginal Utility), next period:
-            (β R / G) * E[ u'(c_{t+1}) / Ψ_{t+1} ]
-        given vectorized c_{t+1}(Θ,Ψ) on the quadrature nodes.
-        """
-        return (self.beta * self.R / self.G) * np.dot(self.probs, self.u_prime(c_next / self.psi))
+        # (β R / G^γ) * E[ u'(c_{t+1}) * Ψ_{t+1}^{-γ} ]
+        weights = self.probs * (self.psi ** (-self.gamma))
+        return (self.beta * self.R / (self.G ** self.gamma)) * np.dot(weights, self.u_prime(c_next))
 
     def euler_residual(self, a: float, m_t: float, policy: PchipInterpolator) -> float:
-        """
-        Residual of Euler equation at (a_t, m_t). Zero at optimum.
-        Uses: c_t = a_t m_t, rs_t = m_t - c_t, m' = (R/(GΨ)) rs_t + Θ, c' = a_{t+1}(m') m'.
-        """
+        """Euler residual."""
         c_t = self.consumption_from_share(a, m_t)
         rs_t = m_t - c_t
         m_next = self.m_next(rs_t)
         a_next = policy(m_next)
         c_next = self.consumption_from_share(a_next, m_next)
-
         rhs = self.demu_next(c_next)
         return self.u_prime(c_t) - rhs
     
     def c_from_euler(self, c_next: np.ndarray) -> float:
-        """
-        Recover c_t from: u'(c_t) = (β R / G) E[ u'(c_{t+1}) / Ψ_{t+1} ].
-        """
+        """Recover c_t from: u'(c_t) = (β R / G) E[ u'(c_{t+1}) / Ψ_{t+1} ]."""
         mu = self.demu_next(c_next)
         return self.u_prime_inv(mu)
 
@@ -168,12 +156,9 @@ class PlanningProblem:
     # ---------------------------
     def get_euler_errors(self, grid, policy, episodes=100):
         """
-        Simulate Euler residuals along sample paths starting from each m in `grid`,
-        using the provided consumption-share policy a_t(·). Returns (errors, states, avg_return).
+        Simulate Euler residuals along sample paths starting from each m on the grid,
+        using the provided consumption-share policy a(·). Returns (errors, states, avg_return).
         """
-        u = self.u
-        beta = self.beta
-
         T = int(episodes)
         grid = np.asarray(grid, dtype=float)
         grid_len = grid.size
@@ -204,8 +189,8 @@ class PlanningProblem:
                 m_path[t + 1] = self.R / (self.G * psi_draw) * (m_path[t] - c_t) + theta_draw
 
                 c_path[t] = c_t
-                U += power * u(c_t)
-                power *= beta
+                U += power * self.u(c_t)
+                power *= self.beta
 
             # Euler error along the realized path
             err = np.empty(T, dtype=float)
@@ -219,9 +204,11 @@ class PlanningProblem:
 
         return euler_errors.ravel(), states.ravel(), avg_return
 
-# ------------------------------------------------------------------- 
-# Solvers (TI and EGM only; model lives in PlanningProblem)
-# -------------------------------------------------------------------
+
+#-------------------------------------------------------------------
+# Solvers: standardized on share policy a(m)
+#-------------------------------------------------------------------
+
 class PlanningSolvers:
     def __init__(
         self,
@@ -235,13 +222,15 @@ class PlanningSolvers:
         self.conv = conv
         self.min_share = min_share
 
+
     # ------------------------------------------------------------------
     # Helper functions
     # ------------------------------------------------------------------
+
     def _init_policy(self, model: PlanningProblem):
-        """Initialize m-grid, consumption-share array and spline policy a_t(m)."""
+        """Initialize m-grid, consumption-share array and spline policy a(m)."""
         grid = model.make_grid(self.grid_points)
-        a_new = np.full_like(grid, 0.1)  # initial guess for shares a_t(m)
+        a_new = np.full_like(grid, 0.2)
         a_policy = model.make_spline(grid, a_new)
         return grid, a_new, a_policy
 
@@ -250,11 +239,13 @@ class PlanningSolvers:
         a_new = a_policy(grid)
         return np.max(np.abs(a_old - a_new)) < self.conv, a_new
 
+
     # ------------------------------------------------------------------
     # Time iteration (TI)
     # ------------------------------------------------------------------
+    
     def TI(self, model: PlanningProblem) -> PchipInterpolator:
-        """Compute optimal consumption-share policy a_t(m) by time iteration."""
+        """Compute optimal consumption-share policy a(m) by time iteration."""
         # --- Setup -------------------------------------------------------
         grid, a_new, a_policy = self._init_policy(model)
 
@@ -265,9 +256,8 @@ class PlanningSolvers:
             # Pointwise policy improvement: root-finding on the Euler residual
             for i, m in enumerate(grid):
 
-                def euler_root(a_candidate: float) -> float:
-                    # Residual at (a_candidate, m) under current policy a_policy
-                    return model.euler_residual(a_candidate, m, a_policy)
+                # Define optimization objective
+                euler_root = lambda a_candidate: model.euler_residual(a_candidate, m, a_policy)
 
                 a_lo, a_hi = self.min_share, 1.0 - self.min_share
                 f_lo, f_hi = euler_root(a_lo), euler_root(a_hi)
@@ -292,10 +282,10 @@ class PlanningSolvers:
     # ---------------------------
     def EGM(self, model: PlanningProblem) -> PchipInterpolator:
         """
-        Compute optimal consumption-share policy a_t(m) by EGM.
+        Compute optimal consumption-share policy a(m) by EGM.
         Works on a grid for 'rs' (resources saved before shocks) and maps back to current m.
         """
-        # Use the same initializer; interpret the returned grid as a grid for rs := m - c = (1 - a)m
+        # --- Setup -------------------------------------------------------
         rs_grid, a_new, a_policy = self._init_policy(model)
         rs_next = rs_grid.copy()
 
@@ -313,7 +303,7 @@ class PlanningSolvers:
             # 4) current share a_t = c / m
             for i, rs in enumerate(rs_next):
                 # m_{t+1}(Θ,Ψ) as a function of resources saved rs
-                m_next = model.m_next(rs)  # vector over (Θ,Ψ)
+                m_next = model.m_next(rs)               # vector over (Θ,Ψ)
 
                 # Continuation policy next period
                 a_next = a_policy(m_next)               # a_{t+1}(m_{t+1})
@@ -332,7 +322,7 @@ class PlanningSolvers:
             m_sorted, a_sorted = m_t[order], a_t[order]
             a_policy = model.make_spline(m_sorted, a_sorted)
 
-            # Convergence check
+            # --- Convergence check ---------------------------------------
             converged, a_new = self._check_convergence(a_old, a_policy, m_t)
             if converged:
                 return a_policy
@@ -344,7 +334,7 @@ class PlanningSolvers:
 if __name__ == "__main__":
     # Model and solvers
     model = PlanningProblem()
-    solvers = PlanningSolvers(grid_points=100, conv=1e-3)
+    solvers = PlanningSolvers(grid_points=100, conv=1e-5)
 
     # Time iterations
     start = time.time()
@@ -375,7 +365,7 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
     ax[0].plot(m_plot, a_ti(m_plot), linestyle='--', color='orange', label='Time iterations')
     ax[0].plot(m_plot, a_egm(m_plot), linestyle='--', color='green', label='EGM')
-    ax[0].set_title('Policy function a_t(m)')
+    ax[0].set_title('Policy function a(m)')
     ax[0].set_xlabel('Cash-on-hand m')
     ax[0].set_ylabel('Consumption share a_t')
     ax[1].hist(euler_errors_ti, density=True, bins=50, color="orange", alpha=0.5, label='Time iterations')
