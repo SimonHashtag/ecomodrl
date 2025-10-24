@@ -1,303 +1,326 @@
-from typing import Union
+"""
+Buffer-stock saving model with permanent-income normalization.
+
+Notation (all variables normalized by permanent income P_t):
+  - m_t : cash-on-hand (resources at start of period t)
+  - rs_t := (1 - a_t(m_t)) * m_t = m_t - c_t : resources saved / carried to next period before shocks
+  - a(m) ∈ [0,1] : consumption share policy; consumption is a fraction of m
+  - c_t : consumption level = a_t(m_t) * m_t
+
+Law of motion for next period's cash-on-hand (given transitory Θ and permanent Ψ shocks):
+  - m_{t+1} = (R / (G Ψ_{t+1})) * (m_t - c_t) + Θ_{t+1}
+  -         = (R / (G Ψ_{t+1})) * rs_t + Θ_{t+1}
+
+Euler equation under CRRA and normalization:
+  - u'(c_t) = (β R / G^γ) * E[ u'(c_{t+1}) * Ψ_{t+1}^{-γ} ]
+
+EGM step (working on a grid of resources saved rs):
+  1) m^{next}(rs; Θ,Ψ) = (R / (G Ψ)) * rs + Θ
+  2) c^{next} = a_t(m^{next}) * m^{next}
+  3) c(rs) = u'^{-1}( (β R / G) * E[ u'(c^{next}) / Ψ ] )
+  4) m = rs + c(rs),  a(m) = c(rs) / m
+
+"""
 
 import numpy as np
 from numpy.polynomial.hermite import hermgauss
-from scipy.interpolate import PchipInterpolator  # monotone, linear extrapolation
+from scipy.interpolate import PchipInterpolator
 from scipy.optimize import brentq
 
-#-------------------------------------------------------------------
-# Buffer stock saving planning problem
-#-------------------------------------------------------------------
-class PlanningProblem():
+
+# -------------------------------------------------------------------
+# Buffer-stock saving planning problem
+# -------------------------------------------------------------------
+class PlanningProblem:
     def __init__(
-        self, 
-        σ:float=2.,          # Coefficient of relative risk aversion
-        β:float=0.95,       # Discount factor
-        r:float=0.02,       # Interest reate
-        g:float=0.01,       # Growth rate of permanent income
-        σ_tran:float=0.1,   # Std. dev. of transitory shock (log)
-        σ_perm:float=0.1,   # Std. dev. of permanent shock (log)
-        prob:float=0.005,   # Probability of unemployment
-        θ_low:float=0.3,    # Earnings in unemployment
+        self,
+        gamma: float = 2.0,         # Coefficient of relative risk aversion
+        beta: float = 0.95,         # Discount factor
+        r: float = 0.02,            # Interest rate
+        g: float = 0.01,            # Growth rate of permanent income
+        sigma_tran: float = 0.1,    # Std. dev. of transitory shock (log)
+        sigma_perm: float = 0.1,    # Std. dev. of permanent shock (log)
+        unemp_prob: float = 0.005,  # Probability of unemployment
+        theta_low: float = 0.3,     # Earnings in unemployment
+        gh_order: int = 7           # Gauss–Hermite quadrature order
     ):
+        # Preferences
+        self.gamma, self.beta = gamma, beta
+
+        # Normalized income process
+        self.R, self.G = 1 + r, 1 + g
+        self.sigma_tran, self.sigma_perm = sigma_tran, sigma_perm
+
+        # Unemployment
+        self.unemp_prob, self.theta_low = unemp_prob, theta_low
+
+        # Mean adjustment so E[Theta]=1
+        self.mu_z = np.log((1 - self.unemp_prob * self.theta_low) / (1 - self.unemp_prob)) - 0.5 * self.sigma_tran**2
+
+        # Gauss–Hermite nodes/weights
+        x, w = hermgauss(gh_order)
+        self.gh_x = np.sqrt(2.0) * x
+        self.gh_w = w / np.sqrt(np.pi)
+
+        # ---- Shock grids & joint quadrature ----
+        # Transitory Θ: unemployment mass at θ_low plus lognormal part.
+        theta_nodes = np.concatenate(([self.theta_low], np.exp(self.sigma_tran * self.gh_x + self.mu_z)))
+        theta_w = np.concatenate(([self.unemp_prob], (1.0 - self.unemp_prob) * self.gh_w))
+
+        # Permanent Ψ: lognormal
+        psi_nodes = np.exp(self.sigma_perm * self.gh_x - 0.5 * self.sigma_perm**2)
+        psi_w = self.gh_w
+
+        # All (Θ, Ψ) pairs with joint probabilities = outer product of marginals.
+        T, P = np.meshgrid(theta_nodes, psi_nodes, indexing="ij")
+        self.theta = T.ravel()
+        self.psi = P.ravel()
+        self.probs = (theta_w[:, None] * psi_w[None, :]).ravel()
+
+    # ------------------------------------------------------------------
+    # Grid setup, and spline construction
+    # ------------------------------------------------------------------
+
+    def make_grid(self, points, span=(1e-6, 15.0)):
+        m_min, m_max = span
+        return np.linspace(m_min, m_max, points)
     
-        self.σ, self.β = σ, β
-        self.R = 1.0 + r
-        self.G = 1.0 + g
-        self.σ_tran, self.σ_perm, self.prob, self.θ_low = σ_tran, σ_perm, prob, θ_low
-        self.μ_z = np.log((1 - self.prob*self.θ_low)/(1 - self.prob)) - 0.5*self.σ_tran**2   # Mean of log Z such that E[θ]=1
+    def make_spline(self, x: np.ndarray, y: np.ndarray) -> PchipInterpolator:
+        """
+        Create a PCHIP interpolator for the policy function a(m).
+        Prepends the point (0, 1) to enforce the boundary condition that
+        at zero cash-on-hand (m=0), the consumption share is 1.
+        """
+        # Prepend boundary condition: a(0) = 1
+        x_ext = np.insert(x, 0, 0.0)
+        y_ext = np.insert(y, 0, 1.0)
+
+        return PchipInterpolator(x_ext, y_ext, extrapolate=True)
+
+    # ------------------------------------------------------------------
+    # Model primitives (preferences & technology)
+    # ------------------------------------------------------------------
 
     def u(self, c):
-        '''
-        Utility function
-        '''
-        σ = self.σ
+        """CRRA utility function"""
+        return c ** (1 - self.gamma) / (1 - self.gamma) if self.gamma != 1 else np.log(c)
 
-        return (c ** (1 - σ)) / (1 - σ) if σ!= 1 else np.log(c)
-    
     def u_prime(self, c):
-        'Derivative of utility'
-        σ = self.σ
-
-        return c ** (-σ)
+        """Marginal utility of consumption"""
+        return c ** (-self.gamma)
 
     def u_prime_inv(self, c):
-        'Inverse of derivative of utility'
-        σ = self.σ
+        """Inverse marginal utility"""
+        return c ** (-1 / self.gamma)
 
-        return c ** (-1 / σ)
+    # ------------------------------------------------------------------
+    # State transitions / resource accounting (single entrypoint: m_next)
+    # ------------------------------------------------------------------
+
+    def m_next(self, rs):
+        """Next-period cash-on-hand: m_{t+1} = (R / (G Ψ_{t+1})) * rs_t + Θ_{t+1} with rs_t = m_t - c_t"""
+        return self.R / (self.G * self.psi) * rs + self.theta
+
+    def consumption_from_share(self, a, m):
+        """Map share a(m) to consumption level:c_t = a_t(m_t) * m_t."""
+        return a * m
+
+    # ---------------------------
+    # Euler helpers
+    # ---------------------------
+
+    def demu_next(self, c_next: np.ndarray) -> float:
+        # (β R / G^γ) * E[ u'(c_{t+1}) * Ψ_{t+1}^{-γ} ]
+        weights = self.probs * (self.psi ** (-self.gamma))
+        return (self.beta * self.R / (self.G ** self.gamma)) * np.dot(weights, self.u_prime(c_next))
+
+    def euler_residual(self, a: float, m_t: float, policy: PchipInterpolator) -> float:
+        """Euler residual."""
+        c_t = self.consumption_from_share(a, m_t)
+        rs_t = m_t - c_t
+        m_next = self.m_next(rs_t)
+        a_next = policy(m_next)
+        c_next = self.consumption_from_share(a_next, m_next)
+        rhs = self.demu_next(c_next)
+        return self.u_prime(c_t) - rhs
     
-    def bellman(self, action, state, value):
-        'Bellman equation for c = consumption share'
-        consumption = state * action
-        a = state * (1.0 - action)
-        new_state = self.eom(a)
-        if new_state<0:
-            return np.inf
-        else:
-            return self.u(consumption) + self.β * value(new_state)
-    
-    def set_gh(self, n_knots:int):
-        gh_x, gh_w = hermgauss(n_knots)
-        gh_x *= np.sqrt(2.0)
-        gh_w /= np.sqrt(np.pi)
+    def c_from_euler(self, c_next: np.ndarray) -> float:
+        """Recover c_t from: u'(c_t) = (β R / G) E[ u'(c_{t+1}) / Ψ_{t+1} ]."""
+        mu = self.demu_next(c_next)
+        return self.u_prime_inv(mu)
 
-        # Transitory shocks
-        theta_continuous = np.exp(self.σ_tran * gh_x + self.μ_z)      # exp(N(mu_z, sigma_transitory^2))
-        self.θ = np.concatenate([
-            np.full(n_knots, self.θ_low),
-            np.repeat(theta_continuous, repeats=n_knots)
-        ])
-
-        # Permanent shocks
-        psi_continuous = np.exp(self.σ_perm * gh_x - 0.5 * self.σ_perm**2)  # exp(N(-σ^2/2, σ^2))
-        self.ψ = np.tile(psi_continuous, reps=(n_knots + 1))                   # length (n_points+1)*n_points
-
-        # Combine probabilities for each (θ, ψ) pair
-        probs_theta = np.concatenate([
-            np.full(n_knots, self.prob),
-            (1.0 - self.prob) * np.repeat(gh_w, repeats=n_knots)
-        ])
-        self.probs = probs_theta * np.tile(gh_w, reps=(n_knots + 1))
-
-    def draw_shocks(self):
-        if np.random.uniform(0., 1.) < self.prob:
-            θ = self.θ_low
-        else:
-            θ = np.exp(np.random.normal(self.μ_z, self.σ_tran))
-        ψ = np.exp(np.random.normal(-0.5*self.σ_perm**2, self.σ_perm))
-        return θ, ψ
-
-    def eom(self, a:float, θ:Union[None, float, np.ndarray]=None, ψ:Union[None, float, np.ndarray]=None):
-        'Equation of motion for normalized state variables with post-decision state'
-        R, G = self.R, self.G
-        θ = self.θ if θ is None else θ
-        ψ = self.ψ if ψ is None else ψ
-
-        return R/(G*ψ) * a + θ
-    
-    def euler_egm(self, c_next):
-        return self.u_prime_inv(self.β * self.R/self.G * np.dot(self.probs, self.u_prime(c_next/self.ψ)))
-    
-    def euler_residual(self, c_share:float, x:float, policy:PchipInterpolator):
-        eom = self.eom
-        u_prime = self.u_prime
-
-        a = x * (1.0-c_share)
-        x_next = eom(a)
-        c_next = x_next * policy(x_next)
-
-        rhs = self.β * self.R/self.G * np.dot(self.probs, u_prime(c_next/self.ψ))
-        return u_prime(x*c_share) - rhs
-    
-    def calculate_euler_errors(self, c_path, x_path, policy):
-        'Calculate Euler equation errors given paths of consumption and wealth and a policy'
-        euler_residual = self.euler_residual
-        euler_errors = np.empty(len(c_path))
-        for i, c, x in zip(range(0, len(c_path)), c_path, x_path[:-1]):
-            if 1-c/x < 10e-3:
-                euler_errors[i] = None
-            else:
-                euler_errors[i] = np.log10(max(1e-18, abs(euler_residual(c/x, x, policy))))
-        return euler_errors
-    
-    #-------------------------------------------------------------------
-    # EGM
-    #-------------------------------------------------------------------
-
-    def egm(self, 
-            grid_points:int = 1000, 
-            n_knots:int=8, 
-            lower_limit:float=0.1, 
-            upper_limit:float=15., 
-            conv:float=0.1,
-            verbose:bool=True) -> Union[np.ndarray, PchipInterpolator]:
+    # ---------------------------
+    # Policy evaluation & errors
+    # ---------------------------
+    def get_euler_errors(self, grid, policy, episodes=100):
         """
-        Computes optimal consumption policy by endogenous grid method (EGM)
-        
-        grid_points: number of grid points
-        n_knots: number of Gauss Hermite points
-        lower_limit: lower limit of grid
-        upper_limit: upper limit of grid
-        conv: convergence criterion
-        verbose: if True, prints convergence information
-        
-        return: grid and optimal consumption policy as CubicSpline object
+        Simulate Euler residuals along sample paths starting from each m on the grid,
+        using the provided consumption-share policy a(·). Returns (errors, states, avg_return).
         """
-        self.set_gh(n_knots)
-        eom = self.eom
-        euler_egm = self.euler_egm
-        
-        a_grid = np.linspace(lower_limit, upper_limit, grid_points)
-        copt = PchipInterpolator(np.concatenate(([0.0], a_grid)), np.concatenate(([1.0], np.ones(grid_points)*0.1)), extrapolate=True)
-        copt_old = PchipInterpolator(np.concatenate(([0.0], a_grid)), np.concatenate(([1.0], np.ones(grid_points)*0.2)), extrapolate=True)
-        xs = a_grid.copy()
-        cs = np.empty(grid_points)
-        while max(abs(copt_old(xs)-copt(xs))) > conv:
-            copt_old = copt
-            for i, a in enumerate(a_grid):
-                xs_next = eom(a)
-                cs_next = copt(xs_next) * xs_next
-                cs[i] = euler_egm(cs_next)
-                xs[i] = a + cs[i]
-            order = np.argsort(xs)
-            xs_sorted, cs_sorted = xs[order], cs[order]
-            copt = PchipInterpolator(np.concatenate(([0.0], xs_sorted)), np.concatenate(([1.0], cs_sorted/xs_sorted)), extrapolate=True)
-            if verbose:
-                print(
-                    "Convergence: {}.".format(max(abs(copt_old(xs)-copt(xs)))),
-                    "Convergence criterion: {}.".format(conv),
-                )
-        return a_grid, PchipInterpolator(np.concatenate(([0.0], xs_sorted)), np.concatenate(([1.0], cs_sorted/xs_sorted)), extrapolate=True)
-    
-    #-------------------------------------------------------------------
-    # Time iterations
-    #-------------------------------------------------------------------
+        T = int(episodes)
+        grid = np.asarray(grid, dtype=float)
+        grid_len = grid.size
 
-    def time_iterations(
-            self, 
-            grid_points:int = 1000, 
-            n_knots:int=8, 
-            lower_limit:float=0.1, 
-            upper_limit:float=15., 
-            tol:float=1e-5, 
-            conv:float=0.1, 
-            verbose:bool=True) -> Union[np.ndarray, PchipInterpolator]:
-        """ 
-        Computes optimal consumption policy by time iterations
-        
-        grid_points: number of grid points
-        n_knots: number of Gauss Hermite points
-        lower_limit: lower limit of grid
-        upper_limit: upper limit of grid
-        tol: tolerance level for minimization
-        conv: convergence criterion
-        verbose: if True, prints convergence information
-        
-        return: grid and optimal consumption policy as CubicSpline object
-        """
-        TOL = 1e-3
-        assert lower_limit > TOL, f"The lower limit of the grid must be larger than {TOL}. Current lower limit {lower_limit}."
+        states = np.empty((grid_len, T + 1), dtype=float)
+        euler_errors = np.empty((grid_len, T), dtype=float)
+        avg_return = 0.0
 
-        self.set_gh(n_knots)
-        grid = np.linspace(lower_limit, upper_limit, grid_points)
-        copt = PchipInterpolator(np.concatenate(([0.0], grid)), np.concatenate(([1.0], np.ones(grid_points)*0.1)), extrapolate=True)
-        cs = copt(grid)
-        euler_residual = self.euler_residual
-        
-        while True:
-            for i, x in enumerate(grid):
-                lo = 1e-6
-                hi = max(1e-6, 1.0)  # ensure lo < hi
+        for i, m0 in enumerate(grid):
+            m_path = np.empty(T + 1, dtype=float)
+            c_path = np.empty(T, dtype=float)
+            m_path[0] = m0
 
-                flo = euler_residual(lo, x, copt)
-                fhi = euler_residual(hi, x, copt)
+            U = 0.0
+            power = 1.0
 
-                if flo * fhi > 0:
-                    # No interior root. Choose corner consistent with the sign:
-                    # Residual>0 everywhere -> increase c -> consume at upper corner.
-                    # Residual<0 everywhere -> decrease c -> consume at lower corner.
-                    cs[i] = hi if flo > 0 else lo
+            for t in range(T):
+                a_t_share = float(policy(m_path[t]))  # consumption share
+                c_t = self.consumption_from_share(a_t_share, m_path[t])
+
+                # draw shocks
+                if np.random.uniform(0.0, 1.0) < self.unemp_prob:
+                    theta_draw = self.theta_low
                 else:
-                    cs[i] = brentq(euler_residual, lo, hi, xtol=tol, args=(x, copt))
-            if max(abs(copt(grid)-cs)) < conv:
-                break
-            if verbose:
-                print(
-                    "Convergence: {}.".format(max(abs(copt(grid)-cs))),
-                    "Convergence criterion: {}.".format(conv),
-                )
-            
-            copt = PchipInterpolator(np.concatenate(([0.], grid)), np.concatenate(([1.0], cs)), extrapolate=True)
-        return grid, PchipInterpolator(np.concatenate(([0.], grid)), np.concatenate(([1.0], cs)), extrapolate=True)
-    
-    def get_vfrom_copt(self, grid, copt, conv):
-        """
-        Computes value function on grid by iterating on Bellman equation
-        
-        grid: grid on which value function is computed
-        copt: optimal consumption policy as CubicSpline object
-        conv: convergence criterion
-        
-        return: value function as CubicSpline object
-        """
-        bellman = self.bellman
-        Vn = np.zeros(len(grid))
-        V = PchipInterpolator(grid, Vn, extrapolate=True)
-        while True:
-            for i in range(len(grid)):
-                Vn[i] = bellman(copt(grid[i]), grid[i], V)
-            V = PchipInterpolator(grid, Vn, extrapolate=True)
-            if max(abs(Vn - V(grid))) < conv:
-                return V
+                    theta_draw = np.exp(np.random.normal(self.mu_z, self.sigma_tran))
+                psi_draw = np.exp(np.random.normal(-0.5 * self.sigma_perm**2, self.sigma_perm))
 
-    #-------------------------------------------------------------------
-    # Simulation
-    #-------------------------------------------------------------------
-    def simulation(self, copt, periods=100, start_value=5.0):
-        """
-        Simulate consumption path over number of periods
-        
-        copt: consumption policy as CubicSpline object
-        periods: number of periods to simulate
-        start_value: starting value of capital
-        """
-        eom = self.eom
-        draw_shocks = self.draw_shocks
-        u = self.u
-        β = self.β
-        
-        state = np.empty(periods+1)
-        state[0] = start_value
-        cons = np.empty(periods)
-        U = 0
-        power = 1.0
-        for t in range(periods):
-            cons[t] = state[t] * copt(state[t])
-            a = state[t]-cons[t]
-            θ, ψ = draw_shocks()
-            state[t+1] = eom(a, θ, ψ)
-            U += power * u(cons[t])
-            power *= β
-        return cons, state, U
+                m_path[t + 1] = self.R / (self.G * psi_draw) * (m_path[t] - c_t) + theta_draw
+
+                c_path[t] = c_t
+                U += power * self.u(c_t)
+                power *= self.beta
+
+            # Euler error along the realized path
+            err = np.empty(T, dtype=float)
+            for t, (c_t, m_t) in enumerate(zip(c_path, m_path[:-1])):
+                a_t_share = c_t / m_t  # implied share
+                err[t] = np.log10(abs(self.euler_residual(a_t_share, m_t, policy)))
+            
+            euler_errors[i, :] = err
+            states[i, :] = m_path
+            avg_return += U / grid_len
+
+        return euler_errors.ravel(), states.ravel(), avg_return
+
+
+#-------------------------------------------------------------------
+# Solvers: standardized on share policy a(m)
+#-------------------------------------------------------------------
+
+class PlanningSolvers:
+    def __init__(
+        self,
+        grid_points: int = 1000,
+        tol: float = 1e-5,
+        conv: float = 1e-5,
+        min_share: float = 1e-6,
+    ):
+        self.grid_points = grid_points
+        self.tol = tol
+        self.conv = conv
+        self.min_share = min_share
+
+
+    # ------------------------------------------------------------------
+    # Helper functions
+    # ------------------------------------------------------------------
+
+    def _init_policy(self, model: PlanningProblem):
+        """Initialize m-grid, consumption-share array and spline policy a(m)."""
+        grid = model.make_grid(self.grid_points)
+        a_new = np.full_like(grid, 0.2)
+        a_policy = model.make_spline(grid, a_new)
+        return grid, a_new, a_policy
+
+    def _check_convergence(self, a_old, a_policy, grid):
+        """Check convergence of consumption-share policy on given grid."""
+        a_new = a_policy(grid)
+        return np.max(np.abs(a_old - a_new)) < self.conv, a_new
+
+
+    # ------------------------------------------------------------------
+    # Time iteration (TI)
+    # ------------------------------------------------------------------
     
-    #-------------------------------------------------------------------
-    # Euler equation errors
-    #-------------------------------------------------------------------
-    def get_euler_errors(self, grid, policy, n_eps=100):
-        '''
-        Given a grid of capital values and a consumption policy, computes Euler equation errors
-        over n_eps periods for each initial capital value in the grid.
-        '''
-        calculate_euler_errors = self.calculate_euler_errors
-        simulation = self.simulation
-        grid_len = len(grid)
-        states = np.empty((grid_len, n_eps+1), dtype=float)
-        euler_errors = np.empty((grid_len, n_eps), dtype=float)
-        avg_return = 0
-        for i, k in enumerate(grid):
-            cons_path, state_path, U = simulation(policy, n_eps, start_value=k)
-            states[i,:] = state_path
-            euler_errors[i,:] = calculate_euler_errors(cons_path, state_path, policy)
-            avg_return += U/grid_len
-        return euler_errors[~np.isnan(euler_errors)].ravel(), states.ravel(), avg_return
+    def TI(self, model: PlanningProblem) -> PchipInterpolator:
+        """Compute optimal consumption-share policy a(m) by time iteration."""
+        # --- Setup -------------------------------------------------------
+        grid, a_new, a_policy = self._init_policy(model)
+
+        # --- Iteration ---------------------------------------------------
+        while True:
+            a_old = a_new.copy()
+
+            # Pointwise policy improvement: root-finding on the Euler residual
+            for i, m in enumerate(grid):
+
+                # Define optimization objective
+                euler_root = lambda a_candidate: model.euler_residual(a_candidate, m, a_policy)
+
+                a_lo, a_hi = self.min_share, 1.0 - self.min_share
+                f_lo, f_hi = euler_root(a_lo), euler_root(a_hi)
+
+                if f_lo * f_hi > 0.0:
+                    # No interior root: pick corner consistent with sign
+                    a_new[i] = a_hi if f_lo > 0.0 else a_lo
+                else:
+                    # Sign change: brentq on the candidate share
+                    a_new[i] = brentq(euler_root, a_lo, a_hi, xtol=self.tol)
+
+            # Update policy
+            a_policy = model.make_spline(grid, a_new)
+
+            # --- Convergence check ---------------------------------------
+            converged, a_new = self._check_convergence(a_old, a_policy, grid)
+            if converged:
+                return a_policy
+
+    # ---------------------------
+    # Endogenous Grid Method (EGM)
+    # ---------------------------
+    def EGM(self, model: PlanningProblem) -> PchipInterpolator:
+        """
+        Compute optimal consumption-share policy a(m) by EGM.
+        Works on a grid for 'rs' (resources saved before shocks) and maps back to current m.
+        """
+        # --- Setup -------------------------------------------------------
+        rs_grid, a_new, a_policy = self._init_policy(model)
+        rs_next = rs_grid.copy()
+
+        while True:
+            a_old = a_new.copy()
+
+            # Containers on the endogenous grid (current-period objects)
+            m_t = np.empty_like(rs_grid, dtype=float)  # implied current m for each rs
+            a_t = np.empty_like(rs_grid, dtype=float)  # implied current a_t = c / m
+
+            # EGM core:
+            # 1) continuation at rs via m_next(rs; Θ,Ψ)
+            # 2) current c from Euler given c_{t+1}=a_{t+1}(m_{t+1})*m_{t+1}
+            # 3) map back to current m via m = c + rs
+            # 4) current share a_t = c / m
+            for i, rs in enumerate(rs_next):
+                # m_{t+1}(Θ,Ψ) as a function of resources saved rs
+                m_next = model.m_next(rs)               # vector over (Θ,Ψ)
+
+                # Continuation policy next period
+                a_next = a_policy(m_next)               # a_{t+1}(m_{t+1})
+                c_next = a_next * m_next                # c_{t+1}(Θ,Ψ)
+
+                # Back out c_t from Euler equation
+                c_curr = model.c_from_euler(c_next)     # scalar c_t(rs)
+
+                # Budget identity to current state
+                m_curr = c_curr + rs                    # m_t = c_t + rs
+                m_t[i] = m_curr
+                a_t[i] = c_curr / m_curr
+
+            # Interpolate a_t over current m (the endogenous grid)
+            order = np.argsort(m_t)
+            m_sorted, a_sorted = m_t[order], a_t[order]
+            a_policy = model.make_spline(m_sorted, a_sorted)
+
+            # --- Convergence check ---------------------------------------
+            converged, a_new = self._check_convergence(a_old, a_policy, m_t)
+            if converged:
+                return a_policy
