@@ -106,7 +106,7 @@ def compute_benchmark(params: Union[Mapping[str, Any], Any]):
     V_bm = model.V_from_a(grid, policy_bm, conv=1e-5)
 
     # Return model class, optimal policy and corresponding value function
-    return model, policy_bm, V_bm
+    return model, grid, policy_bm, V_bm
 
 # TODO: Bias-corrected and accelerated bootstrap CI? 
 def bootstrap_mean_ci(
@@ -149,15 +149,12 @@ def analyze_all_seeds(
     plt.style.use("seaborn-v0_8-colorblind")
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    # common grid for RL & Benchmark evals
-    grid = np.linspace(cfg.state_min, cfg.state_max, 200, dtype=np.float32)
     
     # Grid for average return plot
     global_steps = np.linspace(0, cfg.total_timesteps, num=100)
     
     # Benchmark once
-    p, policy_bm, V_bm = compute_benchmark(params)
+    p, grid, policy_bm, V_bm = compute_benchmark(params)
     euler_bm, _, U_bm = p.get_euler_errors(grid, policy_bm, episodes=100)
     euler_bm = np.log10(np.abs(euler_bm))
     
