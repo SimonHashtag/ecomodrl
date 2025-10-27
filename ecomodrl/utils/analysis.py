@@ -15,10 +15,12 @@ from stable_baselines3.common.utils import get_device
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.utils.metrics.accuracy import wev, cev_crra
 from ecomodrl.utils.metrics.performance import interquartile_range, interquartile_mean
 from ecomodrl.utils.tb_reader import tb_read_scalar
+
+from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, PlanningSolvers
+
 
 def get_policy_value_functions(
     model_path: Path, 
@@ -83,15 +85,28 @@ def get_policy_value_functions(
     return policy_rl, value_rl
 
 # TODO: Refactor for other envs!
-def compute_benchmark(
-    params: Union[Mapping[str, Any], Any], 
-    k_min: float, 
-    k_max: float
-    ):
-    p = PlanningProblem(σ=params.gamma, β=params.beta, δ=params.delta, α=params.alpha, A=params.A)
-    grid_bm, policy_bm = p.egm(grid_points=200, lower_limit=k_min, upper_limit=k_max, conv=1e-4, verbose=False)
-    V_bm = p.get_vfrom_copt(grid_bm, policy_bm, conv=1e-3)
-    return p, grid_bm, policy_bm, V_bm
+def compute_benchmark(params: Union[Mapping[str, Any], Any]):
+    
+    # Set up Cass Koopmans planning problem
+    model = PlanningProblem(gamma=params.gamma, 
+                            beta=params.beta, 
+                            delta=params.delta, 
+                            alpha=params.alpha, 
+                            A=params.A)
+    
+    # Instantiate solvers class to perform EGM
+    solvers = PlanningSolvers(grid_points=1000,
+                              conv=1e-5) # convergence tolerance (consumption share policy)
+    
+    # Solve model using EGM
+    policy_bm = solvers.EGM(model)
+    
+    # Derive the policy-implied value function
+    grid = model.make_grid(solvers.grid_points)
+    V_bm = model.V_from_a(grid, policy_bm, conv=1e-5)
+
+    # Return model class, optimal policy and corresponding value function
+    return model, policy_bm, V_bm
 
 # TODO: Bias-corrected and accelerated bootstrap CI? 
 def bootstrap_mean_ci(
@@ -142,8 +157,8 @@ def analyze_all_seeds(
     global_steps = np.linspace(0, cfg.total_timesteps, num=100)
     
     # Benchmark once
-    p, _, policy_bm, V_bm = compute_benchmark(params, cfg.state_min, cfg.state_max)
-    euler_bm, _, U_bm = p.get_euler_errors(grid, policy_bm, n_eps=100)
+    p, policy_bm, V_bm = compute_benchmark(params)
+    euler_bm, _, U_bm = p.get_euler_errors(grid, policy_bm, episodes=100)
     euler_bm = np.log10(np.abs(euler_bm))
     
     # storage across seeds
@@ -182,10 +197,10 @@ def analyze_all_seeds(
         )
 
         # Value recomputed from policy (for plotting mean only)
-        V_rl = p.get_vfrom_copt(grid, policy_rl, conv=1e-3)
+        V_rl = p.V_from_a(grid, policy_rl, conv=1e-3)
 
         # Euler errors (RL), states, and U metrics
-        euler_rl, states, U_rl = p.get_euler_errors(grid, policy_rl, n_eps=100)
+        euler_rl, states, U_rl = p.get_euler_errors(grid, policy_rl, episodes=100)
         
         wev_seed = wev(grid, V_bm, V_rl, p.cash_on_hand)
         if wev_seed is not None:
@@ -229,7 +244,7 @@ def analyze_all_seeds(
     _, _, return_bm = p.get_euler_errors( 
         np.linspace(cfg.state_min, cfg.state_max, 20), 
         policy_bm, 
-        n_eps=100)
+        episodes=100)
     
     fig = plt.figure(figsize=(9,4.5))
     plt.fill_between(global_steps, q25_return, q75_return, alpha=0.3, label="IQR")
