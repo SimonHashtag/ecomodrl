@@ -355,7 +355,7 @@ def analyze_all_seeds(
     # WEV
     ax[0].plot(grid, mean_WEV, label="WEV (mean)")
     ax[0].fill_between(grid, lo_WEV, hi_WEV, alpha=0.25, label="95% CI (bootstrap)")
-    ax[0].set_ylim(bottom=0.0)
+    ax[0].axhline(0, color="red", linestyle="--", label="Zero Line")
     ax[0].set_xlabel("Capital k")
     ax[0].set_ylabel("WEV")
     ax[0].set_title("Wealth-Equivalent Variation")
@@ -366,7 +366,7 @@ def analyze_all_seeds(
     # CEV
     ax[1].plot(grid, mean_CEV, label="CEV (mean)")
     ax[1].fill_between(grid, lo_CEV, hi_CEV, alpha=0.25, label="95% CI (bootstrap)")
-    ax[1].set_ylim(bottom=0.0)
+    ax[1].axhline(0, color="red", linestyle="--", label="Zero Line")
     ax[1].set_xlabel("Capital k")
     ax[1].set_ylabel("CEV")
     ax[1].set_title("Consumption-Equivalent Variation")
