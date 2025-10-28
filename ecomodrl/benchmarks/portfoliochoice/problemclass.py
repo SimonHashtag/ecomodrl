@@ -89,7 +89,9 @@ class PlanningProblem:
         d = d_base + 1                  # + ζ for Θ'
 
         eng = qmc.Sobol(d=d, scramble=True, seed=seed)     # Owen-scrambled Sobol'
-        U = eng.random(M)                                   # (M, d) in (0,1)
+        # Use next power-of-two to avoid Sobol’ balance warning
+        m_exp = int(np.ceil(np.log2(max(1, M))))
+        U = eng.random_base2(m_exp)                         # (2**m_exp, d)
         Ua = 1.0 - U                                        # antithetic points
         U_all = np.vstack([U, Ua])                          # (2M, d)
 
@@ -440,14 +442,68 @@ class PlanningSolvers:
                 method='hybr', 
                 tol=self.tol,
             )
-            x = sol.x if sol.success else x0  # robust fallback
+            if np.all(np.isfinite(sol.x)) and np.linalg.norm(sol.fun) < np.linalg.norm(residuals(x0, active)) * 1.1:
+                x = sol.x
+            else:
+                x = x0  # robust fallback
 
             chi_hat = float(x[0]); phi_hat = x[1:]
             c_hat, omega_hat = self._build_vars(chi_hat, phi_hat, active, m, n)
 
-            # ----- 1) Drop tiny active weights -------------------------
+            # ----- compute g and equalization residual on actives --------
+            g_all = model.g_vector(c_hat, omega_hat, m, z, a_policy)         
+            gbar_hat = float(np.dot(omega_hat, g_all))                        
+            ga = g_all[active]                                                
+            eq_resid = np.max(np.abs(ga - ga[-1])) if active.size > 1 else 0
+
+            # ----- 1) If root failed OR equalization still poor -> shrink face
+            if (not sol.success) or (eq_resid > kkt_tol and active.size > 1):
+                #print("1")
+                tol_keep = kkt_tol
+                winners_mask = (ga >= ga.max() - tol_keep)
+                keep = active[winners_mask]
+                if keep.size == 0:
+                    keep = np.array([active[int(np.argmax(ga))]], dtype=int)
+                active = keep
+                phi0 = self._pack_phi_from_weights(omega_hat, active)
+                chi0 = chi_hat
+                continue
+
+            # ----- 2) If already singleton but solver failed: scalar Euler solve
+            if (not sol.success) and active.size == 1:      
+                print("2")                     
+                i_only = int(active[0])                                         
+                omega_only = np.zeros(n, dtype=float); omega_only[i_only] = 1.0  
+                # Solve u'(c) = beta * gbar(c, omega_only) in c ∈ (ε, m-ε)       
+                eps_c = 1e-10                                                    
+                c_lo = max(eps_c, 1e-12)                                         
+                c_hi = max(m - eps_c, c_lo * 10)                                
+                # monotone bracket function
+                def f_euler(c):
+                    gvec = model.g_vector(c, omega_only, m, z, a_policy)
+                    return model.u_prime(c) - model.beta * float(np.dot(omega_only, gvec))
+                # ensure the bracket is valid (expand if needed)
+                lo, hi = c_lo, c_hi
+                f_lo, f_hi = f_euler(lo), f_euler(hi)
+                expand = 0
+                while f_lo * f_hi > 0 and expand < 8:                             
+                    lo *= 0.5; hi = min(m - eps_c, hi + 0.5 * m)
+                    f_lo, f_hi = f_euler(lo), f_euler(hi); expand += 1
+                if f_lo * f_hi <= 0:
+                    from scipy.optimize import brentq
+                    c_star = brentq(f_euler, lo, hi, xtol=self.tol, rtol=1e-6)    
+                else:
+                    # fallback: accept current c_hat but keep singleton face
+                    c_star = float(np.clip(c_hat, lo, hi))                        
+                a_star = float(np.clip(c_star / m, self.min_share, 1.0 - self.min_share))
+                w_logits = np.full(n, -20.0, dtype=float)
+                w_logits[i_only] = 0.0
+                return a_star, w_logits                 
+
+            # ----- 3) Drop tiny active weights -------------------------
             tiny_mask = (omega_hat[active] < self.min_share)
             if np.any(tiny_mask):
+                print("3")
                 keep = active[~tiny_mask]
                 if keep.size == 0:
                     # keep the largest among current actives to avoid empty face
@@ -458,7 +514,7 @@ class PlanningSolvers:
                 chi0 = chi_hat
                 continue  # re-solve on reduced face
 
-            # ----- 2) KKT re-activation check --------------------------
+            # ----- 4) KKT re-activation check --------------------------
             # If some inactive asset i has g_i > gbar + tol, add the worst violator.
             g_all = model.g_vector(c_hat, omega_hat, m, z, a_policy)
             gbar_hat = float(np.dot(omega_hat, g_all))
@@ -467,6 +523,7 @@ class PlanningSolvers:
                 violations = g_all[inactive] - gbar_hat
                 j_viol = np.argmax(violations)
                 if violations[j_viol] > kkt_tol:
+                    #print("4")
                     # re-activate this violator
                     i_add = inactive[j_viol]
                     new_active = np.concatenate([active, [i_add]])
@@ -474,7 +531,8 @@ class PlanningSolvers:
                     active = new_active
                     chi0 = chi_hat
                     continue  # re-solve on expanded face
-
+            
+            #print("Success")
             # No drops and no KKT violations -> converged on this node
             a_star = float(np.clip(c_hat / m, self.min_share, 1.0 - self.min_share))
             # store logits: active assets use log(ω), inactives set to large negative
@@ -483,14 +541,15 @@ class PlanningSolvers:
             w_act /= w_act.sum()
             w_logits[active] = np.log(w_act)
             return a_star, w_logits
-
-         # --- final fallback (very rare): return warm start safely -----------
-        a_fb = float(
-            np.clip(a0, self.min_share, 1.0 - self.min_share)
-        )
-        w_fb = np.full(n, -20.0, dtype=float)
-        w_fb[int(np.argmax(w0_full))] = 0.0  # log(1)=0 for the chosen asset
-        return a_fb, w_fb 
+        
+         # ----------------- FINAL FALLBACK: guaranteed return ---------------------
+        # * If the loop exits without returning, produce a safe, feasible solution.
+        # * Use last feasible c_hat and collapse to best single asset for stability.
+        g_last = model.g_vector(c_hat, omega_hat, m, z, a_policy)  # *
+        i_best = int(np.argmax(g_last))                                       # *
+        w_logits_fb = np.full(n, -20.0, dtype=float); w_logits_fb[i_best] = 0.0  # *
+        a_fb = float(np.clip(c_hat / m, self.min_share, 1.0 - self.min_share))  # *
+        return a_fb, w_logits_fb 
 
 
     # ------------------------------------------------------------------
