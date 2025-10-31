@@ -1,8 +1,9 @@
 import numpy as np
+import time
 import itertools
 from typing import Union, Tuple, List
 from scipy.interpolate import RegularGridInterpolator
-from scipy.optimize import root
+from scipy.optimize import root, minimize, minimize_scalar
 from scipy.stats import qmc, norm
 
 # -------------------------------------------------------------------
@@ -20,10 +21,10 @@ class PlanningProblem:
         theta_low: float = 0.3,                                     # Earnings in unemployment
         r: float = 0.02,                                            # Interest rate of risk-free asset
         sigma_perm_assets: Union[float, list, np.ndarray] = 0.1,    # Std. dev. of log permanent asset return shocks
-        sigma_tran_assets: Union[float, list, np.ndarray] = 0.1,    # Std. dev. of log transitory asset return shocks
-        rho_assets: Union[float, list, np.ndarray] = 0.99,          # Persistence of asset return predictor
+        sigma_tran_assets: Union[float, list, np.ndarray] = 0.2,    # Std. dev. of log transitory asset return shocks
+        rho_assets: Union[float, list, np.ndarray] = 0.8,           # Persistence of asset return predictor
         kappa_assets: Union[float, list, np.ndarray] = 0.0,         # Intercept of asset return predictor
-        xi_assets: Union[float, list, np.ndarray] = 0.5,            # Loading on asset return predictor
+        xi_assets: Union[float, list, np.ndarray] = 0.01,           # Loading on asset return predictor
         M: int = 4096,                                              # Number of RQMC nodes
         seed: int = 1996,                                           # Seed for RQMC
     ):
@@ -31,7 +32,8 @@ class PlanningProblem:
         self.gamma, self.beta = float(gamma), float(beta)
 
         # Normalized income process
-        self.R, self.G = 1.0 + r, 1.0 + g
+        self.r, self.g = float(r), float(g)
+        self.R, self.G = 1.0 + self.r, 1.0 + self.g
         self.sigma_tran, self.sigma_perm = float(sigma_tran), float(sigma_perm)
 
         # Unemployment
@@ -210,9 +212,68 @@ class PlanningProblem:
         """Map share a(m) to consumption level:c_t = a_t(m_t) * m_t."""
         return np.clip(a * m, 1e-10, None)
     
+    # ------------------------------------------------------------------
+    # Post-decision Bellman equation
+    # ------------------------------------------------------------------
+    def pd_bellman(self, omega, a, z_vec, c_share_policy, v_post, min_share=1e-6):
+        """Calculate the post-decision value function V^{+}(a, z) = max_{omega} E[u(c) + beta * V^{+}(a', z') ]
+        given a consumption policy and asset weights.
+        """
+        # Shocks -> (z', R') and R^{p'}
+        zs_next, Rs_next = self.zs_R_next(z_vec)                           # (2M, n_risky), (2M, n_assets)
+        R_p_next = Rs_next @ omega                                       # (2M,)
+
+        # m' branches
+        m_emp, m_unemp = self.m_next(a, R_p_next)                     # (2M,), (2M,)
+
+        # Build point arrays for interpolation
+        pts_emp   = np.column_stack([m_emp,  zs_next])                   # (2M, 1+n_risky)
+        pts_unemp = np.column_stack([m_unemp, zs_next])
+        #pts_emp   = self._clamp_pts(c_policy, np.column_stack([m_emp,  zs_next]))
+        #pts_unemp = self._clamp_pts(c_policy, np.column_stack([m_unemp, zs_next]))
+
+
+        # Next-period consumption via current policy a'(m',z'), then c' = a' * m'
+        c_share_next_emp   = np.clip(c_share_policy(pts_emp),   min_share, 1.0 - min_share)
+        c_share_next_unemp = np.clip(c_share_policy(pts_unemp), min_share, 1.0 - min_share)
+        c_next_emp   = self.consumption_from_share(c_share_next_emp,   m_emp)
+        c_next_unemp = self.consumption_from_share(c_share_next_unemp, m_unemp)
+
+        # Post-decision capital
+        a_next_emp = m_emp - c_next_emp
+        a_next_unemp = m_unemp - c_next_unemp
+
+        # Utility
+        u_emp   = self.u(c_next_emp)                  # (2M,)
+        u_unemp = self.u(c_next_unemp)                 # (2M,)
+
+        # Post-decision value
+        v_post_emp = v_post(np.column_stack([a_next_emp, zs_next]))
+        v_post_unemp = v_post(np.column_stack([a_next_unemp, zs_next]))
+
+        # Weighted expectation over employment states
+        pE = (1.0 - self.unemp_prob)
+        obj = pE * (u_emp + self.beta * v_post_emp).mean() + \
+            self.unemp_prob * (u_unemp + self.beta * v_post_unemp).mean()
+        return float(obj)
+    
+    def bellman(self, c, m, z_vec, v_post):
+        """Calculate the Bellman equation for the states (m,z) given a consumption level c and a post-decision-value function"""
+        a = m-c
+        return self.u(c) + self.beta * v_post([[a, *z_vec]])
+
     # ---------------------------
     # g_i expectations for portfolio FOCs
     # ---------------------------
+    @staticmethod
+    def _clamp_pts(policy, pts):
+        grids = getattr(policy, "grid", None) or getattr(policy, "points", None)
+        if grids is not None:
+            for j, g in enumerate(grids):
+                pts[:, j] = np.clip(pts[:, j], float(g[0]), float(g[-1]))
+        return pts
+    
+
     def g_vector(self, c_t: float, omega: np.ndarray, m_t: float, z_t: np.ndarray,
                  a_policy: RegularGridInterpolator) -> np.ndarray:
         """
@@ -229,8 +290,11 @@ class PlanningProblem:
         m_emp, m_unemp = self.m_next(rs_t, R_p_next)                     # (2M,), (2M,)
 
         # Build point arrays for interpolation
-        pts_emp   = np.column_stack([m_emp,  zs_next])                   # (2M, 1+n_risky)
-        pts_unemp = np.column_stack([m_unemp, zs_next])
+        #pts_emp   = np.column_stack([m_emp,  zs_next])                   # (2M, 1+n_risky)
+        #pts_unemp = np.column_stack([m_unemp, zs_next])
+        pts_emp   = self._clamp_pts(a_policy, np.column_stack([m_emp,  zs_next]))
+        pts_unemp = self._clamp_pts(a_policy, np.column_stack([m_unemp, zs_next]))
+
 
         # Next-period consumption via current policy a'(m',z'), then c' = a' * m'
         a_next_emp   = np.clip(a_policy(pts_emp),   0.0, 1.0)
@@ -250,19 +314,127 @@ class PlanningProblem:
             self.unemp_prob * (upd_unemp[:, None] * Rs_next).mean(axis=0)
         return g  # (n_assets,)
     
-    def euler_residuals(self, c, omega, m, z, a_policy, idx_active):
+    def smooth_fisher_burmeister(self, a, b, mu=1e-6):
+        """Smoothed Fisher-Burmeister function for complementarity conditions."""
+        return np.sqrt(a**2 + b**2 + 2.0*mu) - (a + b)
+    
+    def euler_residuals(self, c, omega, m, z, a_policy, c_upper, xi: float | None = None, mu_fb: float = 1e-6) -> np.ndarray:
         """Residuals: [Euler, portfolio equalization on active face]."""
         g = self.g_vector(c, omega, m, z, a_policy)       # (n,)
         gbar = float(np.dot(omega, g))
+
+        if xi is None:
+            xi = gbar
+
+        fb_r_port = self.smooth_fisher_burmeister(omega, xi - g, mu=mu_fb)
+
+        simplex_r = np.sum(omega) - 1.0
         # Euler
         r0 = self.u_prime(c) - self.beta * gbar
-        # Portfolio equalization on the face (A-1 independent equations)
-        if idx_active.size == 1:
-            r_port = np.zeros(0, dtype=float)
-        else:
-            ga = g[idx_active]
-            r_port = ga[:-1] - ga[-1]
-        return np.concatenate([[r0], r_port])
+        r0 = self.smooth_fisher_burmeister(r0, c_upper-c, mu=0.0)
+        return np.concatenate([[r0], [simplex_r], fb_r_port])
+    
+    # ---------------------------
+    # Policy evaluation & errors
+    # ---------------------------
+
+    def get_euler_errors(self, m_grid, z_grids, c_share_policy, omega_policy, episodes=100):
+        """
+        Simulate Euler/KKT residuals along sample paths starting from each m on the grid,
+        with the initial predictor z set to the component-wise median of each z-grid.
+        Uses the provided consumption-share policy a(m,z) and portfolio policy ω(m,z).
+
+        Returns
+        -------
+        errors : (len(m_grid)*episodes,)  vector of log10(max-abs residual) per step
+        states : {'m': (len(m_grid), T+1), 'z': (len(m_grid), T+1, n_risky)}
+        avg_return : float, average discounted utility over start nodes
+        """
+
+        T = int(episodes)
+        n_risky = len(z_grids)
+
+        # component-wise median z as start state
+        z_med = np.array([zg[len(zg)//2] for zg in z_grids], dtype=float)
+
+        n_nodes = len(m_grid)
+        states_m = np.empty((n_nodes, T + 1), dtype=float)
+        states_z = np.empty((n_nodes, T + 1, n_risky), dtype=float)
+        euler_errors = np.empty((n_nodes, T), dtype=float)
+        avg_return = 0.0
+
+        def eval_w(m, z_vec):
+            w = omega_policy([[m, *z_vec]])[0]
+            w = np.clip(w, 0.0, None)
+            s = w.sum()
+            return w / s if s > 0 else np.full(self.n_assets, 1.0 / self.n_assets)
+
+        # unpack params
+        kappa = np.atleast_1d(self.kappa_assets)
+        xi    = np.atleast_1d(self.xi_assets)
+        rho   = np.atleast_1d(self.rho_assets)
+        sig_z = np.atleast_1d(self.sigma_perm_assets)   # persistent predictor innovation
+        sig_R = np.atleast_1d(self.sigma_tran_assets)   # transitory return shock
+
+        for i, m0 in enumerate(m_grid):
+            m_path = np.empty(T + 1, dtype=float)
+            z_path = np.empty((T + 1, n_risky), dtype=float)
+            c_path = np.empty(T, dtype=float)
+
+            m_path[0] = float(m0)
+            z_path[0, :] = z_med
+
+            U = 0.0
+            disc = 1.0
+
+            for t in range(T):
+                m_t = float(m_path[t])
+                z_t = z_path[t, :]
+
+                # policies
+                a_t = c_share_policy([[m_t, *z_t]])[0]
+                c_t = self.consumption_from_share(a_t, m_t)
+                w_t = eval_w(m_t, z_t)
+
+                # returns: risky + safe
+                eta = np.random.randn(n_risky)
+                R_risky = np.exp(kappa + xi * z_t + sig_R * eta)
+                R_safe  = self.R
+                R_all   = np.concatenate(([R_safe], R_risky))
+                Rp      = float(np.dot(w_t, R_all))
+
+                # income shocks & permanent growth
+                employed = (np.random.rand() > self.unemp_prob)
+                theta = (np.exp(self.mu_z + self.sigma_tran * np.random.randn())
+                        if employed else self.theta_low)
+                psi   = np.exp(-0.5 * self.sigma_perm**2 + self.sigma_perm * np.random.randn())
+                Gamma = self.G * psi
+
+                # next states
+                m_next = (Rp / Gamma) * max(m_t - c_t, 0.0) + theta
+                eps_z  = np.random.randn(n_risky)
+                z_next = rho * z_t + sig_z * eps_z
+
+                m_path[t + 1] = m_next
+                z_path[t + 1, :] = z_next
+
+                # utility
+                c_path[t] = c_t
+                U += disc * self.u(c_t)
+                disc *= self.beta
+
+                # Euler/KKT residual at (m_t, z_t)
+                c_upper = m_t  # consume-all cap
+                R_vec = self.euler_residuals(c=c_t, omega=w_t, m=m_t, z=z_t,
+                                            a_policy=c_share_policy, c_upper=c_upper, mu_fb=0.0)
+                euler_errors[i, t] = np.log10(max(1e-16, float(np.max(np.abs(R_vec)))))
+
+            states_m[i, :] = m_path
+            states_z[i, :, :] = z_path
+            avg_return += U / n_nodes
+
+        states = {'m': states_m, 'z': states_z}
+        return euler_errors.ravel(), states, avg_return
 
 
 #-------------------------------------------------------------------
@@ -277,19 +449,243 @@ class PlanningSolvers:
         tol: float = 1e-5,
         conv: float = 1e-5,
         min_share: float = 1e-6,
-        max_drop_iters: int = 5,
     ):
         self.m_points = m_points
         self.z_points = z_points
         self.tol = float(tol)
         self.conv = float(conv)
         self.min_share = float(min_share)
-        self.max_drop_iters = int(max_drop_iters)
     # ------------------------------------------------------------------
     # Helper functions
+    # ------------------------------------------------------------------   
+    
+    # VFI helpers
+    
+    def _init_policy_pd(self, model: PlanningProblem, warm_start: bool = False):
+        """Initialize grids, consumption share array and portfolio logits.
+
+        c_share_new stores α(m,z)=c/m (consumption share, not assets!).  
+        w_new stores per-asset weights for ω(a,z), where a is the post-decision state.          
+        """
+        m_grid = model.make_m_grid(points=self.m_points)
+        a_grid = m_grid.copy()   # post-decision grid is on a TODO: use looser grid for post-decision states?
+        z_grids = model.make_z_grids(points=self.z_points)
+        m_grid_shape = (len(m_grid),) + tuple(len(g) for g in z_grids)
+        a_grid_shape = (len(a_grid),) + tuple(len(g) for g in z_grids)
+
+        w_new = np.zeros(a_grid_shape + (model.n_assets,), dtype=float)
+
+        if warm_start:
+            from ecomodrl.benchmarks.bufferstock.problemclass import PlanningProblem as BufferStockProblem
+            from ecomodrl.benchmarks.bufferstock.problemclass import PlanningSolvers as BufferStockSolvers
+            buffer_stock = BufferStockProblem(
+                gamma = model.gamma,         
+                beta = model.beta,         
+                r = model.r,            
+                g = model.g,            
+                sigma_tran = model.sigma_tran,   
+                sigma_perm = model.sigma_perm,    
+                unemp_prob = model.unemp_prob,  
+                theta_low = model.theta_low,     
+            )
+            buffer_stock_solvers = BufferStockSolvers(grid_points=100, conv=1e-5)
+            c_share_bs_policy = buffer_stock_solvers.EGM(buffer_stock)
+            c_share_new = c_share_bs_policy(m_grid)
+            c_share_new = np.tile(c_share_new[:, None], (1,) + tuple(len(g) for g in z_grids))
+        else: 
+            c_share_new = np.full(m_grid_shape, 0.2, dtype=float) # TODO: Warm start by buffer-stock saving policy?
+        c_share_policy = model.make_multilinear(m_grid, z_grids, c_share_new)
+
+        return m_grid, a_grid, z_grids, c_share_new, c_share_policy, w_new
+    
+    def _init_pd_value(
+            self, 
+            model: PlanningProblem, 
+            a_grid, 
+            z_grids, 
+            c_share_policy: None | RegularGridInterpolator = None, 
+            omega_grid: None | np.ndarray = None, 
+            warm_start: bool = False):
+        """Initialize post-decision value function on (a,z) grid."""
+        grid_shape = (len(a_grid), ) + tuple(len(g) for g in z_grids)
+        v_post_grid = np.zeros(grid_shape, dtype=float) # TODO: Warm start by buffer-stock saving value function?
+        v_post = model.make_multilinear(a_grid, z_grids, v_post_grid)
+        if warm_start:
+            assert c_share_policy is not None, "c_share_policy must be provided for warm start."
+            assert omega_grid is not None, "omega_grid must be provided for warm start."
+            omega_grid = omega_grid + 0.5 # TODO: Quick and dirty fix...
+            v_post, v_post_grid = self.v_post_eval(model, a_grid, z_grids, v_post, c_share_policy, omega_grid)
+        return v_post, v_post_grid
+    
+    def v_post_eval(self, model, a_grid, z_grids, v_post, c_share_policy, omega_grid, max_iter=50, conv=5e-4):
+        """Iterate over (a,z) grid to evaluate post-decision value function until convergence."""
+        grid_shape = (len(a_grid), ) + tuple(len(g) for g in z_grids)
+        z_indices = [range(len(g)) for g in z_grids]
+
+        v_post_new = np.zeros(grid_shape, dtype=float)
+
+        for _ in range(1, max_iter + 1):
+            v_post_old = v_post_new.copy()
+
+            for ia, a in enumerate(a_grid):
+                for z_idx_tuple in itertools.product(*z_indices):
+                    z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx_tuple)], dtype=float)
+                    omega = omega_grid[(ia, *z_idx_tuple, slice(None))]
+                    v_post_new[(ia, *z_idx_tuple)] = model.pd_bellman(omega, a, z_vec, c_share_policy, v_post)
+
+            max_diff = np.max(np.abs(v_post_new - v_post_old))
+            v_post = model.make_multilinear(a_grid, z_grids, v_post_new)
+            if max_diff < conv:
+                break
+
+        return v_post, v_post_new
+    
+    def _check_convergence_vfi(
+        self,
+        c_share_old,
+        c_share_new,
+        omega_old,
+        omega_new,
+        v_post_old,
+        v_post_new
+    ) -> Tuple[bool, float, float, float]:
+        """
+        Sup-norm check for both consumption share α, portfolio weights ω and post-decision value functions.
+        """
+        max_dc = float(np.max(np.abs(c_share_old - c_share_new)))
+        max_dw = float(np.max(np.abs(omega_old - omega_new)))
+        max_dV = float(np.max(np.abs(v_post_old - v_post_new)))
+        return max_dV < self.conv, max_dc, max_dw, max_dV
+    
+    def weights_to_mz_policy(self, model, a_grid, m_grid, z_grids, c_share_policy, omegas):
+        """Map weights on post_decision grid to weights on pre-decision grid (m,z) for given consumption and asset allocation policy and return as multilinear interpolator"""
+        omega_policy = model.make_multilinear(a_grid, z_grids, omegas)
+        m_grid_shape = (len(m_grid),) + tuple(len(g) for g in z_grids)
+        omega_mz = np.zeros(m_grid_shape + (model.n_assets,), dtype=float)
+        z_indices = [range(len(g)) for g in z_grids]
+        for im, m in enumerate(m_grid):
+            for z_idx_tuple in itertools.product(*z_indices):
+                z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx_tuple)], dtype=float)
+                c_share = c_share_policy((m, *z_vec))
+                a = m * (1.0 - c_share)
+                omega_mz[(im, *z_idx_tuple, slice(None))] = omega_policy((a, *z_vec))
+        
+        omega_policy_mz = model.make_multilinear(m_grid, z_grids, omega_mz)
+        return omega_policy_mz
+
+    def logits_to_weights(self, logits):
+        # Additive log-ratio: logits in R^{N-1} → ω ∈ Δ^N  (ALR inverse = softmax of [logits, 0])
+        e = np.exp(np.clip(logits, -50, 50))
+        denom = 1.0 + np.sum(e)
+        return np.concatenate([e / denom, [1.0 / denom]])
+    
+    def weights_to_logits(self, omega):
+        # ω ∈ Δ^N  → logits in R^{N-1}  (ALR forward = log(ω_1..N-1 / ω_N))
+        omega = np.asarray(omega, dtype=float)
+        assert omega.ndim == 1 and omega.shape[0] >= 2, "omega must be 1D with at least 2 elements."
+        omega = np.clip(omega, 1e-15, None) 
+        omega /= omega.sum()
+        logits = np.log(omega[:-1]) - np.log(omega[-1])
+        return logits
+
+    # ------------------------------------------------------------------
+    # Value Function Iteration (VFI)
     # ------------------------------------------------------------------
 
-    def _init_policy(self, model: PlanningProblem):
+    def VFI(self,
+            model: PlanningProblem,
+            verbose: bool = False,
+            max_iter: int = 1_000
+            ) -> Tuple[RegularGridInterpolator, RegularGridInterpolator]:
+            """Compute optimal consumption share and portfolio choice policy by TI."""
+            # --- Setup ----------------------------------------------------
+            m_grid, a_grid, z_grids, c_share_new, c_share_policy, w_new = self._init_policy_pd(model, warm_start=True)
+            v_post, v_post_new = self._init_pd_value(model, a_grid, z_grids, c_share_policy, w_new, warm_start=True)
+            z_indices = [range(len(g)) for g in z_grids]
+
+            vfe_conv = 5e-4
+
+            # --- Iteration ------------------------------------------------
+            for it in range(1, max_iter + 1):
+                c_share_old = c_share_new.copy()
+                w_old = w_new.copy()
+                v_post_old = v_post_new.copy()
+
+                # --- (1) Weight improvement by value maximization on each (a,z)
+                start = time.time()
+                for ia, a in enumerate(a_grid):
+                    for z_idx_tuple in itertools.product(*z_indices):
+                        z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx_tuple)], dtype=float)
+
+                        def optimize_weights(v):
+                            omega = self.logits_to_weights(v)
+                            return -model.pd_bellman(omega, a, z_vec, c_share_policy, v_post, min_share=self.min_share)
+                        
+                        logits = self.weights_to_logits(w_new[(ia, *z_idx_tuple, slice(None))])
+
+                        res = minimize(optimize_weights, logits, method="Nelder-Mead")
+                        w_star = self.logits_to_weights(res.x) if res.success else w_new[(ia, *z_idx_tuple, slice(None))]
+                        w_new[(ia, *z_idx_tuple, slice(None))] = w_star
+                print(f"Weight update time: {time.time() - start:.2f} seconds")
+
+                # --- Policy evaluation for post-decision V with new w
+                v_post, v_post_new = self.v_post_eval(model, a_grid, z_grids, v_post, c_share_policy, w_new, conv=vfe_conv)
+
+                # --- (2) Outer-c update
+                start = time.time()
+                for im, m in enumerate(m_grid):
+                    for z_idx_tuple in itertools.product(*z_indices):
+                        z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx_tuple)], dtype=float)
+                        
+                        # bounds; tiny margin to avoid degenerate corners numerically
+                        c_lo = self.min_share * float(m)
+                        c_hi = (1.0 - self.min_share) * float(m)
+                        if c_hi <= c_lo + 1e-15:
+                            c_share_new[(im, *z_idx_tuple)] = 1.0  # consume all if m≈0
+                            continue
+
+                        def optimize_cons(c: float):
+                            c = float(c)
+                            return -model.bellman(c, m, z_vec, v_post)
+
+                        res = minimize_scalar(optimize_cons, bounds=(c_lo, c_hi), method='bounded',
+                                            options=dict(xatol=self.tol, maxiter=max_iter))
+                        c_star = float(res.x if res.success else (0.5*(c_lo+c_hi)))
+                        c_share_new[(im, *z_idx_tuple)] = np.clip(c_star / m, 0.0, 1.0)
+                c_share_policy = model.make_multilinear(m_grid, z_grids, c_share_new)
+                print(f"Consumption update time: {time.time() - start:.2f} seconds")
+
+                # --- (3) Policy evaluation for W with fixed (a, w)
+                start = time.time()
+                v_post, v_post_new = self.v_post_eval(model, a_grid, z_grids, v_post, c_share_policy, w_new, conv=vfe_conv)
+                print(f"Value function evaluation time: {time.time() - start:.2f} seconds")
+
+                # --- Convergence check ---------------------------------------
+                converged, max_diff_c_share, max_diff_w, max_diff_v_post = self._check_convergence_vfi(c_share_old, c_share_new, w_old, w_new, v_post_old, v_post_new)
+                if max_diff_v_post < 1e-3:
+                    vfe_conv = 1e-5  # tighten VFE convergence tolerance
+
+                if verbose:
+                    print(
+                        f"[VFI iter {it}] max|Δa|={max_diff_c_share:.3e}, "
+                        f"max|Δω|={max_diff_w:.3e}, max|ΔV|={max_diff_v_post:.3e}, converged={converged}"
+                    )
+
+                if converged:
+                    break
+
+            w_policy = self.weights_to_mz_policy(model, a_grid, m_grid, z_grids, c_share_policy, w_new)
+
+            return c_share_policy, w_policy
+
+
+    # ------------------------------------------------------------------
+    # Time iteration (TI)
+    # ------------------------------------------------------------------
+
+    # TI helpers
+
+    def _init_policy(self, model: PlanningProblem, warm_start: bool = False):
         """Initialize grids, consumption share array and portfolio logits.
 
         a_new stores α(m,z)=c/m (consumption share, not assets!).  
@@ -299,13 +695,31 @@ class PlanningSolvers:
         z_grids = model.make_z_grids(points=self.z_points)
         grid_shape = (len(m_grid),) + tuple(len(g) for g in z_grids)
 
-        a_new = np.full(grid_shape, 0.2, dtype=float)
+        w_new = np.zeros(grid_shape + (model.n_assets,), dtype=float)
+        w_policy = model.make_multilinear(m_grid, z_grids, w_new)
+
+        if warm_start:
+            from ecomodrl.benchmarks.bufferstock.problemclass import PlanningProblem as BufferStockProblem
+            from ecomodrl.benchmarks.bufferstock.problemclass import PlanningSolvers as BufferStockSolvers
+            buffer_stock = BufferStockProblem(
+                gamma = model.gamma,         
+                beta = model.beta,         
+                r = model.r,            
+                g = model.g,            
+                sigma_tran = model.sigma_tran,   
+                sigma_perm = model.sigma_perm,    
+                unemp_prob = model.unemp_prob,  
+                theta_low = model.theta_low,     
+            )
+            buffer_stock_solvers = BufferStockSolvers(grid_points=100, conv=1e-5)
+            a_bs_policy = buffer_stock_solvers.EGM(buffer_stock)
+            a_new = a_bs_policy(m_grid)
+            a_new = np.tile(a_new[:, None], (1,) + tuple(len(g) for g in z_grids))
+        else: 
+            a_new = np.full(grid_shape, 0.2, dtype=float)
         a_policy = model.make_multilinear(m_grid, z_grids, a_new)
 
-        w_logits_new = np.zeros(grid_shape + (model.n_assets,), dtype=float)
-        w_policy = model.make_multilinear(m_grid, z_grids, w_logits_new)
-
-        return m_grid, z_grids, a_new, a_policy, w_logits_new, w_policy
+        return m_grid, z_grids, a_new, a_policy, w_new, w_policy
     
     def _policy_eval_on_grid(self, policy: RegularGridInterpolator, grids: Tuple[np.ndarray, ...], out_shape):
         """Evaluate scalar policy on full tensor grid."""
@@ -313,6 +727,21 @@ class PlanningSolvers:
         pts = np.column_stack([c.ravel() for c in coords])
         vals = policy(pts).reshape(out_shape)
         return vals
+    
+    def _project_simplex(self, v: np.ndarray) -> np.ndarray:
+        """Project v to {w >= 0, sum w = 1} (Euclidean)."""
+        v = np.asarray(v, dtype=float)
+        if v.ndim == 1:
+            v = v[None, :]
+        u = np.sort(v, axis=1)[:, ::-1]
+        cssv = np.cumsum(u, axis=1) - 1
+        ind = np.arange(1, v.shape[1] + 1)
+        rho = np.sum(u > (cssv / ind), axis=1) - 1
+        theta = (cssv[np.arange(v.shape[0]), rho] / (rho + 1))
+        w = np.maximum(v - theta[:, None], 0.0)
+        s = np.sum(w, axis=1, keepdims=True)
+        w = w / np.maximum(s, 1e-16)
+        return w[0] if w.shape[0] == 1 else w
 
     def _check_convergence(
         self,
@@ -335,226 +764,71 @@ class PlanningSolvers:
         )
 
         max_diff_a = np.max(np.abs(a_old - a_new_eval))
-        max_diff_w = np.max(np.abs(w_old - w_new_eval)) 
+        max_diff_w = float(np.max(np.abs(w_old.reshape(-1, w_old.shape[-1]) -
+                            w_new_eval.reshape(-1, w_old.shape[-1]))))
         return (max_diff_a < self.conv and max_diff_w < self.conv), max_diff_a, max_diff_w
-    
-    @staticmethod
-    def _softmax(x: np.ndarray) -> np.ndarray:
-        """Softmax for a 1D vector"""
-        x = np.asarray(x, dtype=float)
-        x = x - np.max(x)             
-        ex = np.exp(x)
-        s = np.sum(ex)
-        return ex / s if s > 0 else np.full_like(ex, 1.0 / len(ex))
-    
-    @staticmethod
-    def _sigmoid(x):  
-        """stable mapping to (0,1)"""
-        return 1.0 / (1.0 + np.exp(-x))
-    
-    @staticmethod
-    def _pack_phi_from_logits(logits, idx_active):
-        """Convert full logits to active-face (A-1) anchored logits."""
-        A = idx_active.size
-        if A == 1:
-            return np.zeros(0, dtype=float)
-        l = np.asarray(logits, float)[idx_active]
-        l[~np.isfinite(l)] = -20.0
-        l = l - l[-1]              # anchor last active to 0
-        return l[:-1]
-    
-    def _pack_phi_from_weights(self, w, idx_active):
-        """Convert full weights (possibly with zeros) to (A-1) anchored logits."""
-        A = idx_active.size
-        if A == 1:
-            return np.zeros(0, dtype=float)
-        ww = np.clip(np.asarray(w, float)[idx_active], self.min_share * 0.1, 1.0)
-        ww /= ww.sum()
-        l = np.log(ww)
-        l = l - l[-1]
-        return l[:-1]
-    
-    def _weights_from_logits(self, logits):
-        return self._softmax(np.asarray(logits, float))
-    
-    def _build_vars(self, chi, phi, idx_active, m, n):
-        """
-        Map (chi, phi) -> (c, omega_full) on current active set.
 
-        chi -> consumption c in (0,m); we clip away from exact 0 or m to avoid
-        u'(0)=∞ and zero savings instability.
+    def _solve_node(self,
+                    model: PlanningProblem,
+                    m: float,
+                    z_vec: np.ndarray,
+                    a0: float,
+                    w0: np.ndarray,                                   
+                    a_policy: RegularGridInterpolator,
+                    mu_fb: float = 1e-4) -> Tuple[float, np.ndarray]:
         """
-        # c in [tiny, m - tiny]
-        cap = max(m, 1e-14)
-        c_raw = self._sigmoid(chi) * cap
-        c = np.clip(c_raw, 1e-12, cap - 1e-12)
+        Solve for (a, ω) at a node by root-finding on:
+          [ Euler(c) = 0, sum(ω)-1 = 0, φ_μ(ω_i, gbar - g_i) = 0 ].
+        Returns (a*, w*).
+        """
+        # ensure feasible warm start
+        w0 = self._project_simplex(w0)
+        g0 = model.g_vector(c_t=a0*m, omega=w0, m_t=m, z_t=z_vec, a_policy=a_policy)     
+        xi0 = float(np.dot(w0, g0))                     
+        x0 = np.concatenate([[a0], w0, [xi0]])
 
-        # ω on active set via softmax
-        omega = np.zeros(n, dtype=float)
-        if idx_active.size == 1:
-            omega[idx_active[0]] = 1.0
+        # --- early exit when savings are (numerically) negligible -------
+        #     portfolio is irrelevant if rs ≈ 0 ⇒ skip the ω,ξ solve                                                         
+        if a0 >= (1.0 - self.min_share):    
+            a0 = float(np.clip(a0, self.min_share, 1.0 - self.min_share))      
+            c0 = a0 * m                                     
+            # Decide consumption corner by the sign of F_a = u'(c) - β ḡ         
+            g = model.g_vector(c_t=c0, omega=w0, m_t=m, z_t=z_vec, a_policy=a_policy)  
+            gbar = float(np.dot(w0, g))                                          
+            F_a = model.u_prime(c0) - model.beta * gbar                          
+            a_star = (1.0 - self.min_share) if (F_a > 0) else self.min_share     
+            return a_star, w0   
+
+        def residuals(x):
+            a_share = float(np.clip(x[0], self.min_share, 1.0 - self.min_share))
+
+            # use a smooth interior map only for simulating g and c' (no sharp projection)
+            # option S1: softplus + renorm (allows near-zero, differentiable)
+            eps = 1e-12
+            w_pos = np.maximum(x[1:-1], 0.) + np.log1p(np.exp(-np.abs(x[1:-1])))          # softplus
+            omega = w_pos / w_pos.sum()          # sum-to-one
+            xi = float(x[-1])                
+            c_now = a_share * m
+            c_upper = 1.0 - self.min_share * m
+            F = model.euler_residuals(c_now, omega, m, z_vec, a_policy, c_upper, xi, mu_fb=mu_fb) 
+            # Replace the simplex residual inside F with the raw one so it's not identically 0.
+            F[1] = np.sum(x[1:-1]) - 1.0
+            return F
+
+        sol = root(residuals, x0, method='hybr', tol=self.tol)
+
+        if not sol.success or not np.all(np.isfinite(sol.x)):
+            a_star = float(np.clip(sol.x[0], self.min_share, 1.0 - self.min_share))
+            #print((m, z_vec))
+            #print(np.min(omega_test))
+            print((m, z_vec, a_star))
+            w_star = w0
         else:
-            theta = np.concatenate([phi, [0.0]])   # last anchored
-            omega[idx_active] = self._softmax(theta)
-        return c, omega
-    
-    def _solve_node(self, model: PlanningProblem, m: float, z: np.ndarray,
-                    a0: float, w_logits0: np.ndarray,
-                    a_policy: RegularGridInterpolator):
-        """
-        Per-node solve with robust active-set:
-        - Unknowns: chi (bounds c) + phi (A-1 logits on the active set).
-        - KKT on active set: g_i equalized; Euler pins the common level via ḡ.
-        - Drop tiny weights; re-activate any inactive asset that violates KKT.
-        """
-        n = model.n_assets
-        a0 = float(np.clip(a0, self.min_share, 1.0 - self.min_share))
-        chi0 = np.log(a0) - np.log(1.0 - a0)  # logistic param for a=c/m (consumption share)
+            a_star = float(np.clip(sol.x[0], self.min_share, 1.0 - self.min_share))
+            w_star = self._project_simplex(sol.x[1:-1])     
+            #print((m, z_vec))      
 
-        def residuals(x, idx_active):
-            chi = x[0]; phi = x[1:]
-            c, omega = self._build_vars(chi, phi, idx_active, m, n)
-            return model.euler_residuals(c, omega, m, z, a_policy, idx_active)
-
-        # --- initialization of active set ------------------------------
-        w0_full = self._weights_from_logits(np.asarray(w_logits0, float))
-        if np.all(w0_full < self.min_share):
-            # Degenerate warm start: activate the largest-weight asset
-            j0 = int(np.argmax(w0_full))
-            active = np.array([j0], dtype=int)
-        else:
-            active = np.array(
-                np.flatnonzero(w0_full >= self.min_share), dtype=int
-            )
-            if active.size == 0:
-                active = np.array([int(np.argmax(w0_full))], dtype=int)
-
-        phi0 = self._pack_phi_from_logits(w_logits0, active)
-        kkt_tol = max(self.tol, 1e-10)
-
-        # --- active-set loop: drop & (re)activate ----------------------
-        for _ in range(self.max_drop_iters):
-            # Solve on current face
-            x0 = np.concatenate([[chi0], phi0])
-            sol = root(
-                lambda x: residuals(x, active), 
-                x0, 
-                method='hybr', 
-                tol=self.tol,
-            )
-            if np.all(np.isfinite(sol.x)) and np.linalg.norm(sol.fun) < np.linalg.norm(residuals(x0, active)) * 1.1:
-                x = sol.x
-            else:
-                x = x0  # robust fallback
-
-            chi_hat = float(x[0]); phi_hat = x[1:]
-            c_hat, omega_hat = self._build_vars(chi_hat, phi_hat, active, m, n)
-
-            # ----- compute g and equalization residual on actives --------
-            g_all = model.g_vector(c_hat, omega_hat, m, z, a_policy)         
-            gbar_hat = float(np.dot(omega_hat, g_all))                        
-            ga = g_all[active]                                                
-            eq_resid = np.max(np.abs(ga - ga[-1])) if active.size > 1 else 0
-
-            # ----- 1) If root failed OR equalization still poor -> shrink face
-            if (not sol.success) or (eq_resid > kkt_tol and active.size > 1):
-                #print("1")
-                tol_keep = kkt_tol
-                winners_mask = (ga >= ga.max() - tol_keep)
-                keep = active[winners_mask]
-                if keep.size == 0:
-                    keep = np.array([active[int(np.argmax(ga))]], dtype=int)
-                active = keep
-                phi0 = self._pack_phi_from_weights(omega_hat, active)
-                chi0 = chi_hat
-                continue
-
-            # ----- 2) If already singleton but solver failed: scalar Euler solve
-            if (not sol.success) and active.size == 1:      
-                print("2")                     
-                i_only = int(active[0])                                         
-                omega_only = np.zeros(n, dtype=float); omega_only[i_only] = 1.0  
-                # Solve u'(c) = beta * gbar(c, omega_only) in c ∈ (ε, m-ε)       
-                eps_c = 1e-10                                                    
-                c_lo = max(eps_c, 1e-12)                                         
-                c_hi = max(m - eps_c, c_lo * 10)                                
-                # monotone bracket function
-                def f_euler(c):
-                    gvec = model.g_vector(c, omega_only, m, z, a_policy)
-                    return model.u_prime(c) - model.beta * float(np.dot(omega_only, gvec))
-                # ensure the bracket is valid (expand if needed)
-                lo, hi = c_lo, c_hi
-                f_lo, f_hi = f_euler(lo), f_euler(hi)
-                expand = 0
-                while f_lo * f_hi > 0 and expand < 8:                             
-                    lo *= 0.5; hi = min(m - eps_c, hi + 0.5 * m)
-                    f_lo, f_hi = f_euler(lo), f_euler(hi); expand += 1
-                if f_lo * f_hi <= 0:
-                    from scipy.optimize import brentq
-                    c_star = brentq(f_euler, lo, hi, xtol=self.tol, rtol=1e-6)    
-                else:
-                    # fallback: accept current c_hat but keep singleton face
-                    c_star = float(np.clip(c_hat, lo, hi))                        
-                a_star = float(np.clip(c_star / m, self.min_share, 1.0 - self.min_share))
-                w_logits = np.full(n, -20.0, dtype=float)
-                w_logits[i_only] = 0.0
-                return a_star, w_logits                 
-
-            # ----- 3) Drop tiny active weights -------------------------
-            tiny_mask = (omega_hat[active] < self.min_share)
-            if np.any(tiny_mask):
-                print("3")
-                keep = active[~tiny_mask]
-                if keep.size == 0:
-                    # keep the largest among current actives to avoid empty face
-                    keep = np.array([active[int(np.argmax(omega_hat[active]))]], dtype=int)
-                # Repack φ on the smaller face; keep χ warm start
-                phi0 = self._pack_phi_from_weights(omega_hat, keep)
-                active = keep
-                chi0 = chi_hat
-                continue  # re-solve on reduced face
-
-            # ----- 4) KKT re-activation check --------------------------
-            # If some inactive asset i has g_i > gbar + tol, add the worst violator.
-            g_all = model.g_vector(c_hat, omega_hat, m, z, a_policy)
-            gbar_hat = float(np.dot(omega_hat, g_all))
-            inactive = np.setdiff1d(np.arange(n), active, assume_unique=True)
-            if inactive.size > 0:
-                violations = g_all[inactive] - gbar_hat
-                j_viol = np.argmax(violations)
-                if violations[j_viol] > kkt_tol:
-                    #print("4")
-                    # re-activate this violator
-                    i_add = inactive[j_viol]
-                    new_active = np.concatenate([active, [i_add]])
-                    phi0 = self._pack_phi_from_weights(omega_hat, new_active)
-                    active = new_active
-                    chi0 = chi_hat
-                    continue  # re-solve on expanded face
-            
-            #print("Success")
-            # No drops and no KKT violations -> converged on this node
-            a_star = float(np.clip(c_hat / m, self.min_share, 1.0 - self.min_share))
-            # store logits: active assets use log(ω), inactives set to large negative
-            w_logits = np.full(n, -20.0, dtype=float)
-            w_act = np.clip(omega_hat[active], self.min_share * 0.1, 1.0)
-            w_act /= w_act.sum()
-            w_logits[active] = np.log(w_act)
-            return a_star, w_logits
-        
-         # ----------------- FINAL FALLBACK: guaranteed return ---------------------
-        # * If the loop exits without returning, produce a safe, feasible solution.
-        # * Use last feasible c_hat and collapse to best single asset for stability.
-        g_last = model.g_vector(c_hat, omega_hat, m, z, a_policy)  # *
-        i_best = int(np.argmax(g_last))                                       # *
-        w_logits_fb = np.full(n, -20.0, dtype=float); w_logits_fb[i_best] = 0.0  # *
-        a_fb = float(np.clip(c_hat / m, self.min_share, 1.0 - self.min_share))  # *
-        return a_fb, w_logits_fb 
-
-
-    # ------------------------------------------------------------------
-    # Time iteration (TI)
-    # ------------------------------------------------------------------
+        return a_star, w_star   
 
     def TI(self, 
            model: PlanningProblem, 
@@ -563,13 +837,13 @@ class PlanningSolvers:
            ) -> Tuple[RegularGridInterpolator, RegularGridInterpolator]:
             """Compute optimal consumption share and portfolio choice policy by TI."""
             # --- Setup ----------------------------------------------------
-            m_grid, z_grids, a_new, a_policy, w_logits_new, w_policy = self._init_policy(model)
+            m_grid, z_grids, a_new, a_policy, w_new, w_policy = self._init_policy(model, warm_start=True)
             z_indices = [range(len(g)) for g in z_grids]
 
             # --- Iteration ------------------------------------------------
             for it in range(1, max_iter + 1):
                 a_old = a_new.copy()
-                w_old = w_logits_new.copy()
+                w_old = w_new.copy()
 
                 # Pointwise policy improvement: (c, ω) via local active-set solve
                 for im, m in enumerate(m_grid):
@@ -577,19 +851,21 @@ class PlanningSolvers:
                         z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx_tuple)], dtype=float)
 
                         # Warm starts from current policy interpolants
-                        pt = np.array([[m, *z_vec]], dtype=float)
-                        a0 = float(np.clip(a_policy(pt)[0], self.min_share, 1.0 - self.min_share))
-                        w0 = w_policy(pt)[0]  # logits vector (n_assets,)
+                        #pt = np.array([[m, *z_vec]], dtype=float)
+                        #a0 = float(np.clip(a_policy(pt)[0], self.min_share, 1.0 - self.min_share))
+                        #w0 = w_policy(pt)[0]  # logits vector (n_assets,)
+                        a0 = a_new[(im, *z_idx_tuple)]
+                        w0 = w_new[(im, *z_idx_tuple, slice(None))]
 
-                        a_star, w_logits_star = self._solve_node(model, m, z_vec, a0, w0, a_policy)
+                        a_star, w_star = self._solve_node(model, m, z_vec, a0, w0, a_policy)
 
                         # write back
-                        a_new[(im, *z_idx_tuple)] = a_star
-                        w_logits_new[(im, *z_idx_tuple, slice(None))] = w_logits_star
+                        a_new[(im, *z_idx_tuple)] = a_star 
+                        w_new[(im, *z_idx_tuple, slice(None))] = w_star
 
                 # Update interpolants
                 a_policy = model.make_multilinear(m_grid, z_grids, a_new)
-                w_policy = model.make_multilinear(m_grid, z_grids, w_logits_new)
+                w_policy = model.make_multilinear(m_grid, z_grids, w_new)
 
                 # --- Convergence check ---------------------------------------
                 converged, max_diff_a, max_diff_w = self._check_convergence(a_old, a_policy, w_old, w_policy, m_grid, z_grids)
@@ -604,93 +880,3 @@ class PlanningSolvers:
                     break
 
             return a_policy, w_policy
-
-
-
- # ---------------------------
-    # Euler helpers
-    # ---------------------------
-
-    # def demu_next(self, c_next_employed: np.ndarray, c_next_unemployed: np.ndarray, R: np.ndarray) -> float:
-    #     # β * E[ R / ((G*Ψ_{t+1})^γ) * u'(c_{t+1}) ]
-    #     factor = (R / self.SDF_denom)
-    #     employed = np.mean(factor * self.u_prime(c_next_employed))
-    #     unemployed = np.mean(factor * self.u_prime(c_next_unemployed))
-    #     return self.beta * ((1.0 - self.unemp_prob) * employed + self.unemp_prob * unemployed)
-
-    # def euler_residual(self, a: np.ndarray, m_t: float, z_t: Union[float, np.ndarray], 
-    #                    policy: RegularGridInterpolator) -> float:
-    #     c_t  = self.consumption_from_share(a[0], m_t)
-    #     rs_t = m_t - c_t
-
-    #     zs_next, Rs_next = self.zs_R_next(z_t)                                      # (2M, n), (2M, n)
-    #     R_eff = Rs_next @ a[1:]                                                     # (2M,)
-
-    #     m_next_empl, m_next_unempl = self.m_next(rs_t, R_eff)                       # (2M,), (2M,)
-    #     pts_empl    = np.column_stack([m_next_empl, zs_next])                       # (2M, 1+n)
-    #     pts_unempl    = np.column_stack([m_next_unempl, zs_next])                   # (2M, 1+n)
-    #     a_next_empl = policy(pts_empl)                                              # (2M,)
-    #     a_next_unempl = policy(pts_unempl)                                          # (2M,)
-
-    #     c_next_empl = self.consumption_from_share(a_next_empl, m_next_empl)         # (2M,)
-    #     c_next_unempl = self.consumption_from_share(a_next_unempl, m_next_unempl)   # (2M,)
-    #     rhs    = self.demu_next(c_next_empl, c_next_unempl, R_eff)                  # scalar
-    #     return self.u_prime(c_t) - rhs
-    
-    # def c_from_euler(self, c_next: np.ndarray) -> float:
-    #     """Recover c_t from: u'(c_t) = (β R / G) E[ u'(c_{t+1}) / Ψ_{t+1} ]."""
-    #     mu = self.demu_next(c_next)
-    #     return self.u_prime_inv(mu)
-
-    # ---------------------------
-    # Policy evaluation & errors
-    # ---------------------------
-    # def get_euler_errors(self, grid, policy, episodes=100):
-    #     """
-    #     Simulate Euler residuals along sample paths starting from each m on the grid,
-    #     using the provided consumption-share policy a(·). Returns (errors, states, avg_return).
-    #     """
-    #     T = int(episodes)
-    #     grid = np.asarray(grid, dtype=float)
-    #     grid_len = grid.size
-
-    #     states = np.empty((grid_len, T + 1), dtype=float)
-    #     euler_errors = np.empty((grid_len, T), dtype=float)
-    #     avg_return = 0.0
-
-    #     for i, m0 in enumerate(grid):
-    #         m_path = np.empty(T + 1, dtype=float)
-    #         c_path = np.empty(T, dtype=float)
-    #         m_path[0] = m0
-
-    #         U = 0.0
-    #         power = 1.0
-
-    #         for t in range(T):
-    #             a_t_share = float(policy(m_path[t]))  # consumption share
-    #             c_t = self.consumption_from_share(a_t_share, m_path[t])
-
-    #             # draw shocks
-    #             if np.random.uniform(0.0, 1.0) < self.unemp_prob:
-    #                 theta_draw = self.theta_low
-    #             else:
-    #                 theta_draw = np.exp(np.random.normal(self.mu_z, self.sigma_tran))
-    #             psi_draw = np.exp(np.random.normal(-0.5 * self.sigma_perm**2, self.sigma_perm))
-
-    #             m_path[t + 1] = self.R / (self.G * psi_draw) * (m_path[t] - c_t) + theta_draw
-
-    #             c_path[t] = c_t
-    #             U += power * self.u(c_t)
-    #             power *= self.beta
-
-    #         # Euler error along the realized path
-    #         err = np.empty(T, dtype=float)
-    #         for t, (c_t, m_t) in enumerate(zip(c_path, m_path[:-1])):
-    #             a_t_share = c_t / m_t  # implied share
-    #             err[t] = np.log10(abs(self.euler_residual(a_t_share, m_t, policy)))
-            
-    #         euler_errors[i, :] = err
-    #         states[i, :] = m_path
-    #         avg_return += U / grid_len
-
-    #     return euler_errors.ravel(), states.ravel(), avg_return
