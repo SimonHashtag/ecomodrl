@@ -212,27 +212,20 @@ class PlanningProblem():
     #-------------------------------------------------------------------
 
     def V_from_a(self, k_grid, z_grid, a_policy, conv) -> RegularGridInterpolator:
-        """Iterate Bellman under fixed a(k,z) policy using bilinear interpolation."""
         Nk, Nz = len(k_grid), len(z_grid)
         Vn = np.zeros((Nk, Nz))
-        V = self.make_bilinear(k_grid, z_grid, Vn)
-        # Precompute grid evaluation points for the convergence check
-        K, Z = np.meshgrid(k_grid, z_grid, indexing='ij')
-        pts = np.column_stack([K.ravel(), Z.ravel()])
         while True:
-            # Policy evaluation step: apply Bellman operator under fixed policy a(k,z)
+            V_old = Vn.copy()
+            V = self.make_bilinear(k_grid, z_grid, V_old)
             for i, k in enumerate(k_grid):
                 for j, z in enumerate(z_grid):
-                    a_ij = a_policy([[k, z]])[0]
+                    a_ij = a_policy(np.array([[k, z]])).item()
                     Vn[i, j] = self.bellman(a_ij, k, z, V)
-            # Convergence check on the grid against the previous V
-            V_prev_on_grid = V(pts).reshape(Nk, Nz)
-            err = np.max(np.abs(Vn - V_prev_on_grid))
-            # Update V to match Vn; if converged, break with the final interpolant
-            V = self.make_bilinear(k_grid, z_grid, Vn)
+            err = np.max(np.abs(Vn - V_old))
             if err < conv:
                 break
-        return V
+        return self.make_bilinear(k_grid, z_grid, Vn)
+
 
 
 #-------------------------------------------------------------------
