@@ -9,36 +9,41 @@ if __name__ == "__main__":
     # Model and solvers
     model   = PlanningProblem(M=2**11)                     
     solvers = PlanningSolvers(
-        m_points=20,          # m grid points
-        z_points=20,          # z grid points
+        m_points=61,          # m grid points
+        rs_points=61,
+        z_points=15,          # z grid points
         tol=1e-5,             # optimization tolerance (root finding in TI)
-        conv=1e-4,            # convergence tolerance (policy)
+        conv=1e-5,            # convergence tolerance (policy)
     )                     
 
     # Solve with timing
     def timed_solve(method_name, solver, model):
         t0 = time()
-        a_policy, w_policy = solver(model, verbose=True)
-        t1 = time()
-        print(f'{method_name} converged in {t1 - t0:.5f} seconds.')
-        return a_policy, w_policy
+        if method_name == 'VFI':
+            a_policy, w_policy, v_post = solver(model, verbose=True)
+            t1 = time()
+            print(f'{method_name} converged in {t1 - t0:.5f} seconds.')
+            return a_policy, w_policy, v_post
+        else:
+            a_policy, w_policy = solver(model, verbose=True)
+            t1 = time()
+            print(f'{method_name} converged in {t1 - t0:.5f} seconds.')
+            return a_policy, w_policy
 
     # Policies as bilinear interpolators
-    a_policy_vfi, w_policy_vfi  = timed_solve('VFI',  solvers.VFI,  model)
+    a_policy_vfi, w_policy_vfi, v_post_vfi  = timed_solve('VFI',  solvers.VFI,  model)
     a_policy_ti, w_policy_ti  = timed_solve('TI',  solvers.TI,  model)
 
     # ------------------------------------------------------------------
     # Plot 1: Optimal consumption share policies a(k | z = median)
     # ------------------------------------------------------------------
 
-    m_grid = model.make_m_grid(points=solvers.m_points)
+    m_grid = model.make_m_grid(points=solvers.m_points, span=(0.2, 30.))
     z_grids = model.make_z_grids(points=solvers.z_points)
 
     # Euler equation errors & return comparison
     euler_errors_vfi, states_vfi, U_vfi = model.get_euler_errors(m_grid, z_grids, a_policy_vfi, w_policy_vfi, episodes=100)
     euler_errors_ti, states_ti, U_ti = model.get_euler_errors(m_grid, z_grids, a_policy_ti, w_policy_ti, episodes=100)
-    print(np.mean(euler_errors_ti))
-    print(U_ti)
 
     print(
         "Mean absolute Euler equation error: \n"
@@ -89,6 +94,7 @@ if __name__ == "__main__":
 
     A_vfi = a_policy_vfi(pts).reshape(M.shape)
     W_vfi = w_policy_vfi(pts)[:,1].reshape(M.shape)
+    V_vfi = v_post_vfi(pts).reshape(M.shape)
 
     fig1 = plt.figure(figsize=(12, 5))
 
@@ -96,20 +102,31 @@ if __name__ == "__main__":
     ax1 = fig1.add_subplot(1, 2, 1, projection='3d')
     surf = ax1.plot_surface(M, Z, A_vfi, cmap='viridis', edgecolor='none', alpha=0.9)
 
-    ax1.set_title('VFI Policy function $a_t(m, z)$', fontsize=12)
+    ax1.set_title('VFI Policy function $a(m, z)$', fontsize=12)
     ax1.set_xlabel('Cash-on-hand $m$')
     ax1.set_ylabel('Shock $z$')
-    ax1.set_zlabel('Consumption share $a_t$')
+    ax1.set_zlabel('Consumption share $a$')
     fig1.colorbar(surf, ax=ax1, shrink=0.6, aspect=10, label='Consumption share')
 
     ax2 = fig1.add_subplot(1, 2, 2, projection='3d')
     surf = ax2.plot_surface(M, Z, W_vfi, cmap='viridis', edgecolor='none', alpha=0.9)
 
-    ax2.set_title('VFI Policy function $w_t(m, z)$', fontsize=12)
+    ax2.set_title('VFI Policy function $w(m, z)$', fontsize=12)
     ax2.set_xlabel('Cash-on-hand $m$')
     ax2.set_ylabel('Shock $z$')
-    ax2.set_zlabel('Risky asset share $w_t$')
+    ax2.set_zlabel('Risky asset share $w$')
     fig1.colorbar(surf, ax=ax2, shrink=0.6, aspect=10, label='Risky asset share')
+
+    # --- Post-Decision Value function---
+    fig2 = plt.figure(figsize=(12, 5))
+
+    ax = fig2.add_subplot(1, 1, 1, projection='3d')
+    surf = ax.plot_surface(M, Z, V_vfi, cmap='viridis', edgecolor='none', alpha=0.9)
+    ax.set_title('VFI Post-Decision Value Function $\hat V(rs, z)$', fontsize=12)
+    ax.set_xlabel('Post-decision capital $rs$')
+    ax.set_ylabel('Shock $z$')
+    ax.set_zlabel('Risky asset share $\hat V$')
+    fig1.colorbar(surf, ax=ax, shrink=0.6, aspect=10, label='Post-Decision Value function')
 
     # --- Histogram displaying log10 absolute (maximum) Euler errors ---
     plt.figure(figsize=(8, 5))
@@ -120,3 +137,5 @@ if __name__ == "__main__":
     plt.legend()
     plt.tight_layout()
     plt.show()
+
+    
