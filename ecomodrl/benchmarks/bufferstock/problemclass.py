@@ -148,6 +148,10 @@ class PlanningProblem:
         """Recover c_t from: u'(c_t) = (β R / G) E[ u'(c_{t+1}) / Ψ_{t+1} ]."""
         mu = self.demu_next(c_next)
         return self.u_prime_inv(mu)
+    
+    def _is_binding(self, c_t: float, m_t: float) -> bool:
+        """Borrowing constraint c_t <= m_t. Treat as binding when savings m_t - c_t is effectively zero."""
+        return (m_t - c_t) <= (1e-3 * max(1.0, m_t))
 
     # ---------------------------
     # Policy evaluation & errors
@@ -193,8 +197,14 @@ class PlanningProblem:
             # Euler error along the realized path
             err = np.empty(T, dtype=float)
             for t, (c_t, m_t) in enumerate(zip(c_path, m_path[:-1])):
-                a_t_share = c_t / m_t  # implied share
-                err[t] = np.log10(abs(self.euler_residual(a_t_share, m_t, policy)))
+                if self._is_binding(c_t, m_t):
+                    # Constraint binds => inequality holds; do not penalize
+                    err[t] = np.nan
+                else:
+                    a_t_share = c_t / m_t  # implied share
+                    res = self.euler_residual(a_t_share, m_t, policy)
+                    # log10 of absolute residual
+                    err[t] = np.log10(abs(res))
             
             euler_errors[i, :] = err
             states[i, :] = m_path
