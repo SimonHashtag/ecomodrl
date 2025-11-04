@@ -23,7 +23,7 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 400_000
+    total_timesteps: int = 500_000
     eval_every: int = 10_000
     patience: int = 10
     min_delta: float = 1e-3
@@ -73,7 +73,7 @@ if __name__ == "__main__":
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [64, 64], "vf": [128, 128]},
+            "net_arch": {"pi": [128, 128], "vf": [128, 128]},
             "log_std_init": -2.0,
         },
     )
@@ -82,12 +82,12 @@ if __name__ == "__main__":
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
     train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params)
-    # analyze_all_seeds(
-    #     cfg,
-    #     algo_cfg,
-    #     BrockMirmanEnv,
-    #     params,
-    #     n_boot=1000,
-    #     alpha=0.05,
-    #     bootstrap_seed=12345,
-    # )
+    analyze_all_seeds(
+        cfg,
+        algo_cfg,
+        BrockMirmanEnv,
+        params,
+        n_boot=1000,
+        alpha=0.05,
+        bootstrap_seed=12345,
+    )

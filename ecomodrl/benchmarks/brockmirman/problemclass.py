@@ -212,19 +212,34 @@ class PlanningProblem():
     #-------------------------------------------------------------------
 
     def V_from_a(self, k_grid, z_grid, a_policy, conv) -> RegularGridInterpolator:
+        # Set up full grid
         Nk, Nz = len(k_grid), len(z_grid)
-        Vn = np.zeros((Nk, Nz))
-        while True:
-            V_old = Vn.copy()
-            V = self.make_bilinear(k_grid, z_grid, V_old)
+        K, Z = np.meshgrid(k_grid, z_grid, indexing='ij')
+        # Evaluate policy once
+        a = a_policy(np.column_stack([K.ravel(), Z.ravel()])).reshape(Nk, Nz)
+        # Double-buffer for value iteration
+        V_old = np.zeros((Nk, Nz))
+        V_new = np.empty_like(V_old)
+        # Iterate
+        while(True):
+            # Interpolate value function from previous iteration
+            V_interp = self.make_bilinear(k_grid, z_grid, V_old)
+            # Bellman update
+            max_err = 0.0
             for i, k in enumerate(k_grid):
                 for j, z in enumerate(z_grid):
-                    a_ij = a_policy(np.array([[k, z]])).item()
-                    Vn[i, j] = self.bellman(a_ij, k, z, V)
-            err = np.max(np.abs(Vn - V_old))
-            if err < conv:
-                break
-        return self.make_bilinear(k_grid, z_grid, Vn)
+                    a_ij = a[i, j]
+                    v = self.bellman(a_ij, k, z, V_interp)
+                    diff = abs(v - V_old[i, j])
+                    if diff > max_err:
+                        max_err = diff
+                    V_new[i, j] = v
+            # Convergence check
+            if max_err < conv:
+                # Build the final interpolator once and
+                return self.make_bilinear(k_grid, z_grid, V_new)
+            # If not converged, swap buffers
+            V_old = V_new
 
 
 

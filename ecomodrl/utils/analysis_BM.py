@@ -73,7 +73,7 @@ def compute_benchmark(params: Union[Mapping[str, Any], Any]):
     # Derive the policy-implied value function
     k_grid = model.make_k_grid(points=solvers.k_points)
     z_grid = model.make_z_grid(points=solvers.z_points)
-    V_bm = model.V_from_a(k_grid, z_grid, policy_bm, conv=1e-5)
+    V_bm = model.V_from_a(k_grid, z_grid, policy_bm, conv=1e-3)
 
     # Return model class, optimal policy and corresponding value function
     return model, k_grid, z_grid, policy_bm, V_bm
@@ -143,8 +143,7 @@ def get_policy_value_functions(
         ret_rms = getattr(vecnorm, "ret_rms", None)
         eps = float(getattr(vecnorm, "epsilon", 1e-8))
         scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms else 1.0
-        shift = float(getattr(ret_rms, "mean", 0.0)) if ret_rms else 0.0
-        V = V_norm * scale + shift
+        V = V_norm * scale
         value_rl = RegularGridInterpolator(
             (k_grid, z_grid),
             V.reshape(len(k_grid), len(z_grid)),
@@ -277,7 +276,7 @@ def analyze_all_seeds(
         V_nn_grid = value_rl(pts_kz).reshape(len(k_grid), len(z_grid))
 
         # Value recomputed from policy via Bellman iterations
-        V_rl_interp = p.V_from_a(k_grid, z_grid, policy_rl, conv=1e-5)
+        V_rl_interp = p.V_from_a(k_grid, z_grid, policy_rl, conv=1e-3)
         V_from_pol_grid = V_rl_interp(pts_kz).reshape(len(k_grid), len(z_grid))
 
         # Euler errors and visited capital states
@@ -302,6 +301,12 @@ def analyze_all_seeds(
         k_vis = np.asarray(k_states_rl).ravel()
         z_vis = np.ones_like(k_vis)
         states_vis = np.column_stack([k_vis, z_vis])
+        
+        # Sample 1000 points from visited states for relevance approximation
+        rng = np.random.default_rng(seed=s)
+        idx_sample = rng.choice(states_vis.shape[0], size=1000, replace=False)
+        states_vis = states_vis[idx_sample, :]
+        
         wev_rel = np.mean(wev(states_vis, V_bm, V_rl_interp, p.cash_on_hand))
         cev_rel = np.mean(
             cev_crra(states_vis, V_bm, V_rl_interp, gamma=params.gamma,
