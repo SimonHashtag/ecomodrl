@@ -153,8 +153,7 @@ class PlanningProblem():
             err = np.max(np.abs(Vn - V(grid)))
             V = self.make_spline(grid, Vn)
             if err < conv:
-                break
-        return V
+                return V
 
 
 #-------------------------------------------------------------------

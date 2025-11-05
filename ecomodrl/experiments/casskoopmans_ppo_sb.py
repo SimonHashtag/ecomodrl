@@ -9,7 +9,7 @@ import torch as th
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
-from ecomodrl.utils.analysis import analyze_all_seeds
+from ecomodrl.utils.analysis_CK import analyze_all_seeds
 from ecomodrl.utils.params_loader import CassKoopmansParams
 
 

@@ -124,6 +124,22 @@ class PlanningProblem:
     def consumption_from_share(self, a, m):
         """Map share a(m) to consumption level:c_t = a_t(m_t) * m_t."""
         return a * m
+    
+    def resources_saved(self, m, c):
+        """Resources saved rs_t = m_t - c_t."""
+        return m - c
+
+    # ------------------------------------------------------------------
+    # Bellman functionality
+    # ------------------------------------------------------------------
+
+    def bellman(self, a, m_t, value):
+        """Bellman operator given consumption-share policy a(m) and value function v(m)."""
+        c_t = self.consumption_from_share(a, m_t)
+        rs_t = self.resources_saved(m_t, c_t)
+        m_next = self.m_next(rs_t)
+        cont_value = np.dot(self.probs, value(m_next))
+        return self.u(c_t) + self.beta * cont_value
 
     # ---------------------------
     # Euler helpers
@@ -137,7 +153,7 @@ class PlanningProblem:
     def euler_residual(self, a: float, m_t: float, policy: PchipInterpolator) -> float:
         """Euler residual."""
         c_t = self.consumption_from_share(a, m_t)
-        rs_t = m_t - c_t
+        rs_t = self.resources_saved(m_t, c_t)
         m_next = self.m_next(rs_t)
         a_next = policy(m_next)
         c_next = self.consumption_from_share(a_next, m_next)
@@ -152,10 +168,12 @@ class PlanningProblem:
     def _is_binding(self, c_t: float, m_t: float) -> bool:
         """Borrowing constraint c_t <= m_t. Treat as binding when savings m_t - c_t is effectively zero."""
         return (m_t - c_t) <= (1e-3 * max(1.0, m_t))
+    
 
     # ---------------------------
     # Policy evaluation & errors
     # ---------------------------
+
     def get_euler_errors(self, grid, policy, episodes=100):
         """
         Simulate Euler residuals along sample paths starting from each m on the grid,
@@ -212,6 +230,25 @@ class PlanningProblem:
 
         return euler_errors.ravel(), states.ravel(), avg_return
 
+
+    #-------------------------------------------------------------------
+    # Policy evaluation: value function from policy
+    #-------------------------------------------------------------------
+
+    def V_from_a(self, grid, a_policy, conv) -> PchipInterpolator:
+        """Compute value function on grid by iterating the Bellman equation under a fixed policy."""
+        Vn = np.zeros(len(grid))
+        V = self.make_spline(grid, Vn)
+        while True:
+            # Policy evaluation step: compute Bellman operator under fixed policy
+            for i in range(len(grid)):
+                a_i = a_policy(grid[i])
+                Vn[i] = self.bellman(a_i, grid[i], V)
+            # Check convergence and update spline
+            err = np.max(np.abs(Vn - V(grid)))
+            V = self.make_spline(grid, Vn)
+            if err < conv:
+                return V
 
 #-------------------------------------------------------------------
 # Solvers: standardized on share policy a(m)

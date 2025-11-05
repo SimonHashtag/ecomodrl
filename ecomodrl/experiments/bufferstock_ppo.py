@@ -9,7 +9,7 @@ import torch as th
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.envs.bufferstock import BufferStockSavingsEnv
 from ecomodrl.utils.params_loader import BufferStockParams
-from ecomodrl.utils.analysis import analyze_all_seeds
+from ecomodrl.utils.analysis_CK import analyze_all_seeds
 
 # ----------------------------
 # Run configuration
