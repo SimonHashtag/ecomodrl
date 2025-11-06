@@ -196,10 +196,12 @@ class BufferStockParams(BaseParams):
         Std. dev. of transitory shock in logs (σ_θ) ≥ 0.
     sigma_perm : float
         Std. dev. of permanent shock in logs (σ_ψ) ≥ 0.
-    unemployment_prob : float
+    unemp_prob : float
         Probability p of unemployment (point mass at θ_low). Must be in [0, 1).
     theta_low : float
         Transitory income when unemployed θ_low, normalized. Must lie in [0, 1].
+    gh_order : int
+        Order of Gauss-Hermite quadrature for approximating lognormal shocks.
     """
     gamma: float = 2.0
     beta: float = 0.95
@@ -207,8 +209,9 @@ class BufferStockParams(BaseParams):
     g: float = 0.01
     sigma_tran: float = 0.1
     sigma_perm: float = 0.1
-    unemployment_prob: float = 0.005
+    unemp_prob: float = 0.005
     theta_low: float = 0.3
+    gh_order: int = 7
 
     # -------- Validation --------
     def __post_init__(self):
@@ -224,8 +227,10 @@ class BufferStockParams(BaseParams):
             raise ValueError("sigma_tran (transitory log-std) must be ≥ 0")
         if not (self.sigma_perm >= 0):
             raise ValueError("sigma_perm (permanent log-std) must be ≥ 0")
-        if not (0 <= self.unemployment_prob < 1):
-            raise ValueError("unemployment_prob must be in [0, 1)")
+        if not (0 <= self.unemp_prob < 1):
+            raise ValueError("unemp_prob must be in [0, 1)")
         if not (0 <= self.theta_low <= 1):
             raise ValueError("theta_low must lie in [0, 1]")
+        if not (self.gh_order >= 1 and isinstance(self.gh_order, int)):
+            raise ValueError("gh_order must be a positive integer (≥ 1)")
 

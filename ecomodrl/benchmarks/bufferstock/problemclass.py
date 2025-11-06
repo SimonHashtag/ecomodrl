@@ -128,6 +128,10 @@ class PlanningProblem:
     def resources_saved(self, m, c):
         """Resources saved rs_t = m_t - c_t."""
         return m - c
+    
+    def cash_on_hand(self, m):
+        """Identity function for cash-on-hand state."""
+        return np.asarray(m)
 
     # ------------------------------------------------------------------
     # Bellman functionality

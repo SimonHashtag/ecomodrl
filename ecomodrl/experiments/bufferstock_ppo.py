@@ -1,15 +1,15 @@
 import logging
+import multiprocessing as mp
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import multiprocessing as mp
 import torch as th
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.envs.bufferstock import BufferStockSavingsEnv
+from ecomodrl.utils.analysis_BS import analyze_all_seeds
 from ecomodrl.utils.params_loader import BufferStockParams
-from ecomodrl.utils.analysis_CK import analyze_all_seeds
 
 # ----------------------------
 # Run configuration
@@ -25,8 +25,8 @@ class RunConfig:
     max_episode_steps: int = 10
     max_eval_episode_steps: int = 30
     n_envs: int = 10
-    total_timesteps: int = 400_000
-    eval_every: int = 10_000
+    total_timesteps: int = 10_000
+    eval_every: int = 1_000
     patience: int = 20
     min_delta: float = 1e-3
     state_min: float = 1.0
@@ -70,6 +70,6 @@ if __name__ == "__main__":
 
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
-    
-    train_multiple_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params)
-    #analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
+
+    # train_multiple_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params)
+    analyze_all_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)

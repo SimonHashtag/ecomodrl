@@ -13,6 +13,13 @@ from ecomodrl.utils.analysis_BM import analyze_all_seeds
 from ecomodrl.utils.params_loader import BrockMirmanParams
 
 
+# ----------------------------
+# Run configuration
+# ----------------------------
+# NOTE: set custom RUNRESULTS_PATH 
+#       on your Windows system via setx RUNRESULTS_PATH "my_custom_tune_results_path" (close & reopen terminal afterwards)
+#       on your mac/linux: export RUNRESULTS_PATH="my_custom_tune_results_path"
+#       otherwise defaults to relative path "./ecomodrl/runs/BrockMirman"
 @dataclass
 class RunConfig:
     # Paths
@@ -44,6 +51,7 @@ class RunConfig:
 
     @property
     def seeds(self) -> list[int]:
+        """List of random seeds for multiple runs."""
         return list(range(self.base_seed, self.base_seed + self.n_seeds))
 
 
@@ -82,12 +90,4 @@ if __name__ == "__main__":
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
     train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params)
-    analyze_all_seeds(
-        cfg,
-        algo_cfg,
-        BrockMirmanEnv,
-        params,
-        n_boot=1000,
-        alpha=0.05,
-        bootstrap_seed=12345,
-    )
+    analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)

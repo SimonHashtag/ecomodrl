@@ -54,7 +54,7 @@ class BufferStockSavingsEnv(gym.Env):
         self.G     = 1.0 + model_params.g
         self.SIGMA_TRAN = model_params.sigma_tran
         self.SIGMA_PERM = model_params.sigma_perm
-        self.PROB_UNEMP = model_params.unemployment_prob
+        self.PROB_UNEMP = model_params.unemp_prob
         self.THETA_LOW  = model_params.theta_low
 
         # mean of log θ for E[θ]=1 (given point mass at θ_low with prob p)
