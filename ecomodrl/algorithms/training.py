@@ -122,7 +122,7 @@ def train_single_seed(
             eval_freq=cfg.eval_every,
             patience=cfg.patience,
             min_delta=cfg.min_delta,
-            n_eval_episodes=1,              # increase for stochastic envs
+            n_eval_episodes=getattr(cfg, "n_eval_episodes", None) or 1.0,    # increase for stochastic envs
             deterministic_eval=True,
             best_model_path=best_model_path,
             vecnorm_path=vecnorm_path,
