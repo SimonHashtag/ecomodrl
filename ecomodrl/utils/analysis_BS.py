@@ -72,8 +72,9 @@ def compute_benchmark(params: Union[Mapping[str, Any], Any]):
     grid = model.make_grid(solvers.grid_points)
     V_bm = model.V_from_a(grid, policy_bm, conv=1e-3)
 
+    eval_grid = model.make_grid(solvers.grid_points, span=(1.5, 15.))
     # Return model class, optimal policy and corresponding value function
-    return model, grid, policy_bm, V_bm
+    return model, grid, eval_grid, policy_bm, V_bm
 
 
 def get_policy_value_functions(
@@ -187,9 +188,9 @@ def analyze_all_seeds(
     global_steps = np.linspace(0, cfg.total_timesteps, num=100)
 
     # Benchmark reference
-    p, grid, policy_bm, V_bm = compute_benchmark(params)
-    euler_bm, _, U_bm = p.get_euler_errors(grid, policy_bm, episodes=100)
-    euler_bm = np.log10(np.abs(euler_bm))
+    p, grid, eval_grid, policy_bm, V_bm = compute_benchmark(params)
+    euler_bm, _, U_bm = p.get_euler_errors(eval_grid, policy_bm, episodes=100)
+    #euler_bm = np.log10(np.abs(euler_bm))
 
     # --- Initialize containers for aggregation across seeds ---
     # Learning performance
@@ -237,23 +238,23 @@ def analyze_all_seeds(
             algo_cfg.name,
         )
         # Store policy and value predictions across grid
-        rl_policy_vals.append(policy_rl(grid))
-        rl_value_nn_vals.append(value_rl(grid))
+        rl_policy_vals.append(policy_rl(eval_grid))
+        rl_value_nn_vals.append(value_rl(eval_grid))
 
         # Value recomputed from policy via environment recursion
         V_rl = p.V_from_a(grid, policy_rl, conv=1e-9)
-        rl_value_from_policy.append(V_rl(grid))
+        rl_value_from_policy.append(V_rl(eval_grid))
 
         # --- Euler errors and episode utilities ---
         # Simulate policy to measure equilibrium errors and returns
-        euler_rl, states, U_rl = p.get_euler_errors(grid, policy_rl, episodes=100)
-        euler_logabs_list.append(np.log10(np.abs(euler_rl)))
+        euler_rl, states, U_rl = p.get_euler_errors(eval_grid, policy_rl, episodes=100)
+        euler_logabs_list.append(euler_rl)
         pooled_states.append(states)
         Us_rl.append(U_rl)
 
         # --- WEV and CEV metrics ---
         # Compute welfare differences vs. benchmark on full grid
-        wev_seed = wev(grid, V_bm, V_rl, p.cash_on_hand)
+        wev_seed = wev(eval_grid, V_bm, V_rl, p.cash_on_hand)
         if wev_seed is not None:
             WEV_mat.append(wev_seed)
             # Average WEV over visited states (policy-relevant region)
@@ -261,7 +262,7 @@ def analyze_all_seeds(
             WEV_rel_mat.append(avg_wev_rel)
 
         # Compute analogous CEV metrics (grid + visited states)
-        cev_on_grid = cev_crra(grid, V_bm, V_rl, gamma=params.gamma)
+        cev_on_grid = cev_crra(eval_grid, V_bm, V_rl, gamma=params.gamma)
         CEV_mat.append(cev_on_grid)
         avg_cev_rel = cev_crra(states, V_bm, V_rl, gamma=params.gamma).mean()
         CEV_rel_mat.append(avg_cev_rel)
@@ -290,7 +291,7 @@ def analyze_all_seeds(
     _, _, return_bm = p.get_euler_errors(
         np.linspace(cfg.state_min, cfg.state_max, 20),
         policy_bm,
-        episodes=100,
+        episodes=cfg.max_eval_episode_steps,
     )
 
     fig = plt.figure(figsize=(9, 4.5))
@@ -319,19 +320,19 @@ def analyze_all_seeds(
     fig, ax = plt.subplots(1, 2, figsize=(11, 4.5))
 
     # Policy
-    ax[0].plot(grid, mean_pol, label="RL Policy (mean)")
-    ax[0].fill_between(grid, lo_pol, hi_pol, alpha=0.25, label="95% CI (bootstrap)")
-    ax[0].plot(grid, policy_bm(grid), linestyle="--", label="Benchmark (EGM)")
+    ax[0].plot(eval_grid, mean_pol, label="RL Policy (mean)")
+    ax[0].fill_between(eval_grid, lo_pol, hi_pol, alpha=0.25, label="95% CI (bootstrap)")
+    ax[0].plot(eval_grid, policy_bm(eval_grid), linestyle="--", label="Benchmark (EGM)")
     ax[0].set_title("Policy Function")
     ax[0].set_xlabel("Capital k")
     ax[0].set_ylabel("Consumption")
     ax[0].legend()
 
     # Value
-    ax[1].plot(grid, mean_Vnn, label="RL Value (NN mean)")
+    ax[1].plot(eval_grid, mean_Vnn, label="RL Value (NN mean)")
     ax[1].fill_between(grid, lo_Vnn, hi_Vnn, alpha=0.25, label="95% CI (bootstrap)")
-    ax[1].plot(grid, V_bm(grid), linestyle="--", label="Benchmark (EGM)")
-    ax[1].plot(grid, mean_Vfrom, label="RL Value (from policy mean)")
+    ax[1].plot(eval_grid, V_bm(eval_grid), linestyle="--", label="Benchmark (EGM)")
+    ax[1].plot(eval_grid, mean_Vfrom, label="RL Value (from policy mean)")
     ax[1].set_title("Value Function V(k)")
     ax[1].set_xlabel("Capital k")
     ax[1].set_ylabel("Value")
@@ -354,7 +355,7 @@ def analyze_all_seeds(
 
     fig = plt.figure(figsize=(7.2, 4.5))
     plt.hist(rl_all, bins=50, density=True, alpha=0.7, label="RL policy (pooled)")
-    plt.axvline(euler_bm.mean(), color="gray", linestyle="--", label="Mean EGM")
+    plt.axvline(np.nanmean(euler_bm), color="gray", linestyle="--", label="Mean EGM")
 
     # Per-seed KDE overlays (can fail for nearly constant samples)
     for i, arr in enumerate(euler_logabs_list):
@@ -410,8 +411,8 @@ def analyze_all_seeds(
     fig, ax = plt.subplots(1, 2, figsize=(12, 5))
 
     # WEV
-    ax[0].plot(grid, mean_WEV, label="WEV (mean)")
-    ax[0].fill_between(grid, lo_WEV, hi_WEV, alpha=0.25, label="95% CI (bootstrap)")
+    ax[0].plot(eval_grid, mean_WEV, label="WEV (mean)")
+    ax[0].fill_between(eval_grid, lo_WEV, hi_WEV, alpha=0.25, label="95% CI (bootstrap)")
     ax[0].axhline(0, color="red", linestyle="--", label="Zero Line")
     ax[0].set_xlabel("Capital k")
     ax[0].set_ylabel("WEV")
@@ -421,8 +422,8 @@ def analyze_all_seeds(
     ax0p.set_ylabel("State density")
 
     # CEV
-    ax[1].plot(grid, mean_CEV, label="CEV (mean)")
-    ax[1].fill_between(grid, lo_CEV, hi_CEV, alpha=0.25, label="95% CI (bootstrap)")
+    ax[1].plot(eval_grid, mean_CEV, label="CEV (mean)")
+    ax[1].fill_between(eval_grid, lo_CEV, hi_CEV, alpha=0.25, label="95% CI (bootstrap)")
     ax[1].axhline(0, color="red", linestyle="--", label="Zero Line")
     ax[1].set_xlabel("Capital k")
     ax[1].set_ylabel("CEV")

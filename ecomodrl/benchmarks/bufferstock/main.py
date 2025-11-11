@@ -19,7 +19,7 @@ if __name__ == "__main__":
     a_egm = solvers.EGM(model)
     print(f"EGM took {time.time() - start} seconds.")
 
-    m_grid = np.linspace(1.5, 15.0, 1000)
+    m_grid = np.linspace(1e-4, 15.0, 1000)
 
     # Euler equation errors & return comparison
     euler_errors_ti, m_states_ti, U_ti = model.get_euler_errors(m_grid, a_ti, episodes=10)
