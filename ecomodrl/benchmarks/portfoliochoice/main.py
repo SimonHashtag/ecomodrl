@@ -13,13 +13,13 @@ if __name__ == "__main__":
         # rho_z=[0.90, 0.75],
         # kappa_R=[0.00, 0.00],
         # xi_R=[+0.045, -0.030],
-        M=2**11
+         M=2**10
         )                     
     solvers = PlanningSolvers(
-        m_points=82,          # m grid points
-        rs_points=41,
+        m_points=200,         # m grid points (only used for interpolation to common rectangular grid)
+        rs_points=51,         # rs grid points
         z_points=15,          # z grid points
-        tol=1e-5,             # optimization tolerance (root finding in TI)
+        tol=1e-5,             # optimization tolerance (root finding for weights)
         conv=1e-4,            # convergence tolerance (policy)
     )                     
 
@@ -39,7 +39,6 @@ if __name__ == "__main__":
 
     # Euler equation errors & return comparison
     euler_errors_egm, states_egm, U_egm = model.get_euler_errors(m_grid, z_grids, a_policy_egm, w_policy_egm, episodes=100)
-    value_fun_egm = model.V_from_a(m_grid, z_grids, a_policy_egm, w_policy_egm, conv=1e-5)
 
     print(
         "Mean absolute Euler equation error: \n"
@@ -49,6 +48,9 @@ if __name__ == "__main__":
         "The optimal average discounted episode return is: \n"
         f"EGM: {U_egm}"
     )
+
+    # Value function evaluation
+    value_fun_egm = model.V_from_a(m_grid, z_grids, a_policy_egm, w_policy_egm, conv=1e-5)
 
     # -------------------------------------------------------
     # EGM Plots
