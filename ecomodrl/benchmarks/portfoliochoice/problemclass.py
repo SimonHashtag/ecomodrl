@@ -5,8 +5,297 @@ from typing import Union, Tuple
 from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import root
 from scipy.stats import qmc, norm
+from numba import njit, prange  
+from numba.typed import List 
 
 from ecomodrl.utils.vpost_extrapolation import VPostExtrapolator
+
+
+@njit(cache=True, fastmath=True)
+def _binsearch1d(grid, x, inv_deltas):
+    """
+    Locate x on a 1D grid and return the left index and the interpolation weight.
+    Clamps x to the grid (extrapolation by setting to the nearest grid point).
+
+    Parameters
+    ----------
+    grid : 1D ndarray (monotone increasing)
+        Grid points.
+    x : float
+        Query value.
+
+    Returns
+    -------
+    i : int
+        Left bracket index such that grid[i] <= x <= grid[i+1] (clamped to [0, n-2]).
+    t : float
+        Linear weight in [0, 1]; the interpolated value is (1-t)*f[i] + t*f[i+1].
+    """
+    n = grid.shape[0]
+    # Find insertion point of x in grid (right side of the left neighbor)
+    j = np.searchsorted(grid, x, side='right') - 1
+    if j < 0:
+        return 0, 0.0
+    if j >= n - 1:
+        return n - 2, 1.0
+    t = (x - grid[j]) * inv_deltas[j]
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    return j, t
+
+
+@njit(cache=True, fastmath=True)
+def _c_strides(shape):
+    """
+    Compute C-order (row-major) logical strides for an N-D tensor shape.
+    Used for indexing flattened N-D tensor.
+
+    Parameters
+    ----------
+    shape : 1D ndarray of int
+        Tensor shape (e.g., (Nm, Nz1, ..., NzK)).
+
+    Returns
+    -------
+    strides : 1D ndarray of int
+        C-order strides so that flat_index = Σ idx[d] * strides[d].
+    """
+    D = len(shape)
+    s = np.empty(D, np.int64)
+    s[D - 1] = 1
+    for d in range(D - 2, -1, -1):
+        s[d] = s[d + 1] * shape[d + 1]
+    return s
+
+
+@njit(cache=True, fastmath=True)
+def _z_corner_offsets(strides, K):
+    """
+    Precompute flat-index offsets for all 2^K z-corners in multilinear interpolation.
+
+    Parameters
+    ----------
+    strides : 1D ndarray of int
+        C-order strides for the full tensor (m, z1, ..., zK).
+    K : int
+        Number of z dimensions.
+
+    Returns
+    -------
+    offsets : 1D ndarray of int, shape (2^K,)
+        For each binary corner mask, the flat offset relative to the z base index.
+
+    Notes
+    -----
+    Corner mask bit k = 1 selects the +1 corner in zk; 0 selects the 0 corner.
+    """
+    C = 1 << K
+    offs = np.zeros(C, np.int64)
+    for mask in range(C):
+        acc = 0
+        for k in range(K):
+            if (mask >> k) & 1:
+                acc += strides[1 + k]  # z dims start at axis=1 (axis 0 is m)
+        offs[mask] = acc
+    return offs
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _precompute_z_interp(zs_next, z_grids_list, strides):
+    """
+    For each shock draw i, cache the z interpolation structure.
+
+    Parameters
+    ----------
+    zs_next : 2D ndarray, shape (M, K): (#shocks, #z-dims)
+        Next-period predictors for each risky asset and Sobol draw.
+    z_grids_list : list of 1D ndarrays (length K)
+        Grids for each predictor dimension.
+    strides : 1D ndarray of int
+        C-order strides for the target tensor (m, z1, ..., zK).
+
+    Returns
+    -------
+    base_z_flat : 1D ndarray of int, shape (M,)
+        Flat index for the z cell's lower-left corner (m-axis excluded).
+    z_w : 2D ndarray of float64, shape (M, 2^K)
+        Corner weights for multilinear interpolation over z at each draw.
+    """
+    M, K = zs_next.shape
+    C = 1 << K      # number of corners
+    base_z_flat = np.empty(M, np.int64)
+    z_w = np.empty((M, C), np.float64)
+    for i in prange(M):
+        # 1) locate z-cell and 1D interpolation weights per dimension
+        idxs = np.empty(K, np.int64)
+        taus = np.empty(K, np.float64)
+        for k in range(K):
+            inv_deltas =  1.0 / (z_grids_list[k][1:] - z_grids_list[k][:-1])
+            lo, t = _binsearch1d(z_grids_list[k], zs_next[i, k], inv_deltas)
+            idxs[k], taus[k] = lo, t
+
+        # 2) Convert K-D index vector (z1_lo, ..., zK_lo) to base flat index (for m row 0)
+        acc = 0
+        for k in range(K):
+            acc += idxs[k] * strides[1 + k]
+        base_z_flat[i] = acc
+
+        # 3) full multilinear weights over all 2^K z-corners
+        for mask in range(C):
+            w = 1.0
+            for k in range(K):
+                w *= (taus[k] if ((mask >> k) & 1) else (1.0 - taus[k]))
+            z_w[i, mask] = w
+    return base_z_flat, z_w
+
+
+@njit(cache=True, fastmath=True)
+def _linear_interp_1d(a0, a1, t):
+    """
+    Simple linear interpolation between a0 and a1 with weight t in [0, 1].
+    """
+    return (1.0 - t) * a0 + t * a1
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def _sdf_moments_fast(
+    rs,
+    Rs_next,           
+    w,               
+    theta_vals, Gamma_next, SDF_factor,
+    theta_low, unemp_prob, gamma, min_share,
+    # policy grid info:
+    a_values_flat,
+    shape,
+    strides,
+    m_grid,
+    base_z_flat,
+    z_corner_offs,        
+    z_w                   
+):
+    """
+    Compute SDF moments g ∈ R^{n_assets} at (rs, z) using cached z-structure.
+
+    Economic object
+    ---------------
+    g_j = E[ u'(c_{t+1}) / Γ_{t+1}^γ * R_{j,t+1} ],  j = 0..n_assets-1
+
+    Parameters
+    ----------
+    rs : float
+        Resources saved today (m - c), scalar.
+    Rs_next : 2D ndarray, shape (M, n_assets)
+        Asset gross returns for each MC draw (col 0 = safe).
+    w : 1D ndarray, shape (n_assets,)
+        Portfolio weights on assets today (sum to 1).
+    theta_vals : 1D ndarray, shape (M,)
+        Transitory income draws Θ' for each MC draw.
+    Gamma_next : 1D ndarray, shape (M,)
+        Permanent growth factors Γ' for each MC draw.
+    SDF_factor : 1D ndarray, shape (M,)
+        Equals (Γ'^γ)^{-1} reused across calls.
+    theta_low : float
+        Unemployment income level.
+    unemp_prob : float
+        Probability of unemployment next period.
+    gamma : float
+        Risk aversion.
+    min_share : float
+        Floor for the consumption share a'(m', z') to stabilize interpolation.
+    a_values_flat : 1D ndarray
+        Flattened policy array a(m, z) in C-order.
+    shape : 1D ndarray of int
+        Shape of the a-policy tensor (Nm, Nz1, ..., NzK).
+    strides : 1D ndarray of int
+        C-order strides of the same tensor.
+    m_grid : 1D ndarray
+        Grid for m.
+    base_z_flat : 1D ndarray of int, shape (M,)
+        Base flat index (z part) for each draw.
+    z_corner_offs : 1D ndarray of int, shape (2^K,)
+        Offsets of each z-corner relative to base_z_flat.
+    z_w : 2D ndarray, shape (M, 2^K)
+        Weights of each z-corner for each draw.
+
+    Returns
+    -------
+    g : 1D ndarray, shape (n_assets,)
+        SDF-weighted expected returns.
+
+    Notes
+    -----
+    - Two employment branches are evaluated and mixed with probs (1-p_u, p_u).
+    - Interpolation is separated into: (1) per-draw z weights, (2) per-branch
+      1D search along m, then (3) averaging over shocks.
+    """
+    M, n_assets = Rs_next.shape
+    K = len(shape) - 1
+    C = 1 << K
+    stride0 = strides[0]
+    inv_deltas = 1.0 / (m_grid[1:] - m_grid[:-1]) # precompute for interpolation
+
+    # Portfolio return for each draw
+    Rp = np.empty(M)
+    for i in prange(M):
+        acc = 0.0
+        for j in range(n_assets):
+            acc += Rs_next[i, j] * w[j]
+        Rp[i] = acc
+
+    # Mixture of u'(c') * (Γ')^{-γ} across employment states
+    upd_mix = np.empty(M)
+    pE = 1.0 - unemp_prob
+    for i in prange(M):
+        base = (Rp[i] / Gamma_next[i]) * rs
+        m_e = base + theta_vals[i]
+        m_u = base + theta_low
+        # NOTE: Duplicated code instead of a factored-out helper to enhance Numba performance
+        # --- employed branch ---
+        im, t = _binsearch1d(m_grid, m_e, inv_deltas)
+        i0 = im * stride0
+        i1 = (im + 1) * stride0
+        base_flat = base_z_flat[i]
+        a_e = 0.0
+        for c in range(C):
+            off = z_corner_offs[c]
+            wzc = z_w[i, c]
+            a0 = a_values_flat[i0 + base_flat + off]
+            a1 = a_values_flat[i1 + base_flat + off]
+            a_e += wzc * _linear_interp_1d(a0, a1, t)
+        if a_e < min_share:
+            a_e = min_share
+        c_e = a_e * m_e
+        upd_e = (c_e ** (-gamma)) * SDF_factor[i]
+
+        # --- unemployed branch ---
+        im, t = _binsearch1d(m_grid, m_u, inv_deltas)
+        i0 = im * stride0
+        i1 = (im + 1) * stride0
+        a_u = 0.0
+        for c in range(C):
+            off = z_corner_offs[c]
+            wzc = z_w[i, c]
+            a0 = a_values_flat[i0 + base_flat + off]
+            a1 = a_values_flat[i1 + base_flat + off]
+            a_u += wzc * _linear_interp_1d(a0, a1, t)
+        if a_u < min_share:
+            a_u = min_share
+        c_u = a_u * m_u
+        upd_u = (c_u ** (-gamma)) * SDF_factor[i]
+
+        upd_mix[i] = pE * upd_e + (1.0 - pE) * upd_u
+
+    # Average across shocks and multiply by returns
+    g = np.empty(n_assets)
+    for j in prange(n_assets):
+        acc = 0.0
+        for i in range(M):
+            acc += upd_mix[i] * Rs_next[i, j]
+        g[j] = acc / M
+    return g
+
 
 # -------------------------------------------------------------------
 # Portfolio Choice planning problem
@@ -15,17 +304,16 @@ class PlanningProblem:
     """
     Planning problem for a buffer-stock saver with portfolio choice.
 
-    The model is written in normalized variables. States are:
+    The model is written in normalized variables (by permanent income growth). 
+    States are:
      - m_t: cash-on-hand (pre-decision), scalar
      - z_t: vector of return predictors for risky assets (AR(1) processes)
 
-     Controls are:
+    Controls are:
      - c_t: consumption
      - ω_t: portfolio weights over [safe, risky_1, ..., risky_N], sum to 1
+    """
 
-      We keep the public API intact, but add seedable randomness, docstrings,
-      and performance-oriented tweaks (vectorization & cached shocks).
-      """
     def __init__(
         self,
         gamma: float = 2.0,                                         # Coefficient of relative risk aversion
@@ -59,11 +347,11 @@ class PlanningProblem:
         self.mu_theta = np.log((1 - self.unemp_prob * self.theta_low) / (1 - self.unemp_prob)) - 0.5 * self.sigma_tran**2
 
         # ----- Asset process params -----
-        self.sigma_z = np.atleast_1d(sigma_z).astype(float)
-        self.sigma_R = np.atleast_1d(sigma_R).astype(float)
-        self.rho_z        = np.atleast_1d(rho_z).astype(float)
-        self.kappa_R      = np.atleast_1d(kappa_R).astype(float)
-        self.xi_R         = np.atleast_1d(xi_R).astype(float)
+        self.sigma_z = np.atleast_1d(sigma_z).astype(np.float64)
+        self.sigma_R = np.atleast_1d(sigma_R).astype(np.float64)
+        self.rho_z = np.atleast_1d(rho_z).astype(np.float64)
+        self.kappa_R = np.atleast_1d(kappa_R).astype(np.float64)
+        self.xi_R = np.atleast_1d(xi_R).astype(np.float64)
 
         self.n_risky = len(self.sigma_z)
         assert all(
@@ -75,9 +363,7 @@ class PlanningProblem:
                 self.xi_R,
             ]
         ), "Asset parameters must have same length."
-        self.n_assets = (
-            self.n_risky + 1
-        )
+        self.n_assets = self.n_risky + 1
 
         # Seeding
         self.seed: int = int(seed)
@@ -87,13 +373,18 @@ class PlanningProblem:
         self.build_rqmc(M, seed)
 
         # Precompute Γ' = G * Ψ' and Γ'^γ used in SDF
-        self.Gamma_next = (self.G * self._psi_vals)     # Next-period permanent income growth factor
-        self.SDF_factor = 1 / (self.Gamma_next ** self.gamma)  # Denominator of SDF
+        self.Gamma_next = (self.G * self._psi_vals).astype(np.float64)
+        self.SDF_factor = (1.0 / (self.Gamma_next ** self.gamma)).astype(np.float64)
+
+        # Buffers used to cut temporary allocations in sdf_moments
+        self._pts_buf_shape = None
+        self._pts_emp = None
+        self._pts_un = None
 
     # ------------------------------------------------------------------
     # Random Shock Handling - RQMC
     # ------------------------------------------------------------------
-    
+
     def build_rqmc(self, M=4096, seed=1996):
         """
         Build a scrambled Sobol' point set with antithetics for Randomized Quasi-Monte-Carlo Sampling (RQMC).
@@ -131,32 +422,25 @@ class PlanningProblem:
         Xi = norm.ppf(U_all).astype(np.float64)   # (2M, d)
 
         n = self.n_risky
-        eps_nodes = Xi[:, :n]         
-        eta_nodes = Xi[:, n:2*n]   
-        nu_nodes  = Xi[:, 2*n]                             # Shocks for permanent income Ψ
-        zeta_nodes = Xi[:, 2*n + 1]                        # Shocks for transitory income Θ 
+        self._M_rqmc = Xi.shape[0]
+        self._eps_nodes = Xi[:, :n].astype(np.float64)
+        self._eta_nodes = Xi[:, n:2*n].astype(np.float64)
+        nu_nodes = Xi[:, 2*n]                             # Shocks for permanent income Ψ
+        zeta_nodes = Xi[:, 2*n + 1]                       # Shocks for transitory income Θ
 
         # ---- Precompute Ψ' and Θ' values ----
         # Ψ' = exp(-0.5 σ_Ψ^2 + σ_Ψ * ν)
-        psi_vals = np.exp(-0.5 * self.sigma_perm**2 + self.sigma_perm * nu_nodes)
-
+        self._psi_vals = np.exp(-0.5 * self.sigma_perm**2 + self.sigma_perm * nu_nodes).astype(np.float64)
         # Θ' (lognormal branch) = exp(μ_Z + σ_Θ * ζ); μ_Z already set to enforce E[Θ]=1
-        theta_vals = np.exp(self.mu_theta + self.sigma_tran * zeta_nodes)
-
-        # ---- Store everything for CRN reuse ----
-        self._M_rqmc = Xi.shape[0]
-        self._eps_nodes  = eps_nodes         # (2M, n_risky)
-        self._eta_nodes  = eta_nodes         # (2M, n_risky)
-        self._psi_vals   = psi_vals          # (2M,)
-        self._theta_vals = theta_vals        # (2M,)
-
+        self._theta_vals = np.exp(self.mu_theta + self.sigma_tran * zeta_nodes).astype(np.float64)
 
     # ------------------------------------------------------------------
     # Grid setup, and interpolation constructors
     # ------------------------------------------------------------------
 
     def make_m_grid(self, points: int = 30, span: tuple = (0.2, 5.0), dense_low: bool = True, p: int = 3):
-        if dense_low == False:
+        """Construct the m-grid. Optionally emphasize low m via a polynomial warp."""
+        if dense_low is False:
             return np.linspace(span[0], span[1], points)
         u = np.linspace(0.0, 1.0, points)
         return span[0] + (span[1] - span[0]) * (u ** p)
@@ -218,7 +502,7 @@ class PlanningProblem:
         zprime = (self.rho_z * z)[None, :] + self.sigma_z[None, :] * self._eps_nodes
 
         # Risky returns R_{j,t+1}
-        locR   = (self.kappa_R + self.xi_R * z)[None, :]
+        locR = (self.kappa_R + self.xi_R * z)[None, :]
         R_risky = np.exp(locR + self.sigma_R[None, :] * self._eta_nodes)
 
         # Stack risk-free as column 0
@@ -227,35 +511,35 @@ class PlanningProblem:
 
         return zprime, Rprime
 
-    def m_next(self, rs: float, R: float):
-        """Next-period cash-on-hand: 
+    def m_next(self, rs: Union[float, np.ndarray], Rp_next: np.ndarray):
+        """Next-period cash-on-hand:
         m_{t+1} = (R^p / Γ') * rs_t + Θ_{t+1} (employed)
         m_{t+1} = (R^p / Γ') * rs_t + θ_low   (unemployed)
         """
-        base = R / self.Gamma_next * rs
-        m_next_employed = base + self._theta_vals
-        m_next_unemployed = base + self.theta_low
-        return m_next_employed, m_next_unemployed
-    
+        Rp_next = np.ascontiguousarray(Rp_next)
+        M = Rp_next.shape[0]
+        base = (Rp_next / self.Gamma_next[:M]) * float(rs)
+        return base + self._theta_vals[:M], base + self.theta_low
+
     def consumption_from_share(self, a, m):
-        """Map share a(m) to consumption level:c_t = a_t(m_t) * m_t."""
+        """Map share a(m) to consumption level: c_t = a_t(m_t) * m_t."""
         return np.clip(a * m, 1e-10, None)
-    
+
     # ------------------------------------------------------------------
     # Bellman equation
     # ------------------------------------------------------------------
-    
+
     def bellman(self, c: float, w: np.ndarray, m: float, z_vec: np.ndarray, v: RegularGridInterpolator):
-        """Calculate the Bellman equation for the states (m,z) given a consumption level c, weights w, and a value function"""
-        rs = m-c
+        """Calculate the Bellman equation for states (m,z) given c, ω, and a value function."""
+        rs = m - c
         zs_next, Rs_next = self.zs_R_next(z_vec)
         R_p_next = Rs_next @ w
-        m_next_emp, m_next_unemp = self.m_next(rs, R_p_next)    
+        m_next_emp, m_next_unemp = self.m_next(rs, R_p_next)
         v_emp = v(np.column_stack([m_next_emp, zs_next]))
         v_unemp = v(np.column_stack([m_next_unemp, zs_next]))
         # Weighted expectation over employment states
-        pE = (1.0 - self.unemp_prob)
-        return self.u(c) + self.beta * (pE * v_emp.mean() + self.unemp_prob * v_unemp.mean())
+        p_e = (1.0 - self.unemp_prob)
+        return self.u(c) + self.beta * (p_e * v_emp.mean() + self.unemp_prob * v_unemp.mean())
 
     # ---------------------------
     # SDF moments and Euler Residuals
@@ -267,25 +551,25 @@ class PlanningProblem:
             for j, g in enumerate(grids):
                 pts[:, j] = np.clip(pts[:, j], float(g[0]), float(g[-1]))
         return pts
-    
+
     @staticmethod
     def smooth_fisher_burmeister(a, b, mu=1e-6):
-        """Smoothed Fisher-Burmeister function for complementarity conditions."""
+        """Smoothed Fisher–Burmeister function for complementarity conditions."""
         return np.sqrt(a**2 + b**2 + 2.0*mu) - (a + b)
-    
 
     def sdf_moments(
-            self, 
-            rs: float, 
-            zs_next: np.ndarray, 
-            Rs_next: np.ndarray,
-            w: np.ndarray, 
-            a_policy: RegularGridInterpolator, 
-            min_share: float = 1e-6
-            ) -> np.ndarray:
+        self,
+        rs: float,
+        zs_next: np.ndarray,
+        Rs_next: np.ndarray,
+        w: np.ndarray,
+        a_policy: RegularGridInterpolator,
+        min_share: float = 1e-6
+    ) -> np.ndarray:
         """
         Return E[m_{t+1} * R_{i,t+1}] scaled by u'(c_t)/beta, i.e.
         g_i = E[ u'(c_{t+1}) / Gamma_{t+1}^gamma * R_{i,t+1} ] for i=0..N.
+        
         Parameters
         ----------
         rs : float
@@ -306,46 +590,50 @@ class PlanningProblem:
         g : (n_assets,) ndarray
             Marginal-utility–weighted returns (“SDF moments”) for each asset.
         """
-        R_p_next = Rs_next @ w                                       
+        R_p_next = Rs_next @ w
+        
+        # Next states for employment and unemployment
+        m_emp, m_un = self.m_next(rs, R_p_next)
+        M, n_risky = zs_next.shape
+        ncols = 1 + n_risky
+        if self._pts_buf_shape != (M, ncols):
+            self._pts_emp = np.empty((M, ncols), dtype=np.float64)
+            self._pts_un = np.empty((M, ncols), dtype=np.float64)
+            self._pts_buf_shape = (M, ncols)
+        pts_emp, pts_un = self._pts_emp, self._pts_un
+        pts_emp[:, 1:] = zs_next
+        pts_un[:, 1:] = zs_next
+        pts_emp[:, 0] = m_emp
+        pts_un[:, 0] = m_un
 
-        # m' branches
-        m_emp, m_unemp = self.m_next(rs, R_p_next)                     
+        # Clamp and clip to ensure stability
+        self._clamp_pts(a_policy, pts_emp)
+        self._clamp_pts(a_policy, pts_un)
+        a_emp = np.clip(a_policy(pts_emp), min_share, 1.0)
+        a_un = np.clip(a_policy(pts_un), min_share, 1.0)
+        c_emp = self.consumption_from_share(a_emp, m_emp)
+        c_un = self.consumption_from_share(a_un, m_un)
 
-        # Build point arrays for interpolation
-        # Clamp to ensure TI stability (extrapolation slopes can be nasty)
-        pts_emp   = self._clamp_pts(a_policy, np.column_stack([m_emp,  zs_next]))
-        pts_unemp = self._clamp_pts(a_policy, np.column_stack([m_unemp, zs_next]))
+        # SDFs
+        upd_emp = self.u_prime(c_emp) * self.SDF_factor
+        upd_un = self.u_prime(c_un) * self.SDF_factor
+        weight = (1.0 - self.unemp_prob) * upd_emp + self.unemp_prob * upd_un
+        return (weight[:, None] * Rs_next).mean(axis=0)
 
-
-        # Next-period consumption via current policy a'(m',z'), then c' = a' * m'
-        a_next_emp   = np.clip(a_policy(pts_emp),   min_share, 1.0)
-        a_next_unemp = np.clip(a_policy(pts_unemp), min_share, 1.0)
-        c_next_emp   = self.consumption_from_share(a_next_emp,   m_emp)
-        c_next_unemp = self.consumption_from_share(a_next_unemp, m_unemp)
-
-        upd_emp   = self.u_prime(c_next_emp)   * self.SDF_factor                
-        upd_unemp = self.u_prime(c_next_unemp) * self.SDF_factor                
-
-        # Weighted expectation over employment states
-        pE = (1.0 - self.unemp_prob)
-        g = pE * (upd_emp[:, None] * Rs_next).mean(axis=0) + \
-            self.unemp_prob * (upd_unemp[:, None] * Rs_next).mean(axis=0)
-        return g  # (n_assets,)
-    
     def euler_residuals(
-            self, 
-            rs: float, 
-            z: np.ndarray, 
-            c: float, 
-            w: np.ndarray, 
-            a_policy: RegularGridInterpolator, 
-            c_upper: float, 
-            xi: float | None = None, 
-            mu_fb: float = 1e-6
-            ) -> np.ndarray:
+        self,
+        rs: float,
+        z: np.ndarray,
+        c: float,
+        w: np.ndarray,
+        a_policy: RegularGridInterpolator,
+        c_upper: float,
+        xi: float | None = None,
+        mu_fb: float = 1e-6
+    ) -> np.ndarray:
         """Residuals: [Euler, portfolio equalization on active face]."""
-        zs_next, Rs_next = self.zs_R_next(z) 
-        g = self.sdf_moments(rs, zs_next, Rs_next, w, a_policy)       
+        zs_next, Rs_next = self.zs_R_next(z)
+        g = self.sdf_moments(rs, zs_next, Rs_next, w, a_policy)
         gbar = float(np.dot(w, g))
 
         if xi is None:
@@ -356,20 +644,21 @@ class PlanningProblem:
 
         # Euler Residual
         r0 = self.u_prime(c) - self.beta * gbar
-        r0 = self.smooth_fisher_burmeister(r0, c_upper-c, mu=0.0)
+        r0 = self.smooth_fisher_burmeister(r0, c_upper - c, mu=0.0)
         return np.concatenate([[r0], fb_r_port])
-    
+
     # ---------------------------
     # Policy evaluation & errors
     # ---------------------------
 
     def get_euler_errors(
-            self, 
-            m_grid: np.ndarray, 
-            z_grids: np.ndarray, 
-            a_policy: RegularGridInterpolator, 
-            w_policy: RegularGridInterpolator, 
-            episodes: int=100):
+        self,
+        m_grid: np.ndarray,
+        z_grids: np.ndarray,
+        a_policy: RegularGridInterpolator,
+        w_policy: RegularGridInterpolator,
+        episodes: int = 100
+    ):
         """
         Simulate Euler/KKT residuals along sample paths starting from each m on the grid,
         with the initial predictor z set to the component-wise median of each z-grid.
@@ -402,8 +691,8 @@ class PlanningProblem:
 
         # unpack params
         kappa = np.atleast_1d(self.kappa_R)
-        xi    = np.atleast_1d(self.xi_R)
-        rho   = np.atleast_1d(self.rho_z)
+        xi = np.atleast_1d(self.xi_R)
+        rho = np.atleast_1d(self.rho_z)
         sig_z = np.atleast_1d(self.sigma_z)   # persistent predictor innovation
         sig_R = np.atleast_1d(self.sigma_R)   # transitory return shock
 
@@ -430,21 +719,21 @@ class PlanningProblem:
                 # returns: risky + safe
                 eta = self.rng.standard_normal(n_risky)
                 R_risky = np.exp(kappa + xi * z_t + sig_R * eta)
-                R_safe  = self.R
-                R_all   = np.concatenate(([R_safe], R_risky))
-                Rp      = float(np.dot(w_t, R_all))
+                R_safe = self.R
+                R_all = np.concatenate(([R_safe], R_risky))
+                Rp = float(np.dot(w_t, R_all))
 
                 # income shocks & permanent growth
                 employed = (self.rng.random() > self.unemp_prob)
                 theta = (np.exp(self.mu_theta + self.sigma_tran * self.rng.standard_normal())
-                        if employed else self.theta_low)
-                psi   =  np.exp(-0.5 * self.sigma_perm**2 + self.sigma_perm * self.rng.standard_normal())
+                         if employed else self.theta_low)
+                psi = np.exp(-0.5 * self.sigma_perm**2 + self.sigma_perm * self.rng.standard_normal())
                 Gamma = self.G * psi
 
                 # next states
                 rs = max(m_t - c_t, 0.0)
                 m_next = (Rp / Gamma) * rs + theta
-                eps_z  = self.rng.standard_normal(n_risky)
+                eps_z = self.rng.standard_normal(n_risky)
                 z_next = rho * z_t + sig_z * eps_z
 
                 m_path[t + 1] = m_next
@@ -455,13 +744,15 @@ class PlanningProblem:
                 U += disc * self.u(c_t)
                 disc *= self.beta
 
-                # Euler/KKT residual at (m_t, z_t) 
+                # Euler/KKT residual at (m_t, z_t)
                 c_upper = m_t  # consume-all cap
                 if c_t >= c_upper - 1e-10:
-                    euler_errors[i,t] = np.nan # Filter in constrained area
+                    euler_errors[i, t] = np.nan  # Filter in constrained area
                 else:
-                    R_vec = self.euler_residuals(rs=rs, z=z_t, c=c_t, w=w_t,
-                                                a_policy=a_policy, c_upper=c_upper, mu_fb=0.0)
+                    R_vec = self.euler_residuals(
+                        rs=rs, z=z_t, c=c_t, w=w_t,
+                        a_policy=a_policy, c_upper=c_upper, mu_fb=0.0
+                    )
                     # Log10 of maximum absolute residual along all state dimensions
                     euler_errors[i, t] = np.log10(max(1e-16, float(np.max(np.abs(R_vec)))))
 
@@ -471,7 +762,7 @@ class PlanningProblem:
 
         states = {'m': states_m, 'z': states_z}
         return euler_errors.ravel(), states, avg_return
-    
+
     #-------------------------------------------------------------------
     # Policy evaluation: value function from policy
     #-------------------------------------------------------------------
@@ -525,9 +816,10 @@ class PlanningProblem:
                     z_grids=z_grids,
                     gamma=self.gamma,
                 )
-                return v_post_interior
+                return V_interp
             # If not converged, swap buffers
             V_old, V_new = V_new, V_old
+
 
 
 #-------------------------------------------------------------------
@@ -550,15 +842,16 @@ class PlanningSolvers:
         self.tol = float(tol)
         self.conv = float(conv)
         self.min_share = float(min_share)
+
     # ------------------------------------------------------------------
     # Helper functions
-    # ------------------------------------------------------------------   
-    
+    # ------------------------------------------------------------------
+
     def _init_policy(self, model: PlanningProblem, warm_start: bool = False):
         """Initialize grids, consumption share array and portfolio logits.
 
-        a_new stores α(m,z)=c/m (consumption share, not assets!).  
-        w_logits_new stores per-asset logits for ω(m,z).          
+        a_new stores α(m,z)=c/m (consumption share, not assets!).
+        w_new stores per-asset weights ω(m,z).
         """
         m_grid = model.make_m_grid(points=self.m_points, span=(0.2, 30.))
         z_grids = model.make_z_grids(points=self.z_points)
@@ -573,33 +866,34 @@ class PlanningSolvers:
                 from ecomodrl.benchmarks.bufferstock.problemclass import PlanningProblem as BufferStockProblem
                 from ecomodrl.benchmarks.bufferstock.problemclass import PlanningSolvers as BufferStockSolvers
                 buffer_stock = BufferStockProblem(
-                    gamma = model.gamma,         
-                    beta = model.beta,         
-                    r = model.r,            
-                    g = model.g,            
-                    sigma_tran = model.sigma_tran,   
-                    sigma_perm = model.sigma_perm,    
-                    unemp_prob = model.unemp_prob,  
-                    theta_low = model.theta_low,     
+                    gamma=model.gamma,
+                    beta=model.beta,
+                    r=model.r,
+                    g=model.g,
+                    sigma_tran=model.sigma_tran,
+                    sigma_perm=model.sigma_perm,
+                    unemp_prob=model.unemp_prob,
+                    theta_low=model.theta_low,
                 )
                 buffer_stock_solvers = BufferStockSolvers(grid_points=100, conv=1e-5)
                 a_bs_policy = buffer_stock_solvers.EGM(buffer_stock)
                 a_bs = np.asarray(a_bs_policy(m_grid), float)
                 a_new = np.broadcast_to(
-                    a_bs.reshape(
-                    (len(m_grid),) + (1,)*len(z_grids)), 
+                    a_bs.reshape((len(m_grid),) + (1,)*len(z_grids)),
                     m_grid_shape
-                    ).copy()
+                ).copy()
             except Exception as e:
-                logging.warning(f"Warm start for portfolio choice failed with exception {e}; proceeding with naive initialization.")
+                logging.warning(
+                    f"Warm start for portfolio choice failed with exception {e}; proceeding with naive initialization."
+                )
                 warm_start = False
                 a_new = np.full(m_grid_shape, 0.2, dtype=float)
-        else: 
+        else:
             a_new = np.full(m_grid_shape, 0.2, dtype=float)
         a_policy = model.make_multilinear(m_grid, z_grids, a_new)
 
         return m_grid, rs_grid, z_grids, a_new, a_policy, w_new, w_policy
-    
+
     def _check_convergence(
         self,
         a_old: np.ndarray,
@@ -608,74 +902,90 @@ class PlanningSolvers:
         w_new: np.ndarray,
     ) -> Tuple[bool, float, float, float]:
         """
-        Sup-norm check for both consumption share α, portfolio weights ω and post-decision value functions.
+        Sup-norm check for both consumption share α and portfolio weights ω.
         """
         max_da = float(np.max(np.abs(a_old - a_new)))
         max_dw = float(np.max(np.abs(w_old - w_new)))
         return (max_da <= self.conv and max_dw <= self.conv), max_da, max_dw
-    
+
     def weights_to_mz_policy(
-            self, 
-            model: PlanningProblem, 
-            rs_grid: np.ndarray, 
-            m_grid: np.ndarray, 
-            z_grids: np.ndarray, 
-            a_policy: RegularGridInterpolator, 
-            ws: np.ndarray):
-        """Map weights on post_decision grid to weights on pre-decision grid (m,z) for given consumption and asset allocation policy and return as multilinear interpolator"""
-        w_policy = model.make_multilinear(rs_grid, z_grids, ws)
-        m_grid_shape = (len(m_grid),) + tuple(len(g) for g in z_grids)
-        w_mz = np.zeros(m_grid_shape + (model.n_assets,), dtype=float)
-        z_indices = [range(len(g)) for g in z_grids]
-        z_tuples = list(itertools.product(*z_indices))
-        for im, m in enumerate(m_grid):
-             for z_idx_tuple in z_tuples:
-                z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx_tuple)], dtype=float)
-                a = a_policy([[m, *z_vec]])[0]
-                rs = m * (1.0 - a)
-                w_mz[(im, *z_idx_tuple, slice(None))] = w_policy([[rs, *z_vec]])[0]
-        
-        w_policy_mz = model.make_multilinear(m_grid, z_grids, w_mz)
-        return w_policy_mz
+        self,
+        model: PlanningProblem,
+        rs_grid: np.ndarray,
+        m_grid: np.ndarray,
+        z_grids: np.ndarray,
+        a_policy: RegularGridInterpolator,
+        ws: np.ndarray
+    ):
+        """Map weights on (rs, z) grid to weights on (m, z) given a(m, z)."""
+        w_policy_rsz = model.make_multilinear(rs_grid, z_grids, ws)
+        grids = [m_grid] + z_grids
+        mesh = np.meshgrid(*grids, indexing="ij")
+        pts_mz = np.stack([g.ravel() for g in mesh], axis=1)
+        a_vals = np.asarray(a_policy(pts_mz), float).ravel()
+        m_vals = pts_mz[:, 0]
+        rs_vals = m_vals * (1.0 - a_vals)
+        pts_rsz = pts_mz.copy()
+        pts_rsz[:, 0] = rs_vals
+        w_flat = np.asarray(w_policy_rsz(pts_rsz), float)
+        w_mz = w_flat.reshape(tuple(len(g) for g in grids) + (model.n_assets,))
+        return model.make_multilinear(m_grid, z_grids, w_mz)
 
     def logits_to_weights(self, logits):
         # Additive log-ratio: logits in R^{N-1} → ω ∈ Δ^N  (ALR inverse = softmax of [logits, 0])
         e = np.exp(np.clip(logits, -50, 50))
         denom = max(1.0 + np.sum(e), 1e-300)
         return np.concatenate([e / denom, [1.0 / denom]])
-    
+
     def weights_to_logits(self, w):
         # ω ∈ Δ^N  → logits in R^{N-1}  (ALR forward = log(ω_1..N-1 / ω_N))
         w = np.asarray(w, dtype=float)
         assert w.ndim == 1 and w.shape[0] >= 2, "w must be 1D with at least 2 elements."
-        w = np.clip(w, 1e-15, None) 
+        w = np.clip(w, 1e-15, None)
         w /= w.sum()
         logits = np.log(w[:-1]) - np.log(w[-1])
         return logits
-    
+
     # ------------------------------------------------------------------
     # Nested Endogenous Gridpoint Method (NEGM)
     # ------------------------------------------------------------------
-    def EGM(self, 
-        model: PlanningProblem, 
+    def EGM(
+        self,
+        model: PlanningProblem,
         verbose: bool = False,
         max_iter: int = 100,
         warm_start: bool = True,
         mu_fb: float = 1e-4,
-        ) -> Tuple[RegularGridInterpolator, RegularGridInterpolator]:
+    ) -> Tuple[RegularGridInterpolator, RegularGridInterpolator]:
         """Compute optimal consumption share and portfolio choice policy by TI."""
         # --- Setup ----------------------------------------------------
         m_grid, rs_grid, z_grids, a_new, a_policy, w_new, _ = self._init_policy(model, warm_start=warm_start)
         z_indices = [range(len(g)) for g in z_grids]
 
+        # Precompute static policy grid structures for fast moments
+        a_values = np.ascontiguousarray(a_new, dtype=np.float64) # make sure that a_values is in C-order and np.float64
+        shape = np.array(a_values.shape, dtype=np.int64)
+        # Strides to index flattened 1D-arrays
+        strides = _c_strides(shape)
+        m_grid_np = np.ascontiguousarray(m_grid, dtype=np.float64)
+        # Flat-index/strides offsets for all hypercube corners
+        z_corner_offs = _z_corner_offsets(strides, len(z_grids))              
+
         # scratch arrays for one z-slice
         c_buf = np.empty(len(rs_grid), dtype=float)
         m_buf = np.empty(len(rs_grid), dtype=float)
+
+        # Typed list for numba kernels (z-grid collection)
+        z_typed = List()
+        for zg in z_grids:
+            z_typed.append(np.ascontiguousarray(zg, dtype=np.float64))
 
         # --- Iteration ------------------------------------------------
         for it in range(0, max_iter):
             a_old = a_new.copy()
             w_old = w_new.copy()
+
+            a_values = np.ascontiguousarray(a_new, dtype=np.float64)
 
             # simple μ homotopy for stability
             mu_now = max(1e-8, mu_fb * (0.5 ** (it // 2)))
@@ -683,44 +993,73 @@ class PlanningSolvers:
             # Pointwise policy improvement: (c, ω) via local active-set solve
             for z_idx_tuple in itertools.product(*z_indices):
                 z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx_tuple)], dtype=float)
-                zs_next, Rs_next = model.zs_R_next(z_vec) 
+                zs_next, Rs_next = model.zs_R_next(z_vec)
+
+                # Precompute z-structure for compiled moments at this z-slice
+                zs_next_c = np.ascontiguousarray(zs_next, dtype=np.float64)
+                Rs_next_c = np.ascontiguousarray(Rs_next, dtype=np.float64)
+                # Lower-corner, flattened index on z-hypercube and barycentric weights for interpolation
+                base_z_flat, z_w = _precompute_z_interp(zs_next_c, z_typed, strides)
 
                 for irs, rs in enumerate(rs_grid):
                     # (A) ω-update at (rs, z)
                     if rs <= self.min_share:           # negligible savings ⇒ ω irrelevant; use uniform
-                        w_star = np.full(model.n_assets, 1.0 / model.n_assets, dtype=float) # TODO: replace model.n_assets
+                        w_star = np.full(model.n_assets, 1.0 / model.n_assets, dtype=float)
                     else:
                         # Warm-start
                         w0 = w_new[(irs, *z_idx_tuple, slice(None))]
                         if it % 15 == 0:
                             v0 = self.weights_to_logits(w0)  # logits in R^{N-1}
-                            g0 = model.sdf_moments(rs=rs, zs_next=zs_next, Rs_next=Rs_next, w=w0, a_policy=a_policy)     
-                            xi0 = float(np.max(g0)) #float(w0 @ g0)                 
+                            g0 = _sdf_moments_fast(
+                                float(rs), Rs_next_c, w0,
+                                model._theta_vals, model.Gamma_next, model.SDF_factor,
+                                model.theta_low, model.unemp_prob, model.gamma, self.min_share,
+                                a_values.ravel(), shape, strides, m_grid_np,
+                                base_z_flat, z_corner_offs, z_w
+                            )
+                            xi0 = float(np.max(g0))
                             x0 = np.concatenate([v0, [xi0]])
 
                             def residuals(x):
                                 logits, xi = x[:-1], x[-1]
-                                w   = self.logits_to_weights(logits)  # ω ∈ Δ^N (safe + risky)
-                                g_loc = model.sdf_moments(rs=rs, zs_next=zs_next, Rs_next=Rs_next, w=w, a_policy=a_policy)
+                                w_loc = self.logits_to_weights(logits)
+                                g_loc = _sdf_moments_fast(
+                                    float(rs), Rs_next_c, w_loc,
+                                    model._theta_vals, model.Gamma_next, model.SDF_factor,
+                                    model.theta_low, model.unemp_prob, model.gamma, self.min_share,
+                                    a_values.ravel(), shape, strides, m_grid_np,
+                                    base_z_flat, z_corner_offs, z_w
+                                )
+                                return model.smooth_fisher_burmeister(w_loc, xi - g_loc, mu=mu_now)
 
-                                return model.smooth_fisher_burmeister(w, xi - g_loc, mu=mu_now)
                             sol = root(residuals, x0, method='hybr', tol=self.tol)
                             w_star = self.logits_to_weights(sol.x[:-1])
-                        else: 
+                        else:
                             w_star = w0
-                        # reuse the last g via one more cheap call (small overhead)
-                    g = model.sdf_moments(rs=rs, zs_next=zs_next, Rs_next=Rs_next, w=w_star, a_policy=a_policy)
-                    gbar = float(w_star @ g)
-                    w_new[(irs, *z_idx_tuple, slice(None))] = w_star  
 
                     # (B) consumption by Euler inversion at this (rs,z)
+                    g = _sdf_moments_fast(
+                        float(rs), Rs_next_c, w_star,
+                        model._theta_vals, model.Gamma_next, model.SDF_factor,
+                        model.theta_low, model.unemp_prob, model.gamma, self.min_share,
+                        a_values.ravel(), shape, strides, m_grid_np,
+                        base_z_flat, z_corner_offs, z_w
+                    )
+                    gbar = float(w_star @ g)
+                    w_new[(irs, *z_idx_tuple, slice(None))] = w_star
+
                     c = max(model.u_prime_inv(model.beta * gbar), self.min_share)
                     m_buf[irs] = rs + c
                     c_buf[irs] = c
+
                 # ---- EGM mapping to the m-grid on this z slice ----
                 order = np.argsort(m_buf)
                 m_ord, c_ord = m_buf[order], c_buf[order]
-                a_new[(slice(None), *z_idx_tuple)] = np.interp(m_grid, np.concatenate([[0.0], m_ord]), np.concatenate([[1.0], c_ord/m_ord]))
+                a_new[(slice(None), *z_idx_tuple)] = np.interp(
+                    m_grid,
+                    np.concatenate([[0.0], m_ord]),
+                    np.concatenate([[1.0], c_ord / m_ord])
+                )
 
             # Update interpolants
             a_policy = model.make_multilinear(m_grid, z_grids, a_new)
@@ -737,9 +1076,7 @@ class PlanningSolvers:
 
                 if converged:
                     break
-        
+
         w_policy = self.weights_to_mz_policy(model, rs_grid, m_grid, z_grids, a_policy, w_new)
 
-        return a_policy, w_policy 
-
-
+        return a_policy, w_policy

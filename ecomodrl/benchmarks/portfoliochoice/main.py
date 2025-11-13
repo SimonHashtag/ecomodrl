@@ -13,7 +13,7 @@ if __name__ == "__main__":
         # rho_z=[0.90, 0.75],
         # kappa_R=[0.00, 0.00],
         # xi_R=[+0.045, -0.030],
-         M=2**10
+        M=2**10
         )                     
     solvers = PlanningSolvers(
         m_points=200,         # m grid points (only used for interpolation to common rectangular grid)
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     # Policies as bilinear interpolators
     a_policy_egm, w_policy_egm  = timed_solve('EGM',  solvers.EGM,  model) 
 
-    m_grid = model.make_m_grid(points=solvers.rs_points, span=(0.2, 30.), dense_low=False) # TODO: m_points or rs_points
+    m_grid = model.make_m_grid(points=30, span=(0.1, 30.), dense_low=False) # TODO: m_points or rs_points
     z_grids = model.make_z_grids(points=solvers.z_points)
 
     # Euler equation errors & return comparison
@@ -50,17 +50,35 @@ if __name__ == "__main__":
     )
 
     # Value function evaluation
-    value_fun_egm = model.V_from_a(m_grid, z_grids, a_policy_egm, w_policy_egm, conv=1e-5)
+    value_fun_egm = model.V_from_a(m_grid, z_grids, a_policy_egm, w_policy_egm, conv=1e-4)
 
     # -------------------------------------------------------
     # EGM Plots
     # -------------------------------------------------------
-    z_grid = z_grids[0]  # Only considering the first risky asset for 3D plot
+    n_risky = len(z_grids)
+    z_meds = np.array([zg[len(zg)//2] for zg in z_grids], dtype=float)
+
+    # choose which z to vary in the m–z plot (first one)
+    z_idx = 0
+    z_grid = z_grids[z_idx]
+
+    # build (m,z_k) mesh
     M, Z = np.meshgrid(m_grid, z_grid, indexing='ij')
-    pts = np.column_stack([M.ravel(), Z.ravel()])
+
+    # assemble full points: columns = [m, z1, ..., zK]
+    pts = np.empty((M.size, 1 + n_risky), dtype=float)
+    pts[:, 0] = M.ravel()
+    # start with all z at medians
+    pts[:, 1:] = z_meds[None, :]
+    # overwrite the varying z_k with the mesh values
+    pts[:, 1 + z_idx] = Z.ravel()
+
+    # evaluate policies/value
     A_egm = a_policy_egm(pts).reshape(M.shape)
-    W_egm = w_policy_egm(pts)[:,1].reshape(M.shape)
-    V_egm = value_fun_egm(pts).reshape(M.shape)
+    W_full = w_policy_egm(pts)                    # shape: (N, n_assets)
+    W_egm  = W_full[:, 1].reshape(M.shape)        # risky-1 share (column 1)
+    V_egm  = value_fun_egm(pts).reshape(M.shape)
+
 
     fig3 = plt.figure(figsize=(12, 5))
 
@@ -91,7 +109,6 @@ if __name__ == "__main__":
     plt.ylabel('Frequency')
     plt.legend()
     plt.tight_layout()
-    plt.show()
 
     # --- Value function---
     fig2 = plt.figure(figsize=(12, 5))
@@ -104,6 +121,30 @@ if __name__ == "__main__":
     ax.set_zlabel('$V$')
     fig2.colorbar(surf, ax=ax, shrink=0.6, aspect=10, label='Value function')
     plt.tight_layout()
+    if n_risky > 1:
+        # pick an m0 (median of m_grid)
+        m0 = m_grid[len(m_grid)//2]
+        Z1, Z2 = np.meshgrid(z_grids[0], z_grids[1], indexing='ij')
+        pts2 = np.empty((Z1.size, 1 + n_risky), dtype=float)
+        pts2[:, 0] = m0
+        # set all z to medians first
+        pts2[:, 1:] = z_meds[None, :]
+        # overwrite first two z columns with mesh
+        pts2[:, 1 + 0] = Z1.ravel()
+        pts2[:, 1 + 1] = Z2.ravel()
+
+        A_m0 = a_policy_egm(pts2).reshape(Z1.shape)
+
+        fig4 = plt.figure(figsize=(6, 5))
+        ax4 = fig4.add_subplot(1, 1, 1, projection='3d')
+        surf = ax4.plot_surface(Z1, Z2, A_m0, cmap='viridis', edgecolor='none', alpha=0.9)
+        ax4.set_title(r'Policy $a_t(m_0, z_1, z_2)$ with $m_0=%.3g$ (others at medians)' % m0)
+        ax4.set_xlabel(r'$z_1$')
+        ax4.set_ylabel(r'$z_2$')
+        ax4.set_zlabel('Consumption share $a_t$')
+        fig4.colorbar(surf, ax=ax4, shrink=0.6, aspect=10, label='Consumption share')
+        plt.tight_layout()
+
     plt.show()
 
     
