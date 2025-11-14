@@ -8,11 +8,11 @@ if __name__ == "__main__":
 
     # Model and solvers
     model   = PlanningProblem(
-        # sigma_R=[0.28, 0.18],   # idiosyncratic/short-run risk: growth riskier
-        # sigma_z=[0.08, 0.10],   # slow-moving uncertainty: conservative a touch higher
-        # rho_z=[0.90, 0.75],
-        # kappa_R=[0.00, 0.00],
-        # xi_R=[+0.045, -0.030],
+        sigma_R=[0.28, 0.18],   # idiosyncratic/short-run risk: growth riskier
+        sigma_z=[0.08, 0.10],   # slow-moving uncertainty: conservative a touch higher
+        rho_z=[0.90, 0.75],
+        kappa_R=[0.00, 0.00],
+        xi_R=[+0.045, -0.030],
         M=2**10
         )                     
     solvers = PlanningSolvers(
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     z_grids = model.make_z_grids(points=solvers.z_points)
 
     # Euler equation errors & return comparison
-    euler_errors_egm, states_egm, U_egm = model.get_euler_errors(m_grid, z_grids, a_policy_egm, w_policy_egm, episodes=100)
+    euler_errors_egm, states_egm, U_egm = model.get_euler_errors(m_grid, z_grids, a_policy_egm, w_policy_egm, episode_len=100)
 
     print(
         "Mean absolute Euler equation error: \n"
