@@ -171,7 +171,7 @@ class PlanningProblem:
     
     def _is_binding(self, c_t: float, m_t: float) -> bool:
         """Borrowing constraint c_t <= m_t. Treat as binding when savings m_t - c_t is effectively zero."""
-        return (m_t - c_t) <= (1e-3 * max(1.0, m_t))
+        return (m_t - c_t) <= 1e-3 * m_t
     
 
     # ---------------------------

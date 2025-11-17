@@ -10,6 +10,7 @@ from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.envs.bufferstock import BufferStockSavingsEnv
 from ecomodrl.utils.analysis_BS import analyze_all_seeds
 from ecomodrl.utils.params_loader import BufferStockParams
+from ecomodrl.utils.beta_policy import BetaActorCriticPolicy
 
 # ----------------------------
 # Run configuration
@@ -22,11 +23,12 @@ from ecomodrl.utils.params_loader import BufferStockParams
 class RunConfig:
     toml_path: str = "./ecomodrl/experiments/model_params/bufferstock.toml"
     out_dir: Path = Path(os.environ.get("RUNRESULTS_PATH", "./runs/BufferStock"))
-    max_episode_steps: int = 10
-    max_eval_episode_steps: int = 30
+    max_episode_steps: int = 20
+    max_eval_episode_steps: int = 100
+    n_eval_episodes: int = 10
     n_envs: int = 10
-    total_timesteps: int = 10_000
-    eval_every: int = 1_000
+    total_timesteps: int = 500_000
+    eval_every: int = 10_000
     patience: int = 20
     min_delta: float = 1e-3
     state_min: float = 1.0
@@ -48,12 +50,12 @@ if __name__ == "__main__":
     
     algo_cfg = AlgoConfig(
         name="ppo",
-        policy="MlpPolicy",
+        policy=BetaActorCriticPolicy,
         algo_params={
             "gamma": params.beta,
             "n_steps": cfg.max_episode_steps,
             "batch_size": cfg.n_envs * cfg.max_episode_steps // 5,
-            "n_epochs": 2,
+            "n_epochs": 5,
             "learning_rate": 3.5e-4,
             "ent_coef": 4.4e-5,
             "gae_lambda": 0.925,
@@ -63,13 +65,13 @@ if __name__ == "__main__":
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [32, 32], "vf": [32, 32]},
-            "log_std_init": -2.0,  # smaller initial exploration to avoid extremes
+            "net_arch": {"pi": [64, 64], "vf": [128, 128]},
+            #"log_std_init": -2.0,  # smaller initial exploration to avoid extremes
         },
     )
 
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    # train_multiple_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params)
+    train_multiple_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params)
     analyze_all_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)

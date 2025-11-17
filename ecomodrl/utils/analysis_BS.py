@@ -72,9 +72,11 @@ def compute_benchmark(params: Union[Mapping[str, Any], Any]):
     grid = model.make_grid(solvers.grid_points)
     V_bm = model.V_from_a(grid, policy_bm, conv=1e-3)
 
-    # Return model class, optimal policy and corresponding value function
-    return model, grid, policy_bm, V_bm
+    # Evaluation grid
+    euler_grid = model.make_grid(solvers.grid_points, span=(1.5, 15.))
 
+    # Return model class, grid, evaluation grid, optimal policy and corresponding value function
+    return model, grid, euler_grid, policy_bm, V_bm
 
 def get_policy_value_functions(
     model_path: Path,
@@ -158,7 +160,6 @@ def get_policy_value_functions(
     return policy_rl, value_rl
 
 
-
 def analyze_all_seeds(
     cfg: Union[Mapping[str, Any], Any],
     algo_cfg: Union[Mapping[str, Any], Any],
@@ -186,10 +187,10 @@ def analyze_all_seeds(
     out_dir.mkdir(parents=True, exist_ok=True)
     global_steps = np.linspace(0, cfg.total_timesteps, num=100)
 
-    # Benchmark reference
-    p, grid, policy_bm, V_bm = compute_benchmark(params)
-    euler_bm, _, U_bm = p.get_euler_errors(grid, policy_bm, episodes=100)
-    euler_bm = np.log10(np.abs(euler_bm))
+    # Benchmark reference solution
+    p, grid, euler_grid, policy_bm, V_bm = compute_benchmark(params)
+    # TODO: Seeding! (Consistent with RL eval seed)
+    euler_bm, _, U_bm = p.get_euler_errors(euler_grid, policy_bm, episodes=100)
 
     # --- Initialize containers for aggregation across seeds ---
     # Learning performance
@@ -238,16 +239,17 @@ def analyze_all_seeds(
         )
         # Store policy and value predictions across grid
         rl_policy_vals.append(policy_rl(grid))
-        rl_value_nn_vals.append(value_rl(grid))
+        rl_value_nn_vals.append(value_rl(euler_grid))
 
         # Value recomputed from policy via environment recursion
         V_rl = p.V_from_a(grid, policy_rl, conv=1e-9)
-        rl_value_from_policy.append(V_rl(grid))
+        rl_value_from_policy.append(V_rl(euler_grid))
 
         # --- Euler errors and episode utilities ---
         # Simulate policy to measure equilibrium errors and returns
-        euler_rl, states, U_rl = p.get_euler_errors(grid, policy_rl, episodes=100)
-        euler_logabs_list.append(np.log10(np.abs(euler_rl)))
+        # TODO: Seeding!
+        euler_rl, states, U_rl = p.get_euler_errors(euler_grid, policy_rl, episodes=10)
+        euler_logabs_list.append(euler_rl)
         pooled_states.append(states)
         Us_rl.append(U_rl)
 
@@ -287,10 +289,11 @@ def analyze_all_seeds(
     q25_return, q75_return = interquartile_range(return_curves)
 
     # Benchmark evaluation return (different grid during training)
+    # TODO: Seeding!
     _, _, return_bm = p.get_euler_errors(
         np.linspace(cfg.state_min, cfg.state_max, 20),
         policy_bm,
-        episodes=100,
+        episodes=cfg.max_eval_episode_steps,
     )
 
     fig = plt.figure(figsize=(9, 4.5))
@@ -299,7 +302,7 @@ def analyze_all_seeds(
     plt.axhline(return_bm, linestyle="-.", color="darkorange", label="Benchmark")
     plt.xlabel("Timesteps")
     plt.ylabel("Avg discounted episode return (true scale)")
-    plt.title("Learning Curve (PPO on Cass–Koopmans)")
+    plt.title("Learning Curve (PPO Buffer Stock)")
     plt.legend()
     plt.tight_layout()
     fig.savefig(out_dir / "learning_curve_agg.png", dpi=150)
@@ -328,9 +331,9 @@ def analyze_all_seeds(
     ax[0].legend()
 
     # Value
-    ax[1].plot(grid, mean_Vnn, label="RL Value (NN mean)")
-    ax[1].fill_between(grid, lo_Vnn, hi_Vnn, alpha=0.25, label="95% CI (bootstrap)")
-    ax[1].plot(grid, V_bm(grid), linestyle="--", label="Benchmark (EGM)")
+    ax[1].plot(euler_grid, mean_Vnn, label="RL Value (NN mean)")
+    ax[1].fill_between(euler_grid, lo_Vnn, hi_Vnn, alpha=0.25, label="95% CI (bootstrap)")
+    ax[1].plot(euler_grid, V_bm(euler_grid), linestyle="--", label="Benchmark (EGM)")
     ax[1].plot(grid, mean_Vfrom, label="RL Value (from policy mean)")
     ax[1].set_title("Value Function V(k)")
     ax[1].set_xlabel("Capital k")
@@ -345,7 +348,7 @@ def analyze_all_seeds(
     # Euler error distribution
     # ---------------------------------------------------------------
     mean_max_euler, lo_max_euler, hi_max_euler = bootstrap_mean_ci(
-        np.max(euler_logabs_list, axis=1).reshape(-1, 1),
+        np.nanmax(euler_logabs_list, axis=1).reshape(-1, 1),
         n_boot=n_boot,
         alpha=alpha,
         seed=bootstrap_seed,
@@ -354,15 +357,15 @@ def analyze_all_seeds(
 
     fig = plt.figure(figsize=(7.2, 4.5))
     plt.hist(rl_all, bins=50, density=True, alpha=0.7, label="RL policy (pooled)")
-    plt.axvline(euler_bm.mean(), color="gray", linestyle="--", label="Mean EGM")
+    plt.axvline(np.nanmean(euler_bm), color="gray", linestyle="--", label="Mean EGM")
 
     # Per-seed KDE overlays (can fail for nearly constant samples)
     for i, arr in enumerate(euler_logabs_list):
         try:
-            kde = gaussian_kde(arr)
+            kde = gaussian_kde(arr[~np.isnan(arr)])
             xs = np.linspace(
-                min(np.min(rl_all), np.min(euler_bm)),
-                max(np.max(rl_all), np.max(euler_bm)),
+                min(np.nanmin(rl_all), np.nanmin(euler_bm)),
+                max(np.nanmax(rl_all), np.nanmax(euler_bm)),
                 256,
             )
             plt.plot(xs, kde(xs), alpha=0.3, linewidth=1.0)
@@ -452,7 +455,7 @@ def analyze_all_seeds(
     # Helper to unpack (mean, lo, hi) triplets into flat metric entries
     metrics = {
         "U_bm": float(U_bm),
-        "max_abs_euler_error_bm": float(np.max(euler_bm)),
+        "max_abs_euler_error_bm": float(np.nanmax(euler_bm)),
         **pack_ci("U_rl", mean_Us, lo_Us, hi_Us),
         **pack_ci("wev", mean_wev, lo_wev, hi_wev),
         **pack_ci("wev_relevant", mean_rel_wev, lo_rel_wev, hi_rel_wev),
