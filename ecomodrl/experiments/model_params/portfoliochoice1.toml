@@ -1,0 +1,20 @@
+# Example parameters for the Buffer–Stock model with Portfolio Choice (1 risky asset)
+
+gamma = 2.0                 # γ: CRRA risk aversion (>0), γ=1 → log utility
+beta  = 0.96                # β: subjective discount factor ∈ (0,1)
+r     = 0.02                # r: risk-free net rate per period (R_f = 1 + r), must be > -1
+g     = 0.01                # g: permanent income growth per period (G = 1 + g), must be > -1
+
+sigma_tran = 0.10           # σ_θ: std. dev. of transitory log shock (≥0)
+sigma_perm = 0.10           # σ_ψ: std. dev. of permanent log shock (≥0)
+
+unemployment_prob = 0.005   # p: probability of unemployment shock (mass at θ_low) ∈ [0,1)
+theta_low = 0.30            # θ_low: transitory income when unemployed, normalized ∈ [0,1]
+
+# --- Per-asset primitives (length = 1 → n_risky inferred as 1) ---
+rho_z   = [0.90]            # ρ_z[j]: AR(1) coefficient for predictor z_j, |ρ|<1
+sigma_z = [0.12]            # σ_z[j]: std. of predictor innovation (≥0)
+
+kappa_R = [0.02]            # κ_R[j]: intercept in ln R_j,t+1
+xi_R    = [0.08]            # ξ_R[j]: slope on predictor z_j in ln R_j,t+1
+sigma_R = [0.25]            # σ_R[j]: std. of log-return innovation (≥0)
