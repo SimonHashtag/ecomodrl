@@ -1,15 +1,17 @@
 import logging
+import multiprocessing as mp
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-import multiprocessing as mp
 import torch as th
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
+from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
+from ecomodrl.utils.analysis_CK import analyze_all_seeds
 from ecomodrl.utils.params_loader import CassKoopmansParams
-from ecomodrl.utils.analysis import analyze_all_seeds
+
 
 # ----------------------------
 # Run configuration
@@ -20,8 +22,11 @@ from ecomodrl.utils.analysis import analyze_all_seeds
 #       otherwise defaults to relative path "./ecomodrl/runs/CassKoopmans"
 @dataclass
 class RunConfig:
-    toml_path: str = "./ecomodrl/experiments/model_params/casskoopmans.toml"
+    # Paths
+    toml_path: Path = Path("./ecomodrl/experiments/model_params/casskoopmans.toml")
     out_dir: Path = Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans"))
+
+    # Training
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
@@ -29,20 +34,33 @@ class RunConfig:
     eval_every: int = 10_000
     patience: int = 10
     min_delta: float = 1e-3
-    state_min: float = 1.0
-    state_max: float = 15.0
+
+    # Seeds
     base_seed: int = 42
-    n_seeds: int = 10
+    n_seeds: int = 1
+
+    # Use steady-state aware starting boundaries for RL algorithm
+    # Intention: don't explore outside of the economically relevant state space
+    state_min: float = field(init=False)
+    state_max: float = field(init=False)
+    def __post_init__(self):
+        mod = PlanningProblem()
+        grid = mod.make_grid()
+        self.state_min = grid[0]
+        self.state_max = grid[-1]
+
     @property
     def seeds(self) -> list[int]:
+        """List of random seeds for multiple runs."""
         return list(range(self.base_seed, self.base_seed + self.n_seeds))
+
 
 if __name__ == "__main__":
     mp.freeze_support()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-        )
+    )
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
@@ -63,7 +81,7 @@ if __name__ == "__main__":
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [32, 32], "vf": [32, 32]},
+            "net_arch": {"pi": [64, 64], "vf": [128, 128]},
             "log_std_init": -2.0,  # smaller initial exploration to avoid extremes
         },
     )

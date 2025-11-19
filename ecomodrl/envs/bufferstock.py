@@ -10,7 +10,7 @@ __all__ = ["BufferStockSavingsEnv"]
 
 # ---- Defaults (can be overridden via __init__) ----
 RESET_M_DEFAULT = 5.0      # normalized market resources at reset
-TOL = 1e-3                 # clamp to avoid zero/one consumption corners
+TOL = 0.0                  # clamp to avoid zero/one consumption corners TODO: make less static (e.g. as model_params) as TD3/DDPG might need it (no beta distribution)
 
 
 class BufferStockSavingsEnv(gym.Env):
@@ -54,7 +54,7 @@ class BufferStockSavingsEnv(gym.Env):
         self.G     = 1.0 + model_params.g
         self.SIGMA_TRAN = model_params.sigma_tran
         self.SIGMA_PERM = model_params.sigma_perm
-        self.PROB_UNEMP = model_params.unemployment_prob
+        self.PROB_UNEMP = model_params.unemp_prob
         self.THETA_LOW  = model_params.theta_low
 
         # mean of log θ for E[θ]=1 (given point mass at θ_low with prob p)
@@ -197,7 +197,7 @@ def crra_utility(consumption: float, gamma: float, floattype=np.float32) -> floa
     CRRA utility u(c) with guard for strictly positive c.
     gamma == 1 -> log utility.
     """
-    c = floattype(np.maximum(consumption, TOL))
+    c = floattype(consumption)
     if gamma == 1:
         u = np.log(c)
     else:
