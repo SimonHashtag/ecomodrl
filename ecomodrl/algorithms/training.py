@@ -13,7 +13,7 @@ from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.utils import set_random_seed
 
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.stopper_sb import EarlyStoppingEvalCallback
+from ecomodrl.utils.stopper_sb import EarlyStoppingCallback
 
 # -------------------------------------------------------
 # Build deep RL algorithm
@@ -116,12 +116,13 @@ def train_single_seed(
 
         model = build_model(algo_cfg, train_env, seed, tensorboard_log=out_dir, verbose=0)
 
-        callback = EarlyStoppingEvalCallback(
+        callback = EarlyStoppingCallback(
             eval_env=eval_env,
             beta=params.beta,
             eval_freq=cfg.eval_every,
             patience=cfg.patience,
             min_delta=cfg.min_delta,
+            max_processed_samples=cfg.max_processed_samples,
             n_eval_episodes=getattr(cfg, "n_eval_episodes", None) or 1.0,  # increase for stochastic envs
             deterministic_eval=True,
             best_model_path=best_model_path,

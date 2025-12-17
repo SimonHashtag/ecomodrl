@@ -169,7 +169,7 @@ ALGO_REGISTRY: Dict[str, Tuple[SearchSpaceFn, AdapterFn]] = {
     "ddpg": (_offpolicy_space, _ddpg_adapter),
 }
 
-def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:
+def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:  # TODO: checks default configs
     algo_name = algo_name.lower()
     if algo_name == "ppo":
         return AlgoConfig(
