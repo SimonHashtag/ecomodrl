@@ -30,7 +30,8 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 500_000
+    total_timesteps: int = 10_000_000
+    max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
     patience: int = 10
     min_delta: float = 1e-3

@@ -208,7 +208,7 @@ def analyze_all_seeds(
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     # Grid for average return plot
-    global_steps = np.linspace(0, cfg.total_timesteps, num=100)
+    global_steps = np.linspace(0, cfg.max_processed_samples, retstep=cfg.eval_every)[0]
 
     # Benchmark once
     p, k_grid, z_grid, policy_bm, V_bm = compute_benchmark(params)
@@ -252,8 +252,9 @@ def analyze_all_seeds(
         s = seed_entry["seed"]
 
         tb_path = out_dir / f"seed_{s}"
-        steps, returns = tb_read_scalar(tb_path, "eval/avg_discounted_return")
-        return_curves.append(np.interp(global_steps, steps, returns))
+        _, returns = tb_read_scalar(tb_path, "eval/avg_discounted_return")
+        _, steps_proc = tb_read_scalar(tb_path, "eval/x_processed_samples")
+        return_curves.append(np.interp(global_steps, steps_proc, returns))
 
         # RL policy/value functions on (k,z)
         policy_rl, value_rl = get_policy_value_functions(
@@ -352,7 +353,7 @@ def analyze_all_seeds(
     plt.fill_between(global_steps, q25_return, q75_return, alpha=0.3, label="IQR")
     plt.plot(global_steps, iqm_return, label="Interquartile Mean")
     plt.axhline(return_bm, linestyle="-.", color="darkorange", label="Benchmark")
-    plt.xlabel("Timesteps")
+    plt.xlabel("Processed Samples")
     plt.ylabel("Avg discounted episode return (true scale)")
     plt.title("Learning Curve (PPO on Brock–Mirman)")
     plt.legend()

@@ -30,9 +30,10 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 400_000
+    total_timesteps: int = 10_000_000
+    max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
-    patience: int = 10
+    patience: int = 20
     min_delta: float = 1e-3
 
     # Seeds
@@ -89,20 +90,20 @@ if __name__ == "__main__":
     #     name="td3",
     #     policy="MlpPolicy",
     #     algo_params={
-    #         "learning_rate": 3e-4,
-    #         "buffer_size": 1_000_000,
-    #         "batch_size": cfg.n_envs * cfg.max_episode_steps // 4,
+    #         "learning_rate": 3e-3,
+    #         "buffer_size": 100_000,
+    #         "batch_size": cfg.n_envs * cfg.max_episode_steps // 1,
     #         "tau": 0.005,
     #         "gamma": params.beta,
-    #         "train_freq": (100, "step"), # "step" is crucial for vectorized envs
-    #         "gradient_steps": 1,
+    #         "train_freq": (50, "step"), # "step" is crucial for vectorized envs
+    #         "gradient_steps": 10,
     #         "learning_starts": 20_000,
     #         "policy_delay": 2,
-    #         "action_noise_std": 0.01,
+    #         "action_noise_std": 0.05,
     #     },
     #     policy_kwargs={
     #         "activation_fn": th.nn.ReLU,
-    #         "net_arch": [32, 32],
+    #         "net_arch": {"pi": [64, 64], "qf": [128, 128]},
     #     },
     # )
     

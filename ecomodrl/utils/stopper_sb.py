@@ -1,6 +1,7 @@
 import os
+import time
 import numpy as np
-from typing import Optional
+from typing import Optional, List, Tuple
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecNormalize
 
@@ -29,10 +30,8 @@ def evaluate_policy_discounted(
     deterministic: bool = True,
 ) -> float:
     """
-    Discounted-return evaluation.
-    Notes:
-      - Assumes a VecEnv-like interface (reset -> obs, step -> obs, rewards, dones, infos).
-      - Uses mean reward across vectorized envs as a proxy for aggregate return.
+    Discounted-return evaluation on a VecEnv(-like) interface.
+    Uses mean reward across vectorized envs as a proxy for aggregate return.
     """
     if hasattr(eval_env, "training"):
         eval_env.training = False
@@ -43,13 +42,13 @@ def evaluate_policy_discounted(
     for _ in range(int(n_episodes)):
         obs = eval_env.reset()
         dones = np.zeros(n_envs, dtype=bool)
-
         G, power = 0.0, 1.0
+
         while not dones.all():
             action, _ = model.predict(obs, deterministic=deterministic)
             obs, rewards, done_step, _ = eval_env.step(action)
             G += float(np.mean(rewards)) * power
-            power *= beta
+            power *= float(beta)
             dones |= done_step
 
         avg_return += G
@@ -61,19 +60,19 @@ class EarlyStoppingCallback(BaseCallback):
     """
     SB3 callback for PPO, SAC, TD3, DDPG that:
       1) Tracks and limits a processed-samples budget:
-         - PPO:      planned_samples = (n_envs * n_steps) * n_epochs
-         - OffPolicy: planned_samples = gradient_steps_eff * batch_size
+         - PPO:       planned_samples = (n_envs * n_steps) * n_epochs
+         - Off-policy: planned_samples = gradient_steps_eff * batch_size
            where gradient_steps_eff matches SB3 learn() semantics:
              * if gradient_steps >= 0: use it directly
              * if gradient_steps < 0 : use no. of transitions collected in the rollout
-      2) Runs discounted evaluation every eval_freq env steps.
+      2) Runs discounted evaluation at rollout boundaries, scheduled by processed-sample frequency.
       3) Syncs VecNormalize statistics (train -> eval) and evaluates with raw rewards.
       4) Saves best model and optional VecNormalize stats.
       5) Implements early stopping (patience/min_delta).
       6) Reloads best model at the end.
 
-    Budget stopping is "non-strict": training stops immediately at the *next* environment step
-    after the final update chunk has executed (overshoot bounded by one update chunk).
+    Budget stopping is "non-strict": training stops at the *next* environment step after the
+    final update chunk has executed (overshoot bounded by one update chunk).
     """
 
     def __init__(
@@ -107,11 +106,20 @@ class EarlyStoppingCallback(BaseCallback):
         # runtime state
         self.best_score = -np.inf
         self.patience_counter = 0
-        self._last_eval_step = 0
-        self.return_history = []
 
         self.processed_samples = 0
         self._stop_reason = "none"
+
+        # evaluation scheduling (processed-samples axis)
+        self._last_eval_proc = 0
+
+        # timing
+        self._t0 = 0.0
+
+        # histories (three axes)
+        self.return_history_env: List[Tuple[int, float]] = []
+        self.return_history_proc: List[Tuple[int, float]] = []
+        self.return_history_time: List[Tuple[float, float]] = []
 
         # cached algo params
         self._algo_family = "unknown"  # "ppo" or "off_policy"
@@ -131,7 +139,7 @@ class EarlyStoppingCallback(BaseCallback):
         else:
             self._n_envs = int(getattr(self.training_env, "num_envs", 1))
 
-        # Detect algorithm family
+        # Detect algorithm family + cache constants
         algo_name = self.model.__class__.__name__.lower()
         if "ppo" in algo_name:
             self._algo_family = "ppo"
@@ -145,14 +153,19 @@ class EarlyStoppingCallback(BaseCallback):
         else:
             self._algo_family = "unknown"
 
-
         # Reset counters/state
         self.best_score = -np.inf
         self.patience_counter = 0
-        self._last_eval_step = 0
-        self.return_history = []
         self.processed_samples = 0
         self._stop_reason = "none"
+
+        self._last_eval_proc = 0
+
+        self.return_history_env = []
+        self.return_history_proc = []
+        self.return_history_time = []
+
+        self._t0 = time.perf_counter()
 
         if self.verbose:
             print("────────────────────────────────────────────", flush=True)
@@ -160,16 +173,22 @@ class EarlyStoppingCallback(BaseCallback):
             print("────────────────────────────────────────────", flush=True)
             
     def _on_rollout_start(self) -> None:
-        if self.eval_freq > 0 and (self.processed_samples - self._last_eval_step) >= self.eval_freq:
-            self._last_eval_step = self.processed_samples
+        if self._stop_reason != "none":
+            return
+
+        if self.eval_freq <= 0:
+            return
+
+        if (self.processed_samples - self._last_eval_proc) >= self.eval_freq:
+            self._last_eval_proc = self.processed_samples
             self._run_eval_and_maybe_stop()
 
     def _on_rollout_end(self) -> None:
         """
-        Budget accounting happens here because this is where SB3 completes data collection
-        right before executing the corresponding training update chunk.
+        Budget accounting happens here: end of rollout collection, right before the update chunk runs.
+        (Non-strict stopping means we stop at the next env step after the final chunk.)
         """
-        if self.max_processed_samples is None:
+        if self.max_processed_samples is None or self._stop_reason != "none":
             return
 
         planned = self._planned_processed_samples_for_next_update()
@@ -187,17 +206,13 @@ class EarlyStoppingCallback(BaseCallback):
             self._stop_reason = "budget"
             if self.verbose:
                 print(
-                    f"[Budget] Reached after adding planned chunk: +{planned} "
-                    f"-> {self.processed_samples}/{self.max_processed_samples}. "
+                    f"[Budget] Reached: +{planned} -> {self.processed_samples}/{self.max_processed_samples}. "
                     f"Stopping at next env step.",
                     flush=True,
                 )
-                
-    def _on_step(self) -> bool:
-        if self._stop_reason != "none":
-            return False
 
-        return True
+    def _on_step(self) -> bool:
+        return self._stop_reason == "none"
 
     def _on_training_end(self) -> None:
         # Reload best model parameters (so model after learn() corresponds to best checkpoint)
@@ -214,22 +229,17 @@ class EarlyStoppingCallback(BaseCallback):
     # -------- internal helpers --------
 
     def _planned_processed_samples_for_next_update(self) -> int:
-        """
-        Returns the number of samples that will be consumed by the next training update chunk
-        triggered right after this rollout.
-        """
+        """Planned processed samples for the next training update chunk."""
         if self._algo_family == "ppo":
             if not self._ppo_n_steps or not self._ppo_n_epochs:
                 return 0
-            # PPO consumes the rollout buffer (n_envs*n_steps) n_epochs times
             return int(self._n_envs * self._ppo_n_steps * self._ppo_n_epochs)
 
         if self._algo_family == "off_policy":
-            # Mimic SB3 off-policy learn() logic: only train after learning_starts and if gradient_steps_eff > 0.
             if self._off_batch_size is None:
                 return 0
 
-            # learning_starts gating (SB3 uses num_timesteps > learning_starts) 
+            # learning_starts gating
             if self._off_learning_starts is not None and int(self.model.num_timesteps) <= int(self._off_learning_starts):
                 return 0
 
@@ -237,7 +247,6 @@ class EarlyStoppingCallback(BaseCallback):
             if gs >= 0:
                 gradient_steps_eff = gs
             else:
-                # gs < 0 (e.g. -1): as many gradient steps as transitions collected in the rollout 
                 gradient_steps_eff = self._offpolicy_rollout_transitions()
 
             if gradient_steps_eff <= 0:
@@ -249,10 +258,8 @@ class EarlyStoppingCallback(BaseCallback):
 
     def _offpolicy_rollout_transitions(self) -> int:
         """
-        For off-policy algorithms with gradient_steps < 0 (e.g. -1), SB3 uses
-        rollout.episode_timesteps, which equals num_collected_steps * env.num_envs in collect_rollouts(). 
-
-        We reconstruct that from callback locals when possible.
+        Reconstruct number of transitions collected during the rollout.
+        Prefer callback locals when present; fall back to train_freq if step-based.
         """
         num_collected_steps = self.locals.get("num_collected_steps", None)
         env = self.locals.get("env", None)
@@ -264,7 +271,6 @@ class EarlyStoppingCallback(BaseCallback):
         if num_collected_steps is not None:
             return int(num_collected_steps) * n_envs
 
-        # Fallback: approximate with train_freq.frequency * n_envs (step-based training)
         tf = getattr(self.model, "train_freq", None)
         freq = getattr(tf, "frequency", None)
         unit = getattr(tf, "unit", None)
@@ -302,18 +308,25 @@ class EarlyStoppingCallback(BaseCallback):
                 deterministic=self.deterministic_eval,
             )
         )
-        self.return_history.append((int(self.num_timesteps), avg_return))
+
+        # Record histories on three axes
+        t_env = int(self.num_timesteps)
+        t_proc = int(self.processed_samples)
+        t_wall = float(time.perf_counter() - self._t0)
+
+        self.return_history_env.append((t_env, avg_return))
+        self.return_history_proc.append((t_proc, avg_return))
+        self.return_history_time.append((t_wall, avg_return))
+
         # Early stopping logic + saving best
         improved = avg_return > (self.best_score + self.min_delta)
         if improved:
             self.best_score = avg_return
             self.patience_counter = 0
 
-            # Save best model checkpoint
             if self.best_model_path:
                 self.model.save(self.best_model_path)
 
-            # Save VecNormalize stats (training env) if requested
             if self.vecnorm_path and train_norm is not None and hasattr(train_norm, "save"):
                 train_norm.save(self.vecnorm_path)
         else:
@@ -321,10 +334,13 @@ class EarlyStoppingCallback(BaseCallback):
             if self.patience_counter >= self.patience:
                 self._stop_reason = "early_stop"
 
-        # Logging
+        # Logging (dump at eval cadence)
         self.logger.record("eval/avg_discounted_return", avg_return)
         self.logger.record("eval/best_discounted_return", float(self.best_score))
         self.logger.record("eval/patience_counter", float(self.patience_counter))
+        self.logger.record("eval/x_env_steps", float(t_env))
+        self.logger.record("eval/x_processed_samples", float(t_proc))
+        self.logger.record("eval/x_wallclock_seconds", float(t_wall))
         self.logger.dump(self.num_timesteps)
 
         if self.verbose:
@@ -332,7 +348,7 @@ class EarlyStoppingCallback(BaseCallback):
             if self.max_processed_samples is not None:
                 budget_msg = f" | Budget: {self.processed_samples}/{self.max_processed_samples}"
             print(
-                f"[{self.num_timesteps:8d}] eval_return={avg_return: .6f} | best={self.best_score: .6f} | "
-                f"patience={self.patience_counter}/{self.patience}{budget_msg}",
+                f"[{t_env:8d}] eval_return={avg_return: .6f} | best={self.best_score: .6f} | "
+                f"patience={self.patience_counter}/{self.patience} | proc={t_proc} | time={t_wall:.1f}s{budget_msg}",
                 flush=True,
             )
