@@ -51,16 +51,11 @@ def _candidate_minibatches(batch: int) -> List[int]:
     return alt[:5] if alt else [2]
 
 
-def _seeds_for_fidelity(fidelity: int, min_fid: int, max_fid: int) -> int:
+def _seeds_for_fidelity(fidelity: int, min_fid: int, max_fid: int, min_seeds: int, max_seeds: int) -> int:
     """Simple seed ramping schedule based on relative budget."""
-    phi = (fidelity - min_fid) / max(1, (max_fid - min_fid))
-    if phi < 0.05:
-        return 1
-    if phi < 0.10:
-        return 2
-    if phi < 0.40:
-        return 5
-    return 10 # TODO: Let be set by Configs 
+    phi = (fidelity - min_fid) / float(max_fid - min_fid)
+    seeds = int(round((max_seeds - min_seeds) * phi + min_seeds))
+    return max(min_seeds, min(seeds, max_seeds))
 
 
 # ----------------------------
@@ -144,7 +139,7 @@ def _offpolicy_adapter_common(hp: Dict, base: AlgoConfig) -> Dict:
 def _td3_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
     algo = replace(base)
     params = _offpolicy_adapter_common(hp, base)
-    params.setdefault("policy_delay", 2) # TODO: Tune?
+    params.setdefault("policy_delay", 2)
     algo.algo_params = params
     return algo
 
@@ -169,7 +164,7 @@ ALGO_REGISTRY: Dict[str, Tuple[SearchSpaceFn, AdapterFn]] = {
     "ddpg": (_offpolicy_space, _ddpg_adapter),
 }
 
-def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:  # TODO: checks default configs
+def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:  # TODO: check default configs
     algo_name = algo_name.lower()
     if algo_name == "ppo":
         return AlgoConfig(
@@ -243,8 +238,8 @@ def target_function(
     if fidelity is not None:
         trial_cfg = replace(
             trial_cfg,
-            total_timesteps=int(fidelity),
-            n_seeds= _seeds_for_fidelity(int(fidelity), int(min_fidelity), int(max_fidelity)), # Reduce number of training runs for low fertilities
+            max_processed_samples=int(fidelity),
+            n_seeds= _seeds_for_fidelity(int(fidelity), int(min_fidelity), int(max_fidelity), min_seeds=3, max_seeds=cfg.n_seeds), # Reduce number of training runs for low fertilities
         )
     trial_dir.mkdir(parents=True, exist_ok=True)
 
