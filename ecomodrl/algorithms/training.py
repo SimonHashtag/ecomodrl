@@ -135,6 +135,7 @@ def train_single_seed(
         return {
             "seed": seed,
             "best_eval_return": float(callback.best_score),
+            "last_eval_return": float(callback.last_eval_score),
             "num_timesteps": int(callback.num_timesteps),
             "best_model_path": str(best_model_path),
             "vecnorm_path": str(vecnorm_path),

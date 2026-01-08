@@ -105,6 +105,7 @@ class EarlyStoppingCallback(BaseCallback):
 
         # runtime state
         self.best_score = -np.inf
+        self.last_eval_score = -np.inf
         self.patience_counter = 0
 
         self.processed_samples = 0
@@ -308,6 +309,7 @@ class EarlyStoppingCallback(BaseCallback):
                 deterministic=self.deterministic_eval,
             )
         )
+        self.last_eval_score = avg_return
 
         # Record histories on three axes
         t_env = int(self.num_timesteps)

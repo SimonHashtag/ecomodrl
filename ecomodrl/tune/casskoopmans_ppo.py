@@ -29,7 +29,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 10_000_000
-    max_processed_samples: int = 1_000_000
+    max_processed_samples: int = 200_000
     eval_every: int = 10_000
     patience: int = 10
     min_delta: float = 1e-3
@@ -45,7 +45,7 @@ class RunConfig:
         self.state_max = grid[-1]
     
     # Seeds
-    base_seed: int = 42
+    base_seed: int = 100
     n_seeds: int = 10
 
     @property
@@ -64,13 +64,13 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
 
-    algo_cfg = get_algo_fixedcfgs(algo_name, params)
+    algo_cfg = get_algo_fixedcfgs(algo_name, params, hidden_nodes=32)
     
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
     space_fn, _ = ALGO_REGISTRY[algo_cfg.name.lower()]
-    cs = space_fn(cfg, seed=cfg.base_seed)
+    cs = space_fn(seed=cfg.base_seed)
 
     eta = 3
     rungs = 4
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     )
 
     traj, runtime, history = dehb.run(
-        total_cost=500,
+        total_cost=60*60,
         cfg=cfg,
         algo_cfg=algo_cfg,
         params=params,
