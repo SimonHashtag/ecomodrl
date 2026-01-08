@@ -87,7 +87,7 @@ class EarlyStoppingCallback(BaseCallback):
         deterministic_eval: bool = True,
         best_model_path: str = "best_model.zip",
         vecnorm_path: Optional[str] = "vecnormalize.pkl",
-        verbose: int = 1,
+        verbose: int = 0,
     ):
         super().__init__(verbose)
         self.eval_env = eval_env

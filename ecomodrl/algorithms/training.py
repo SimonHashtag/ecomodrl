@@ -87,9 +87,9 @@ def _set_thread_env(n: int = 1) -> None:
 
 def _worker_run(args: Tuple[Any, AlgoConfig, Callable[..., Any], Any, int]) -> dict:
     """Top-level wrapper for pickling + per-process thread cap."""
-    cfg, algo_cfg, env, params, seed = args
+    cfg, algo_cfg, env, params, seed, verbose = args
     _set_thread_env(1)
-    return train_single_seed(cfg, algo_cfg, env, params, seed)
+    return train_single_seed(cfg, algo_cfg, env, params, seed, verbose=verbose)
 
 # -------------------------------------------------------
 # Main training functions
@@ -100,7 +100,8 @@ def train_single_seed(
     algo_cfg: AlgoConfig,
     env: Callable[..., Any],
     params: Union[Mapping[str, Any], Any],
-    seed: int
+    seed: int,
+    verbose: int = 0
 ) -> dict:
     """Train RL model for one seed and return metadata."""
     set_random_seed(seed)
@@ -127,7 +128,7 @@ def train_single_seed(
             deterministic_eval=True,
             best_model_path=best_model_path,
             vecnorm_path=vecnorm_path,
-            verbose=1,
+            verbose=verbose,
         )
 
         model.learn(total_timesteps=cfg.total_timesteps, callback=callback)
@@ -172,6 +173,7 @@ def train_multiple_seeds(
     *,
     max_workers: Optional[int] = None,
     seed_parallel: bool = True,
+    verbose: int = 0,
 ) -> List[dict]:
     """
     Parallelize across seeds. If max_workers is None, compute a safe value
@@ -188,7 +190,7 @@ def train_multiple_seeds(
         max_workers = max(1, min(len(seeds), total))
 
     ctx = mp.get_context("spawn")
-    tasks = [(cfg, algo_cfg, env, params, s) for s in seeds]
+    tasks = [(cfg, algo_cfg, env, params, s, verbose) for s in seeds]
     results: List[dict] = []
 
     if max_workers == 1:

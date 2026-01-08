@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import pickle
@@ -7,10 +8,9 @@ from pathlib import Path
 
 from dehb import DEHB
 
-from ecomodrl.envs.casskoopmans import CassKoopmansEnv
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
+from ecomodrl.envs.portfoliochoice import PortfolioChoiceEnv
 from ecomodrl.tune.tuning import get_algo_fixedcfgs, ALGO_REGISTRY, target_function
-from ecomodrl.utils.params_loader import CassKoopmansParams
+from ecomodrl.utils.params_loader import PortfolioChoiceParams
 
 # ----------------------------
 # Run configuration
@@ -18,31 +18,25 @@ from ecomodrl.utils.params_loader import CassKoopmansParams
 # NOTE: set custom TUNERESULTS_PATH 
 #       on your Windows system via setx TUNERESULTS_PATH "my_custom_tune_results_path" (close & reopen terminal afterwards)
 #       on your mac/linux: export TUNERESULTS_PATH="my_custom_tune_results_path"
-#       otherwise defaults to relative path "./ecomodrl/tune_results/CassKoopmans"
+#       otherwise defaults to relative path "./ecomodrl/tune_results/PortfolioChoice"
+#
+# Run file with e.g.: python ecomodrl/tune/portfoliochoice.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 
 @dataclass
 class RunConfig:
     """Static run configuration for a sweep."""
-    toml_path: str = "./ecomodrl/experiments/model_params/casskoopmans.toml"
-    out_dir: Path = Path(os.environ.get("TUNERESULTS_PATH", "./tune_results/CassKoopmans")) 
-    max_episode_steps: int = 30
+    toml_path: str = "./ecomodrl/experiments/model_params/portfoliochoice1.toml"
+    out_dir: Path = Path(os.environ.get("TUNERESULTS_PATH", "./tune_results/PortfolioChoice")) 
+    max_episode_steps: int = 20
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 10_000_000
-    max_processed_samples: int = 200_000
+    max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
     patience: int = 10
     min_delta: float = 1e-3
-    
-    # Use steady-state aware starting boundaries for RL algorithm
-    # Intention: don't explore outside of the economically relevant state space
-    state_min: float = field(init=False)
-    state_max: float = field(init=False)
-    def __post_init__(self):
-        mod = PlanningProblem()
-        grid = mod.make_grid()
-        self.state_min = grid[0]
-        self.state_max = grid[-1]
+    state_min: float = 1.0
+    state_max: float = 10.0
     
     # Seeds
     base_seed: int = 100
@@ -53,18 +47,46 @@ class RunConfig:
         """Deterministic seed set (for common random numbers across trials)."""
         return list(range(self.base_seed, self.base_seed + self.n_seeds))
 
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--algo_name", type=str, required=True,
+                   choices=["ppo", "ddpg", "td3", "sac"],
+                   help="RL algorithm to tune.")
+    p.add_argument("--total_cost", type=int, default=60 * 60,
+                   help="DEHB total cost budget (seconds).")
+    p.add_argument("--hidden_nodes", type=int, default=32)
+    # Optional overrides
+    p.add_argument("--out_dir", type=str, default=None)
+    p.add_argument("--n_envs", type=int, default=None)
+    p.add_argument("--max_processed_samples", type=int, default=None)
+    p.add_argument("--eval_every", type=int, default=None)
+    p.add_argument("--n_seeds", type=int, default=None)
+    return p.parse_args()
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 
-    algo_name = "ppo"
+    args = parse_args()
 
     cfg = RunConfig()
-    params = CassKoopmansParams.load_params(cfg.toml_path)
-
-    algo_cfg = get_algo_fixedcfgs(algo_name, params, hidden_nodes=32)
+    if args.out_dir is not None:
+        cfg = replace(cfg, out_dir=Path(args.out_dir))
+    if args.n_envs is not None:
+        cfg = replace(cfg, n_envs=args.n_envs)
+    if args.max_processed_samples is not None:
+        cfg = replace(cfg, max_processed_samples=args.max_processed_samples)
+    if args.eval_every is not None:
+        cfg = replace(cfg, eval_every=args.eval_every)
+    if args.n_seeds is not None:
+        cfg = replace(cfg, n_seeds=args.n_seeds)
+    
+    params = PortfolioChoiceParams.load_params(cfg.toml_path)
+    algo_cfg = get_algo_fixedcfgs(args.algo_name, params, hidden_nodes=args.hidden_nodes)
     
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +96,7 @@ if __name__ == "__main__":
 
     eta = 3
     rungs = 4
-    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs-1)), cfg.eval_every)
+    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs)), cfg.eval_every)
     max_fidelity = cfg.max_processed_samples
     n_workers = max(1, (os.cpu_count() or 2) - 1)
 
@@ -93,14 +115,15 @@ if __name__ == "__main__":
     )
 
     traj, runtime, history = dehb.run(
-        total_cost=60*60,
+        total_cost=args.total_cost,
         cfg=cfg,
         algo_cfg=algo_cfg,
         params=params,
-        env=CassKoopmansEnv,
+        env=PortfolioChoiceEnv,
         cs=cs,
         min_fidelity=min_fidelity,   
         max_fidelity=max_fidelity, 
+        train_verbose=0,
     )
 
     # Save optimization trace history

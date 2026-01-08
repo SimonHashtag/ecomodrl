@@ -9,7 +9,7 @@ import torch as th
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.envs.portfoliochoice import PortfolioChoiceEnv
 from ecomodrl.utils.params_loader import PortfolioChoiceParams
-from ecomodrl.utils.analysis import analyze_all_seeds
+#from ecomodrl.utils.analysis_BS import analyze_all_seeds
 
 # ----------------------------
 # Run configuration
@@ -71,5 +71,5 @@ if __name__ == "__main__":
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     
-    train_multiple_seeds(cfg, algo_cfg, PortfolioChoiceEnv, params)
+    train_multiple_seeds(cfg, algo_cfg, PortfolioChoiceEnv, params, verbose=1)
     #analyze_all_seeds(cfg, algo_cfg, PortfolioChoiceEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)

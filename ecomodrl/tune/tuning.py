@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 import time
 import uuid
 from dataclasses import replace
@@ -104,12 +103,13 @@ def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
 
 def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> Dict:
     """Translate shared HPs to SB3-style kwargs."""
+    n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
     return {
         **(base.algo_params or {}),
         "learning_rate": float(hp["learning_rate"]),
         "batch_size": int(hp["batch_size"]),
         "tau": float(hp["tau"]),
-        "train_freq": (int(hp["n_episodes"]), "episode"),
+        "train_freq": (int(n_steps), "step"),
         "gradient_steps": int(hp["gradient_steps"]),
     }
 
@@ -190,7 +190,10 @@ def get_algo_fixedcfgs(algo_name: str, params: BaseParams, hidden_nodes: int) ->
                 "buffer_size": 100_000,
                 "learning_starts": 10_000,
             },
-            policy_kwargs={"activation_fn": th.nn.ReLU, "net_arch": [hidden_nodes, hidden_nodes]},
+            policy_kwargs={
+                "activation_fn": th.nn.ReLU, 
+                "net_arch": [hidden_nodes, hidden_nodes],
+                },
         )
     else:
         raise ValueError("Unsupported algo_name")
@@ -209,6 +212,7 @@ def target_function(
     cs: CS.ConfigurationSpace,
     min_fidelity: int,
     max_fidelity: int,
+    train_verbose: int = 0
 ) -> Dict:
     """
     Train N seeded runs for given hyperparameters and return a scalar objective.
@@ -245,7 +249,7 @@ def target_function(
     try:
         train_multiple_seeds(
             trial_cfg, trial_algo, env, params,
-            seed_parallel=False, max_workers=1)
+            seed_parallel=False, max_workers=1, verbose=train_verbose)
     except Exception as exc:
         # Fail-safe: return a bad fitness but with measured cost
         cost = time.time() - start

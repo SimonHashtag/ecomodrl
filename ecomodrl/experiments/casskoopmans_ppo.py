@@ -110,5 +110,5 @@ if __name__ == "__main__":
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    train_multiple_seeds(cfg, algo_cfg, CassKoopmansEnv, params)
+    train_multiple_seeds(cfg, algo_cfg, CassKoopmansEnv, params, verbose=1)
     analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
