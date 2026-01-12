@@ -30,7 +30,8 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 500_000
+    total_timesteps: int = 10_000_000
+    max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
     patience: int = 10
     min_delta: float = 1e-3
@@ -89,5 +90,5 @@ if __name__ == "__main__":
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params)
+    train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params, verbose=1)
     analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)

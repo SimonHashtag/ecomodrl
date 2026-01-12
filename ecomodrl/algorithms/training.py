@@ -13,7 +13,7 @@ from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.utils import set_random_seed
 
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.stopper_sb import EarlyStoppingEvalCallback
+from ecomodrl.utils.stopper_sb import EarlyStoppingCallback
 
 # -------------------------------------------------------
 # Build deep RL algorithm
@@ -87,9 +87,9 @@ def _set_thread_env(n: int = 1) -> None:
 
 def _worker_run(args: Tuple[Any, AlgoConfig, Callable[..., Any], Any, int]) -> dict:
     """Top-level wrapper for pickling + per-process thread cap."""
-    cfg, algo_cfg, env, params, seed = args
+    cfg, algo_cfg, env, params, seed, verbose = args
     _set_thread_env(1)
-    return train_single_seed(cfg, algo_cfg, env, params, seed)
+    return train_single_seed(cfg, algo_cfg, env, params, seed, verbose=verbose)
 
 # -------------------------------------------------------
 # Main training functions
@@ -100,7 +100,8 @@ def train_single_seed(
     algo_cfg: AlgoConfig,
     env: Callable[..., Any],
     params: Union[Mapping[str, Any], Any],
-    seed: int
+    seed: int,
+    verbose: int = 0
 ) -> dict:
     """Train RL model for one seed and return metadata."""
     set_random_seed(seed)
@@ -116,17 +117,18 @@ def train_single_seed(
 
         model = build_model(algo_cfg, train_env, seed, tensorboard_log=out_dir, verbose=0)
 
-        callback = EarlyStoppingEvalCallback(
+        callback = EarlyStoppingCallback(
             eval_env=eval_env,
             beta=params.beta,
             eval_freq=cfg.eval_every,
             patience=cfg.patience,
             min_delta=cfg.min_delta,
+            max_processed_samples=cfg.max_processed_samples,
             n_eval_episodes=getattr(cfg, "n_eval_episodes", None) or 1.0,  # increase for stochastic envs
             deterministic_eval=True,
             best_model_path=best_model_path,
             vecnorm_path=vecnorm_path,
-            verbose=1,
+            verbose=verbose,
         )
 
         model.learn(total_timesteps=cfg.total_timesteps, callback=callback)
@@ -134,6 +136,7 @@ def train_single_seed(
         return {
             "seed": seed,
             "best_eval_return": float(callback.best_score),
+            "last_eval_return": float(callback.last_eval_score),
             "num_timesteps": int(callback.num_timesteps),
             "best_model_path": str(best_model_path),
             "vecnorm_path": str(vecnorm_path),
@@ -170,6 +173,7 @@ def train_multiple_seeds(
     *,
     max_workers: Optional[int] = None,
     seed_parallel: bool = True,
+    verbose: int = 0,
 ) -> List[dict]:
     """
     Parallelize across seeds. If max_workers is None, compute a safe value
@@ -186,7 +190,7 @@ def train_multiple_seeds(
         max_workers = max(1, min(len(seeds), total))
 
     ctx = mp.get_context("spawn")
-    tasks = [(cfg, algo_cfg, env, params, s) for s in seeds]
+    tasks = [(cfg, algo_cfg, env, params, s, verbose) for s in seeds]
     results: List[dict] = []
 
     if max_workers == 1:

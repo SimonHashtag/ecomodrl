@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 import time
 import uuid
 from dataclasses import replace
@@ -30,37 +29,12 @@ def _to_dict(
         return dict(hp)
     return {hpdef.name: val for hpdef, val in zip(list(cs.values()), hp)} 
 
-def _divisors(n: int) -> List[int]:
-    """Positive divisors of n."""
-    ds = set()
-    root = int(math.sqrt(n))
-    for i in range(1, root + 1):
-        if n % i == 0:
-            ds.add(i)
-            ds.add(n // i)
-    return sorted(ds)
 
-def _candidate_minibatches(batch: int) -> List[int]:
-    """Small set of useful divisors for PPO minibatches."""
-    preferred = [2, 4, 5, 8, 10]
-    avail = [m for m in preferred if batch % m == 0]
-    if avail:
-        return avail
-    # fallback: first few divisors >= 2
-    alt = [m for m in _divisors(batch) if m >= 2]
-    return alt[:5] if alt else [2]
-
-
-def _seeds_for_fidelity(fidelity: int, min_fid: int, max_fid: int) -> int:
+def _seeds_for_fidelity(fidelity: int, min_fid: int, max_fid: int, min_seeds: int, max_seeds: int) -> int:
     """Simple seed ramping schedule based on relative budget."""
-    phi = (fidelity - min_fid) / max(1, (max_fid - min_fid))
-    if phi < 0.05:
-        return 1
-    if phi < 0.10:
-        return 2
-    if phi < 0.40:
-        return 5
-    return 10 # TODO: Let be set by Configs 
+    phi = (fidelity - min_fid) / float(max_fid - min_fid)
+    seeds = int(round((max_seeds - min_seeds) * phi + min_seeds))
+    return max(min_seeds, min(seeds, max_seeds))
 
 
 # ----------------------------
@@ -70,95 +44,99 @@ SearchSpaceFn = Callable[[Union[Mapping[str, Any], Any], int | None], CS.Configu
 AdapterFn = Callable[[Dict, Union[Mapping[str, Any], Any], AlgoConfig], AlgoConfig]
 
 
-def _ppo_space(cfg: Union[Mapping[str, Any], Any], seed: int | None = None) -> CS.ConfigurationSpace:
+def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
     cs = CS.ConfigurationSpace(seed=seed)
-    B = cfg.n_envs * cfg.max_episode_steps
     cs.add(
         [
             CSH.UniformFloatHyperparameter("learning_rate", 5e-5, 1e-3, log=True),
-            CSH.UniformFloatHyperparameter("clip_range", 0.10, 0.30),
-            CSH.UniformFloatHyperparameter("gae_lambda", 0.90, 0.98),
+            CSH.UniformFloatHyperparameter("clip_range", 0.05, 0.30),
+            CSH.UniformFloatHyperparameter("gae_lambda", 0.90, 0.995),
             CSH.UniformFloatHyperparameter("ent_coef", 1e-6, 1e-2, log=True),
-            CSH.UniformIntegerHyperparameter("n_epochs", 2, 6),
-            CSH.CategoricalHyperparameter("num_minibatches", _candidate_minibatches(B)),
+            CSH.UniformFloatHyperparameter("vf_coef", 0.5, 1.0),
+            CSH.UniformIntegerHyperparameter("n_epochs", 2, 10),
+            CSH.CategoricalHyperparameter("n_episodes", [1, 2, 4, 8]),
+            CSH.CategoricalHyperparameter("num_minibatches", [4, 5, 6, 8, 10]),
         ]
     )
     return cs
 
 
 def _ppo_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
-    n_steps = cfg.max_episode_steps
+    n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
     B = cfg.n_envs * n_steps
     M = int(hp["num_minibatches"])
-    n_epochs = int(hp["n_epochs"])
-    U = n_epochs * M
-    if U > 10:  # * consistent guard
-        n_epochs = max(1, min(n_epochs, 10 // M))
     batch_size = B // M
 
     algo = replace(base)
     algo.algo_params = {
         **(base.algo_params or {}),
+        "learning_rate": float(hp["learning_rate"]),
+        "clip_range": float(hp["clip_range"]),
+        "gae_lambda": float(hp["gae_lambda"]),
+        "ent_coef": float(hp["ent_coef"]),
+        "vf_coef": float(hp["vf_coef"]),
+        "n_epochs": int(hp["n_epochs"]),
         "n_steps": n_steps,
         "batch_size": batch_size,
-        "n_epochs": n_epochs,
-        "learning_rate": float(hp["learning_rate"]),
-        "gae_lambda": float(hp["gae_lambda"]),
-        "clip_range": float(hp["clip_range"]),
-        "ent_coef": float(hp["ent_coef"]),
     }
     return algo
 
 
-def _offpolicy_space(cfg: Union[Mapping[str, Any], Any], seed: int | None = None) -> CS.ConfigurationSpace:
+def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
     """Shared space for TD3/SAC/DDPG (off-policy)."""
     cs = CS.ConfigurationSpace(seed=seed)
     cs.add(
         [
             CSH.UniformFloatHyperparameter("learning_rate", 1e-5, 3e-3, log=True),
-            CSH.CategoricalHyperparameter("batch_size", [64, 128, 256, 512]),
-            CSH.UniformFloatHyperparameter("tau", 5e-3, 2e-2),  # soft-update
-            CSH.CategoricalHyperparameter("train_freq", [100, 800, 1600, 3200]),
-            CSH.CategoricalHyperparameter("gradient_steps", [1, 8, 16, 32]),
-            # SAC-only entropy handling will be adapted in adapter:
-            CSH.CategoricalHyperparameter("ent_coef", ["auto", 0.0]),
+            CSH.CategoricalHyperparameter("batch_size", [32, 64, 128, 256, 512]),
+            CSH.UniformFloatHyperparameter("tau", 2e-3, 2e-2),  # soft-update
+            CSH.CategoricalHyperparameter("n_episodes", [1, 2, 4, 8]),
+            CSH.CategoricalHyperparameter("gradient_steps", [1, 4, 8, 16]),
+            # Used by DDPG/TD3
+            CSH.UniformFloatHyperparameter("exploration_sigma", 0.05, 0.50),
+            CSH.UniformFloatHyperparameter("target_policy_noise", 0.05, 0.5),
+            CSH.UniformFloatHyperparameter("target_noise_clip", 0.1, 1.0),
         ]
     )
     return cs
 
 
-def _offpolicy_adapter_common(hp: Dict, base: AlgoConfig) -> Dict:
+def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> Dict:
     """Translate shared HPs to SB3-style kwargs."""
-    # SB3 accepts train_freq as int or (int, "step"); we use the latter
+    n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
     return {
         **(base.algo_params or {}),
         "learning_rate": float(hp["learning_rate"]),
         "batch_size": int(hp["batch_size"]),
         "tau": float(hp["tau"]),
-        "train_freq": (int(hp["train_freq"]), "step"),
+        "train_freq": (int(n_steps), "step"),
         "gradient_steps": int(hp["gradient_steps"]),
-        # TODO: buffer_size/learning_starts remain in base defaults unless you add them to space
     }
 
 
 def _td3_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
     algo = replace(base)
-    params = _offpolicy_adapter_common(hp, base)
-    params.setdefault("policy_delay", 2) # TODO: Tune?
+    params = _offpolicy_adapter_common(hp, cfg, base)
+    params.setdefault("policy_delay", 2)
+    params["action_noise_std"] = float(hp["exploration_sigma"])
+    params["target_policy_noise"] = float(hp["target_policy_noise"])
+    params["target_noise_clip"] = float(max(hp["target_noise_clip"], hp["target_policy_noise"]))
     algo.algo_params = params
     return algo
 
 
 def _ddpg_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
     algo = replace(base)
-    algo.algo_params = _offpolicy_adapter_common(hp, base)
+    params = _offpolicy_adapter_common(hp, cfg, base)
+    params["action_noise_std"] = float(hp["exploration_sigma"])
+    algo.algo_params = params
     return algo
 
 
 def _sac_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
     algo = replace(base)
-    params = _offpolicy_adapter_common(hp, base)
-    params["ent_coef"] = hp["ent_coef"]
+    params = _offpolicy_adapter_common(hp, cfg, base)
+    params.setdefault("ent_coef", "auto")
     algo.algo_params = params
     return algo
 
@@ -169,7 +147,7 @@ ALGO_REGISTRY: Dict[str, Tuple[SearchSpaceFn, AdapterFn]] = {
     "ddpg": (_offpolicy_space, _ddpg_adapter),
 }
 
-def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:
+def get_algo_fixedcfgs(algo_name: str, params: BaseParams, hidden_nodes: int) -> AlgoConfig:
     algo_name = algo_name.lower()
     if algo_name == "ppo":
         return AlgoConfig(
@@ -177,12 +155,15 @@ def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
-                "vf_coef": 0.5,
                 "max_grad_norm": 0.5,
+                "normalize_advantage": True,
+                "clip_range_vf": None,
+                "target_kl": None,
+                "use_sde": False,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
-                "net_arch": {"pi": [32, 32], "vf": [32, 32]},
+                "net_arch": {"pi": [hidden_nodes, hidden_nodes], "vf": [hidden_nodes, hidden_nodes]},
                 "log_std_init": -2.0,
             },
         )
@@ -192,10 +173,10 @@ def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
-                "buffer_size": 500_000,
-                "learning_starts": 1_000,
+                "buffer_size": 100_000,
+                "learning_starts": 10_000,
             },
-            policy_kwargs={"activation_fn": th.nn.ReLU, "net_arch": [32, 32]},
+            policy_kwargs={"activation_fn": th.nn.ReLU, "net_arch": [hidden_nodes, hidden_nodes]},
         )
     elif algo_name == "sac":
         return AlgoConfig(
@@ -203,10 +184,16 @@ def get_algo_fixedcfgs(algo_name: str, params: BaseParams) -> AlgoConfig:
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
-                "buffer_size": 500_000,
-                "learning_starts": 1_000,
+                "action_noise": None,
+                "target_update_interval": 1,
+                "use_sde": False,
+                "buffer_size": 100_000,
+                "learning_starts": 10_000,
             },
-            policy_kwargs={"activation_fn": th.nn.ReLU, "net_arch": [32, 32]},
+            policy_kwargs={
+                "activation_fn": th.nn.ReLU, 
+                "net_arch": [hidden_nodes, hidden_nodes],
+                },
         )
     else:
         raise ValueError("Unsupported algo_name")
@@ -225,12 +212,13 @@ def target_function(
     cs: CS.ConfigurationSpace,
     min_fidelity: int,
     max_fidelity: int,
+    train_verbose: int = 0
 ) -> Dict:
     """
     Train N seeded runs for given hyperparameters and return a scalar objective.
 
     Returns dict with:
-      - 'fitness': (float) lower is better (negative avg best eval return)
+      - 'fitness': (float) lower is better (negative avg last eval return)
       - 'cost':    (float) elapsed wall-time seconds
       - 'info':    (dict)  small diagnostics and paths
     """
@@ -243,13 +231,13 @@ def target_function(
     if fidelity is not None:
         trial_cfg = replace(
             trial_cfg,
-            total_timesteps=int(fidelity),
-            n_seeds= _seeds_for_fidelity(int(fidelity), int(min_fidelity), int(max_fidelity)), # Reduce number of training runs for low fertilities
+            max_processed_samples=int(fidelity),
+            n_seeds= _seeds_for_fidelity(int(fidelity), int(min_fidelity), int(max_fidelity), min_seeds=3, max_seeds=cfg.n_seeds), # Reduce number of training runs for low fertilities
         )
     trial_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        _, adapter_fn = ALGO_REGISTRY[algo_cfg.name.lower()]  # *
+        _, adapter_fn = ALGO_REGISTRY[algo_cfg.name.lower()]
     except KeyError as exc:  # *
         raise ValueError(f"Unknown algorithm '{algo_cfg.name}'. Available: {list(ALGO_REGISTRY)}") from exc
 
@@ -261,7 +249,7 @@ def target_function(
     try:
         train_multiple_seeds(
             trial_cfg, trial_algo, env, params,
-            seed_parallel=False, max_workers=1)
+            seed_parallel=False, max_workers=1, verbose=train_verbose)
     except Exception as exc:
         # Fail-safe: return a bad fitness but with measured cost
         cost = time.time() - start
@@ -279,11 +267,11 @@ def target_function(
     if not train_cfgs:
         return {"fitness": 1e9, "cost": cost, "info": {"error": "empty train_cfgs.json"}}
 
-    avg_best_return = sum(s["best_eval_return"] for s in train_cfgs) / len(train_cfgs)
+    avg_last_return = sum(s["last_eval_return"] for s in train_cfgs) / len(train_cfgs) # TODO: Last eval return?
 
     # Minimize
     result = {
-        "fitness": -float(avg_best_return),
+        "fitness": -float(avg_last_return),
         "cost": cost,
         "info": {
             "trial_dir": str(trial_dir),

@@ -27,7 +27,8 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_eval_episodes: int = 10
     n_envs: int = 10
-    total_timesteps: int = 500_000
+    total_timesteps: int = 10_000_000
+    max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
     patience: int = 20
     min_delta: float = 1e-3
@@ -50,28 +51,28 @@ if __name__ == "__main__":
     
     algo_cfg = AlgoConfig(
         name="ppo",
-        policy=BetaActorCriticPolicy,
+        policy="MlpPolicy", #BetaActorCriticPolicy,
         algo_params={
             "gamma": params.beta,
             "n_steps": cfg.max_episode_steps,
-            "batch_size": cfg.n_envs * cfg.max_episode_steps // 5,
-            "n_epochs": 5,
+            "batch_size": cfg.n_envs * cfg.max_episode_steps // 4,
+            "n_epochs": 10,
             "learning_rate": 3.5e-4,
             "ent_coef": 4.4e-5,
-            "gae_lambda": 0.925,
-            "clip_range": 0.27,
+            "gae_lambda": 0.95,
+            "clip_range": 0.2,
             "vf_coef": 0.5,
             "max_grad_norm": 0.5,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
             "net_arch": {"pi": [64, 64], "vf": [128, 128]},
-            #"log_std_init": -2.0,  # smaller initial exploration to avoid extremes
+            "log_std_init": -2.0,  # smaller initial exploration to avoid extremes
         },
     )
 
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    train_multiple_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params)
+    train_multiple_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params, verbose=1)
     analyze_all_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
