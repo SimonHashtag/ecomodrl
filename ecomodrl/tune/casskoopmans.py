@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
     eta = 3
     rungs = 4
-    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs)), cfg.eval_every)
+    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs-1)), cfg.eval_every)
     max_fidelity = cfg.max_processed_samples
     n_workers = max(1, (os.cpu_count() or 2) - 1)
 
