@@ -1,0 +1,113 @@
+0. .sh sbatch File für entsprechendes .py File anlegen, bspw.:
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+#!/bin/bash
+
+#SBATCH --job-name=CK_TUNE
+#SBATCH --partition=d0ow
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=36
+#SBATCH --mem=92G
+#SBATCH --time=01:00:00
+#SBATCH --export=NONE
+
+#SBATCH --output=logs/CK_TUNE_%j.out
+#SBATCH --error=logs/CK_TUNE_%j.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=ruven.micheel@uni-muenster.de
+
+set -euo pipefail
+
+echo "Job $SLURM_JOBID on $(hostname)"
+echo "Starting at: $(date)"
+
+##########################
+# Load the PyTorch stack #
+##########################
+
+module purge
+module load palma/2023a
+module load GCC/12.3.0
+module load OpenMPI/4.1.5
+module load Python/3.11.3
+module load PyTorch/2.1.2-CUDA-12.1.1
+
+echo
+echo "Loaded modules:"
+module list
+
+#############################
+# Scratch working directory #
+#############################
+
+WORKDIR="$WORK/batchednets-$SLURM_JOBID"
+mkdir -p "$WORKDIR"
+echo "Working directory: $WORKDIR"
+
+# Copy repo to scratch
+cp -r "$HOME/ecomodrl" "$WORKDIR/"
+cd "$WORKDIR/ecomodrl"
+export PYTHONPATH=$(pwd):$PYTHONPATH
+
+# Define final destination for results
+DEST_RESULTS="$SLURM_SUBMIT_DIR/results/CK_Tuning_$SLURM_JOBID"
+mkdir -p "$DEST_RESULTS"
+
+############################
+# Run Hyperparam Tuning    #
+############################
+
+# Define list of algorithms to tune
+ALGOS=("ppo" "ddpg" "sac" "td3")
+
+# Set tuning budget per algorithm (in seconds)
+# 3600s = 1 hour per algorithm. 
+# Total job time is 4h, so this fits perfectly.
+BUDGET_PER_ALGO=900  # 15 minutes per algo for testing 
+
+for algo in "${ALGOS[@]}"; do
+    echo "------------------------------------------------"
+    echo "Starting tuning for: $algo"
+    echo "------------------------------------------------"
+    
+    # Run the python tuning script
+    # We explicitly set TUNERESULTS_PATH to a local folder in scratch
+    export TUNERESULTS_PATH="$WORKDIR/tune_results"
+    
+    python ecomodrl/tune/casskoopmans.py \
+        --algo_name="$algo" \
+        --total_cost=$BUDGET_PER_ALGO \
+        --hidden_nodes=64
+
+    # Back up results immediately after this algo finishes
+    # The script saves to $TUNERESULTS_PATH/CassKoopmans/[ALGO_UPPER]
+    # We copy that specific folder to our destination
+    
+    if [ -d "$TUNERESULTS_PATH/CassKoopmans/${algo^^}" ]; then
+        echo "Copying results for $algo..."
+        cp -r "$TUNERESULTS_PATH/CassKoopmans/${algo^^}" "$DEST_RESULTS/"
+    else
+        echo "Warning: Results directory for $algo not found."
+    fi
+    
+    echo "Finished tuning for $algo"
+done
+
+echo
+echo "All tuning jobs finished."
+echo "Results saved to: $DEST_RESULTS"
+echo "Finished at: $(date)"
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+1. gesamten ecomodrl Ordner in WinSCP pasten
+2. putty öffnen und folgende Command nacheinander ausführen:
+cd ~
+cd ecomodrl/ecomodrl/tune/HPC
+sed -i 's/\r$//' [FILENAME].sh
+chmod +x [FILENAME].sh
+sbatch [FILENAME].sh
+sacct -j [BATCH-ID] --format=JobID,JobName,Partitio,State,ExitCode,Elapsed
+3. Ergebnisse liegen dann unter ecomodrl/results/CK_Tuning_[JOB_ID]/

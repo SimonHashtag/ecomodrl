@@ -1,0 +1,14 @@
+# Hyperparameter optimisation
+configspace
+dehb
+loguru
+
+# RL and environments
+gymnasium
+stable-baselines3
+tensorboard
+
+# Parallel execution / data handling
+dask[distributed]
+pyarrow
+psutil
