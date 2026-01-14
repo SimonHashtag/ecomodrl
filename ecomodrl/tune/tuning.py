@@ -225,7 +225,7 @@ def target_function(
     hp = _to_dict(hp, cs)
 
     # Build a per-trial run config (unique output dir)
-    trial_dir = cfg.out_dir / f"trial_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
+    trial_dir = cfg.out_dir / f"trial_{np.round(max_fidelity/fidelity)}_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
     trial_cfg = replace(cfg, out_dir=trial_dir)
 
     if fidelity is not None:

@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=01:05:00
+#SBATCH --time=04:30:00
 #SBATCH --export=NONE
 
 #SBATCH --output=logs/CK_TUNE_%j.out
@@ -47,16 +47,12 @@ cp -r "$HOME/ecomodrl" "$WORKDIR/"
 cd "$WORKDIR/ecomodrl"
 export PYTHONPATH=$(pwd):$PYTHONPATH
 
-# Define final destination for results in HOME directory
-DEST_RESULTS="$HOME/ecomodrl/results/CK_Tuning_$SLURM_JOBID"
-mkdir -p "$DEST_RESULTS"
-
 ############################
 # Run Hyperparam Tuning    #
 ############################
 
 # 1. Define list of algorithms
-ALGOS=("ppo") # "ddpg" "sac" "td3"
+ALGOS=("ppo" "ddpg" "sac" "td3")
 
 # 2. Define where Python should write results in scratch
 export TUNERESULTS_PATH="$WORKDIR/tune_results/CassKoopmans"
@@ -73,25 +69,12 @@ for algo in "${ALGOS[@]}"; do
     python ecomodrl/tune/casskoopmans.py \
         --algo_name="$algo" \
         --total_cost=$BUDGET_PER_ALGO \
-        --hidden_nodes=64
+        --hidden_nodes=32
 
-    # 4. Copy results
-    #    Python saves to: $TUNERESULTS_PATH/[ALGO_UPPER]
-    ALGO_SOURCE="$TUNERESULTS_PATH/${algo^^}"
-    
-    if [ -d "$ALGO_SOURCE" ]; then
-        echo "Copying results for $algo to $DEST_RESULTS..."
-        cp -r "$ALGO_SOURCE" "$DEST_RESULTS/"
-    else
-        echo "ERROR: Could not find results for $algo at $ALGO_SOURCE"
-        echo "Debug: Contents of tune_results:"
-        ls -R "$WORKDIR/tune_results" || echo "Directory missing."
-    fi
-    
     echo "Finished tuning for $algo"
 done
 
 echo
 echo "All tuning jobs finished."
-echo "Results saved to: $DEST_RESULTS"
+echo "Results are located in: $TUNERESULTS_PATH" 
 echo "Finished at: $(date)"

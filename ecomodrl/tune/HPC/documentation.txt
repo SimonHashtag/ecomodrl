@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=01:00:00
+#SBATCH --time=04:30:00
 #SBATCH --export=NONE
 
 #SBATCH --output=logs/CK_TUNE_%j.out
@@ -51,53 +51,36 @@ cp -r "$HOME/ecomodrl" "$WORKDIR/"
 cd "$WORKDIR/ecomodrl"
 export PYTHONPATH=$(pwd):$PYTHONPATH
 
-# Define final destination for results
-DEST_RESULTS="$SLURM_SUBMIT_DIR/results/CK_Tuning_$SLURM_JOBID"
-mkdir -p "$DEST_RESULTS"
-
 ############################
 # Run Hyperparam Tuning    #
 ############################
 
-# Define list of algorithms to tune
+# 1. Define list of algorithms
 ALGOS=("ppo" "ddpg" "sac" "td3")
 
-# Set tuning budget per algorithm (in seconds)
-# 3600s = 1 hour per algorithm. 
-# Total job time is 4h, so this fits perfectly.
-BUDGET_PER_ALGO=900  # 15 minutes per algo for testing 
+# 2. Define where Python should write results in scratch
+export TUNERESULTS_PATH="$WORKDIR/tune_results/CassKoopmans"
+mkdir -p "$TUNERESULTS_PATH"
+
+# 3. Budget per algorithm
+BUDGET_PER_ALGO=3600
 
 for algo in "${ALGOS[@]}"; do
     echo "------------------------------------------------"
     echo "Starting tuning for: $algo"
     echo "------------------------------------------------"
     
-    # Run the python tuning script
-    # We explicitly set TUNERESULTS_PATH to a local folder in scratch
-    export TUNERESULTS_PATH="$WORKDIR/tune_results"
-    
     python ecomodrl/tune/casskoopmans.py \
         --algo_name="$algo" \
         --total_cost=$BUDGET_PER_ALGO \
-        --hidden_nodes=64
+        --hidden_nodes=32
 
-    # Back up results immediately after this algo finishes
-    # The script saves to $TUNERESULTS_PATH/CassKoopmans/[ALGO_UPPER]
-    # We copy that specific folder to our destination
-    
-    if [ -d "$TUNERESULTS_PATH/CassKoopmans/${algo^^}" ]; then
-        echo "Copying results for $algo..."
-        cp -r "$TUNERESULTS_PATH/CassKoopmans/${algo^^}" "$DEST_RESULTS/"
-    else
-        echo "Warning: Results directory for $algo not found."
-    fi
-    
     echo "Finished tuning for $algo"
 done
 
 echo
 echo "All tuning jobs finished."
-echo "Results saved to: $DEST_RESULTS"
+echo "Results are located in: $TUNERESULTS_PATH" 
 echo "Finished at: $(date)"
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
