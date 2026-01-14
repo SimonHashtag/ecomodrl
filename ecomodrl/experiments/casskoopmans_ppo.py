@@ -86,26 +86,6 @@ if __name__ == "__main__":
             "log_std_init": -2.0,  # smaller initial exploration to avoid extremes
         },
     )
-    # algo_cfg = AlgoConfig(
-    #     name="td3",
-    #     policy="MlpPolicy",
-    #     algo_params={
-    #         "learning_rate": 3e-3,
-    #         "buffer_size": 100_000,
-    #         "batch_size": cfg.n_envs * cfg.max_episode_steps // 1,
-    #         "tau": 0.005,
-    #         "gamma": params.beta,
-    #         "train_freq": (50, "step"), # "step" is crucial for vectorized envs
-    #         "gradient_steps": 10,
-    #         "learning_starts": 20_000,
-    #         "policy_delay": 2,
-    #         "action_noise_std": 0.05,
-    #     },
-    #     policy_kwargs={
-    #         "activation_fn": th.nn.ReLU,
-    #         "net_arch": {"pi": [64, 64], "qf": [128, 128]},
-    #     },
-    # )
     
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
