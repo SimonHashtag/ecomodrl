@@ -199,7 +199,7 @@ def analyze_all_seeds(
       1) Learning curve plot (with IQR and benchmark line).
       2) Policy and value function plots with bootstrap confidence bands.
       3) Euler error histogram with per-seed KDE overlays.
-      4) WEV and CEV plots with bootstrap CIs and state density overlays.
+      4) CEV plots with bootstrap CIs and state density overlays.
 
     Saves all figures and summary metrics JSON to cfg.out_dir.
     """
@@ -231,8 +231,6 @@ def analyze_all_seeds(
     pooled_states_k = []
     Us_rl = []
     # Welfare metrics
-    WEV_mat = []
-    WEV_rel_mat = []
     CEV_mat = []
     CEV_rel_mat = []
     # Seed identifiers (for labeling/logging)
@@ -245,7 +243,7 @@ def analyze_all_seeds(
     # Determine beta for CEV calculation
     beta_for_cev = params.beta if getattr(params, "gamma", 2.0) == 1.0 else None
 
-    # Policy/value/euler/wev/cev per seed
+    # Policy/value/euler/cev per seed
     for seed_entry in train_cfgs:
         best_model_path = Path(seed_entry["best_model_path"])
         vecnorm_path = Path(seed_entry["vecnorm_path"])
@@ -286,7 +284,6 @@ def analyze_all_seeds(
         pooled_states_k.append(k_states_rl)
         Us_rl.append(U_rl)
 
-        wev_grid = wev(pts_kz, V_bm, V_rl_interp, p.cash_on_hand).reshape(len(k_grid), len(z_grid))
         CEV_grid = cev_crra(
             pts_kz,
             V_bm,
@@ -295,10 +292,9 @@ def analyze_all_seeds(
             beta=beta_for_cev,
         ).reshape(len(k_grid), len(z_grid))
 
-        WEV_mat.append(wev_grid)
         CEV_mat.append(CEV_grid)
 
-        # Approximate relevant WEV/CEV by pairing visited k with z=1.0 (stationary mean)
+        # Approximate relevant CEV by pairing visited k with z=1.0 (stationary mean)
         k_vis = np.asarray(k_states_rl).ravel()
         z_vis = np.ones_like(k_vis)
         states_vis = np.column_stack([k_vis, z_vis])
@@ -308,12 +304,10 @@ def analyze_all_seeds(
         idx_sample = rng.choice(states_vis.shape[0], size=1000, replace=False)
         states_vis = states_vis[idx_sample, :]
         
-        wev_rel = np.mean(wev(states_vis, V_bm, V_rl_interp, p.cash_on_hand))
         cev_rel = np.mean(
             cev_crra(states_vis, V_bm, V_rl_interp, gamma=params.gamma,
                      beta=beta_for_cev)
         )
-        WEV_rel_mat.append(float(wev_rel))
         CEV_rel_mat.append(float(cev_rel))
 
         # Stash grids for aggregation
@@ -327,12 +321,10 @@ def analyze_all_seeds(
     rl_policy_vals = np.stack(rl_policy_vals)
     rl_value_from_policy = np.stack(rl_value_from_policy)
     rl_value_nn_vals = np.stack(rl_value_nn_vals) if len(rl_value_nn_vals) > 0 else None
-    WEV_mat = np.stack(WEV_mat)
     CEV_mat = np.stack(CEV_mat)
     euler_logabs_arr = np.vstack(euler_logabs_list)
     pooled_states_k_arr = np.hstack(pooled_states_k)
     Us_rl = np.asarray(Us_rl).reshape(-1, 1)
-    WEV_rel_mat_arr = np.asarray(WEV_rel_mat).reshape(-1, 1)
     CEV_rel_mat_arr = np.asarray(CEV_rel_mat).reshape(-1, 1)
 
     # ---------------------------------------------------------------
@@ -435,18 +427,8 @@ def analyze_all_seeds(
     plt.close(fig)
 
     # ---------------------------------------------------------------
-    # WEV and CEV plots with bootstrap CIs; pooled state histogram
+    # CEV plots with bootstrap CIs; pooled state histogram
     # ---------------------------------------------------------------
-    mean_WEV_flat, lo_WEV_flat, hi_WEV_flat = bootstrap_mean_ci(
-        WEV_mat.reshape(WEV_mat.shape[0], -1),
-        n_boot=n_boot,
-        alpha=alpha,
-        seed=bootstrap_seed + 2,
-    )
-    mean_WEV = mean_WEV_flat.reshape(len(k_grid), len(z_grid))
-    lo_WEV = lo_WEV_flat.reshape(len(k_grid), len(z_grid))
-    hi_WEV = hi_WEV_flat.reshape(len(k_grid), len(z_grid))
-
     mean_CEV_flat, lo_CEV_flat, hi_CEV_flat = bootstrap_mean_ci(
         CEV_mat.reshape(CEV_mat.shape[0], -1),
         n_boot=n_boot,
@@ -458,18 +440,6 @@ def analyze_all_seeds(
     hi_CEV = hi_CEV_flat.reshape(len(k_grid), len(z_grid))
 
     # Scalars (averages over grid and relevance approximation)
-    mean_WEV_scalar, lo_WEV_scalar, hi_WEV_scalar = bootstrap_mean_ci(
-        WEV_mat.reshape(WEV_mat.shape[0], -1).mean(axis=1).reshape(-1, 1),
-        n_boot=n_boot,
-        alpha=alpha,
-        seed=bootstrap_seed,
-    )
-    mean_rel_wev, lo_rel_wev, hi_rel_wev = bootstrap_mean_ci(
-        WEV_rel_mat_arr,
-        n_boot=n_boot,
-        alpha=alpha,
-        seed=bootstrap_seed,
-    )
     mean_CEV_scalar, lo_CEV_scalar, hi_CEV_scalar = bootstrap_mean_ci(
         CEV_mat.reshape(CEV_mat.shape[0], -1).mean(axis=1).reshape(-1, 1),
         n_boot=n_boot,
@@ -483,37 +453,26 @@ def analyze_all_seeds(
         seed=bootstrap_seed,
     )
 
-    fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-    ax[0].axhline(0.0, linestyle="--", color="black", linewidth=0.8, alpha=0.6, label="Zero")
-    ax[1].axhline(0.0, linestyle="--", color="black", linewidth=0.8, alpha=0.6, label="Zero")
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.axhline(0.0, linestyle="--", color="black", linewidth=0.8, alpha=0.6, label="Zero")
+    
     for idx in z_indices:
         z_val = z_grid[idx]
-        line_w, = ax[0].plot(k_grid, mean_WEV[:, idx], label=f"RL mean (z={z_val:.3f})")
-        ax[0].fill_between(k_grid, lo_WEV[:, idx], hi_WEV[:, idx], color=line_w.get_color(), alpha=0.2)
-        line_c, = ax[1].plot(k_grid, mean_CEV[:, idx], label=f"RL mean (z={z_val:.3f})")
-        ax[1].fill_between(k_grid, lo_CEV[:, idx], hi_CEV[:, idx], color=line_c.get_color(), alpha=0.2)
+        line_c, = ax.plot(k_grid, mean_CEV[:, idx], label=f"RL mean (z={z_val:.3f})")
+        ax.fill_between(k_grid, lo_CEV[:, idx], hi_CEV[:, idx], color=line_c.get_color(), alpha=0.2)
 
-    ax[0].set_ylim(bottom=min(0.0, ax[0].get_ylim()[0]))
-    ax[0].set_xlabel("Capital k")
-    ax[0].set_ylabel("WEV")
-    ax[0].set_title("Wealth-Equivalent Variation")
-    ax0p = ax[0].twinx()
-    ax0p.hist(pooled_states_k_arr, bins=30, density=True, alpha=0.3, color="gray")
-    ax0p.set_ylabel("State density (k)")
+    ax.set_ylim(bottom=min(0.0, ax.get_ylim()[0]))
+    ax.set_xlabel("Capital k")
+    ax.set_ylabel("CEV")
+    ax.set_title("Consumption-Equivalent Variation")
+    
+    ax_p = ax.twinx()
+    ax_p.hist(pooled_states_k_arr, bins=30, density=True, alpha=0.3, color="gray")
+    ax_p.set_ylabel("State density (k)")
 
-    ax[1].set_ylim(bottom=min(0.0, ax[1].get_ylim()[0]))
-    ax[1].set_xlabel("Capital k")
-    ax[1].set_ylabel("CEV")
-    ax[1].set_title("Consumption-Equivalent Variation")
-    ax1p = ax[1].twinx()
-    ax1p.hist(pooled_states_k_arr, bins=30, density=True, alpha=0.3, color="gray")
-    ax1p.set_ylabel("State density (k)")
-
-    for axis in ax:
-        axis.legend(loc="best")
-
+    ax.legend(loc="best")
     fig.tight_layout()
-    fig.savefig(out_dir / "wev_cev_agg.png", dpi=150)
+    fig.savefig(out_dir / "cev_agg.png", dpi=150)
     plt.close(fig)
 
     # ---------------------------------------------------------------
@@ -567,8 +526,6 @@ def analyze_all_seeds(
         "U_bm": float(U_bm),
         "max_abs_euler_error_bm": float(np.max(bm_all)),
         **pack_ci("U_rl", mean_Us, lo_Us, hi_Us),
-        **pack_ci("wev", mean_WEV_scalar, lo_WEV_scalar, hi_WEV_scalar),
-        **pack_ci("wev_relevant", mean_rel_wev, lo_rel_wev, hi_rel_wev),
         **pack_ci("cev", mean_CEV_scalar, lo_CEV_scalar, hi_CEV_scalar),
         **pack_ci("cev_relevant", mean_rel_cev, lo_rel_cev, hi_rel_cev),
         **pack_ci("max_abs_euler_error_rl", mean_max_euler, lo_max_euler, hi_max_euler),
