@@ -11,6 +11,7 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.utils.analysis_CK import analyze_all_seeds
 from ecomodrl.utils.params_loader import CassKoopmansParams
+from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples  
 
 
 # ----------------------------
@@ -33,7 +34,7 @@ class RunConfig:
     total_timesteps: int = 10_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
-    patience: int = 20
+    patience: int = 1000
     min_delta: float = 1e-3
 
     # Seeds
@@ -65,6 +66,12 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=0.0009191713154,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
+    
     algo_cfg = AlgoConfig(
         name="ppo",
         policy="MlpPolicy",
@@ -73,7 +80,7 @@ if __name__ == "__main__":
             "n_steps": cfg.max_episode_steps * 2,
             "batch_size": cfg.n_envs * cfg.max_episode_steps * 2 // 6,
             "n_epochs": 10,
-            "learning_rate": 0.0009191713154,
+            "learning_rate": lr_schedule, 
             "ent_coef": 0.0021927392147,
             "gae_lambda": 0.9488409062206,
             "clip_range": 0.0534293369739,
