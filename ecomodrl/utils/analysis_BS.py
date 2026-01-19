@@ -136,7 +136,7 @@ def get_policy_value_functions(
         V_nn = V_norm * scale
         value_rl = CubicSpline(obs.squeeze(), V_nn, bc_type="natural", extrapolate=True)
 
-    # Off-policy algorithms (e.g., SAC, TD3, DDPG)
+        # Off-policy algorithms (e.g., SAC, TD3, DDPG)
     else:
         policy = getattr(model, "policy", None)
         if policy is not None and hasattr(policy, "critic"):
@@ -153,9 +153,18 @@ def get_policy_value_functions(
                 else:  # DDPG / TD3
                     q_min = q_out.flatten()
 
-                V_q = q_min.cpu().numpy()
+                Q_norm = q_min.cpu().numpy()
 
-            value_rl = CubicSpline(obs.squeeze(), V_q, bc_type="natural", extrapolate=True)
+            # --- UNNORMALIZE HERE (if reward normalization was used) ---
+            ret_rms = getattr(vecnorm, "ret_rms", None)
+            eps = float(getattr(vecnorm, "epsilon", 1e-8))
+            if getattr(vecnorm, "norm_reward", False) and ret_rms is not None:
+                scale = float(np.sqrt(ret_rms.var + eps))
+                Q = Q_norm * scale
+            else:
+                Q = Q_norm
+
+            value_rl = CubicSpline(obs.squeeze(), Q, bc_type="natural", extrapolate=True)
 
     return policy_rl, value_rl
 

@@ -75,7 +75,7 @@ def build_envs(
         make_env(
             env_class,
             params,
-            max_episode_steps=cfg.max_eval_episode_steps,
+            max_episode_steps=cfg.max_episode_steps,
             fixed_start=False,
             fixed_state=float(np.nan),  # ignored when fixed_start=False
             state_min=cfg.state_min,

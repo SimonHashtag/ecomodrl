@@ -147,9 +147,18 @@ def get_policy_value_functions(
                 else:  # DDPG / TD3
                     q_min = q_out.flatten()
 
-                V_q = q_min.cpu().numpy()
+                Q_norm = q_min.cpu().numpy()
 
-            value_rl = CubicSpline(obs.squeeze(), V_q, bc_type="natural", extrapolate=True)
+            # Unnormalize Q-values
+            ret_rms = getattr(vecnorm, "ret_rms", None)
+            eps = float(getattr(vecnorm, "epsilon", 1e-8))
+            if getattr(vecnorm, "norm_reward", False) and ret_rms is not None:
+                scale = float(np.sqrt(ret_rms.var + eps))
+                Q = Q_norm * scale
+            else:
+                Q = Q_norm
+
+            value_rl = CubicSpline(obs.squeeze(), Q, bc_type="natural", extrapolate=True)
 
     return policy_rl, value_rl
 
@@ -171,7 +180,7 @@ def analyze_all_seeds(
       1) Learning curve plot (with IQR and benchmark line).
       2) Policy and value function plots with bootstrap confidence bands.
       3) Euler error histogram with per-seed KDE overlays.
-      4) WEV and CEV plots with bootstrap CIs and state density overlays.
+      4) CEV plots with bootstrap CIs and state density overlays.
 
     Saves all figures and summary metrics JSON to cfg.out_dir.
     """
@@ -198,8 +207,6 @@ def analyze_all_seeds(
     pooled_states = []
     Us_rl = []
     # Welfare metrics
-    WEV_mat = []
-    WEV_rel_mat = []
     CEV_mat = []
     CEV_rel_mat = []
     # Seed identifiers (for labeling/logging)
@@ -247,15 +254,7 @@ def analyze_all_seeds(
         pooled_states.append(states)
         Us_rl.append(U_rl)
 
-        # --- WEV and CEV metrics ---
-        # Compute welfare differences vs. benchmark on full grid
-        wev_seed = wev(grid, V_bm, V_rl, p.cash_on_hand)
-        if wev_seed is not None:
-            WEV_mat.append(wev_seed)
-            # Average WEV over visited states (policy-relevant region)
-            avg_wev_rel = wev(states, V_bm, V_rl, p.cash_on_hand).mean()
-            WEV_rel_mat.append(avg_wev_rel)
-
+        # --- CEV metrics ---
         # Compute analogous CEV metrics (grid + visited states)
         cev_on_grid = cev_crra(grid, V_bm, V_rl, gamma=params.gamma)
         CEV_mat.append(cev_on_grid)
@@ -270,7 +269,6 @@ def analyze_all_seeds(
     rl_value_nn_vals = np.vstack(rl_value_nn_vals)
     rl_value_from_policy = np.vstack(rl_value_from_policy)
     # Welfare metrics (grid-based)
-    WEV_mat = np.vstack(WEV_mat)
     CEV_mat = np.vstack(CEV_mat)
 
     # ---------------------------------------------------------------
@@ -295,7 +293,7 @@ def analyze_all_seeds(
     plt.axhline(return_bm, linestyle="-.", color="darkorange", label="Benchmark")
     plt.xlabel("Processed Samples")
     plt.ylabel("Avg discounted episode return (true scale)")
-    plt.title("Learning Curve (PPO on Cass–Koopmans)")
+    plt.title("Learning Curve (PPO on Cass-Koopmans)")
     plt.legend()
     plt.tight_layout()
     fig.savefig(out_dir / "learning_curve_agg.png", dpi=150)
@@ -374,20 +372,8 @@ def analyze_all_seeds(
     plt.close(fig)
 
     # ---------------------------------------------------------------
-    # WEV and CEV metrics
+    # CEV
     # ---------------------------------------------------------------
-    mean_wev, lo_wev, hi_wev = bootstrap_mean_ci(
-        WEV_mat.mean(axis=1).reshape(-1, 1),
-        n_boot=n_boot,
-        alpha=alpha,
-        seed=bootstrap_seed,
-    )
-    mean_rel_wev, lo_rel_wev, hi_rel_wev = bootstrap_mean_ci(
-        np.vstack(WEV_rel_mat), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
-    )
-    mean_WEV, lo_WEV, hi_WEV = bootstrap_mean_ci(
-        WEV_mat, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed + 2
-    )
     mean_cev, lo_cev, hi_cev = bootstrap_mean_ci(
         CEV_mat.mean(axis=1).reshape(-1, 1),
         n_boot=n_boot,
@@ -403,35 +389,23 @@ def analyze_all_seeds(
 
     states_all = np.concatenate(pooled_states, axis=0)
 
-    fig, ax = plt.subplots(1, 2, figsize=(12, 5))
-
-    # WEV
-    ax[0].plot(grid, mean_WEV, label="WEV (mean)")
-    ax[0].fill_between(grid, lo_WEV, hi_WEV, alpha=0.25, label="95% CI (bootstrap)")
-    ax[0].axhline(0, color="red", linestyle="--", label="Zero Line")
-    ax[0].set_xlabel("Capital k")
-    ax[0].set_ylabel("WEV")
-    ax[0].set_title("Wealth-Equivalent Variation")
-    ax0p = ax[0].twinx()
-    ax0p.hist(states_all, bins=30, density=True, alpha=0.3, color="gray")
-    ax0p.set_ylabel("State density")
+    fig, ax = plt.subplots(1, 1, figsize=(6, 5))
 
     # CEV
-    ax[1].plot(grid, mean_CEV, label="CEV (mean)")
-    ax[1].fill_between(grid, lo_CEV, hi_CEV, alpha=0.25, label="95% CI (bootstrap)")
-    ax[1].axhline(0, color="red", linestyle="--", label="Zero Line")
-    ax[1].set_xlabel("Capital k")
-    ax[1].set_ylabel("CEV")
-    ax[1].set_title("Consumption-Equivalent Variation")
-    ax1p = ax[1].twinx()
+    ax.plot(grid, mean_CEV, label="CEV (mean)")
+    ax.fill_between(grid, lo_CEV, hi_CEV, alpha=0.25, label="95% CI (bootstrap)")
+    ax.axhline(0, color="red", linestyle="--", label="Zero Line")
+    ax.set_xlabel("Capital k")
+    ax.set_ylabel("CEV")
+    ax.set_title("Consumption-Equivalent Variation")
+    ax1p = ax.twinx()
     ax1p.hist(states_all, bins=30, density=True, alpha=0.3, color="gray")
     ax1p.set_ylabel("State density")
 
-    for a in ax:
-        a.legend(loc="best")
+    ax.legend(loc="best")
 
     fig.tight_layout()
-    fig.savefig(out_dir / "wev_cev_agg.png", dpi=150)
+    fig.savefig(out_dir / "cev_agg.png", dpi=150)
     plt.close(fig)
 
     # ---------------------------------------------------------------
@@ -450,8 +424,6 @@ def analyze_all_seeds(
         "U_bm": float(U_bm),
         "max_abs_euler_error_bm": float(np.max(euler_bm)),
         **pack_ci("U_rl", mean_Us, lo_Us, hi_Us),
-        **pack_ci("wev", mean_wev, lo_wev, hi_wev),
-        **pack_ci("wev_relevant", mean_rel_wev, lo_rel_wev, hi_rel_wev),
         **pack_ci("cev", mean_cev, lo_cev, hi_cev),
         **pack_ci("cev_relevant", mean_rel_cev, lo_rel_cev, hi_rel_cev),
         **pack_ci("max_abs_euler_error_rl", mean_max_euler, lo_max_euler, hi_max_euler),

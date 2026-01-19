@@ -117,7 +117,7 @@ if __name__ == "__main__":
         max_fidelity=max_fidelity,
         n_workers=n_workers,
         output_path=cfg.out_dir,
-        log_level="INFO",
+        log_level="DEBUG",
         eta=eta,
         crossover_prob=0.5,
         mutation_factor=0.5,
