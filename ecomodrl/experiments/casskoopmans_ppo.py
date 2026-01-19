@@ -37,8 +37,8 @@ class RunConfig:
     min_delta: float = 1e-3
 
     # Seeds
-    base_seed: int = 42
-    n_seeds: int = 1
+    base_seed: int = 200
+    n_seeds: int = 10
 
     # Use steady-state aware starting boundaries for RL algorithm
     # Intention: don't explore outside of the economically relevant state space
@@ -70,19 +70,19 @@ if __name__ == "__main__":
         policy="MlpPolicy",
         algo_params={
             "gamma": params.beta,
-            "n_steps": cfg.max_episode_steps,
-            "batch_size": cfg.n_envs * cfg.max_episode_steps // 5,
-            "n_epochs": 2,
-            "learning_rate": 3.5e-4,
-            "ent_coef": 4.4e-5,
-            "gae_lambda": 0.925,
-            "clip_range": 0.27,
-            "vf_coef": 0.5,
+            "n_steps": cfg.max_episode_steps * 2,
+            "batch_size": cfg.n_envs * cfg.max_episode_steps * 2 // 6,
+            "n_epochs": 10,
+            "learning_rate": 0.0009191713154,
+            "ent_coef": 0.0021927392147,
+            "gae_lambda": 0.9488409062206,
+            "clip_range": 0.0534293369739,
+            "vf_coef": 0.6131367986268,
             "max_grad_norm": 0.5,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [16, 16, 16, 16], "vf": [16, 16, 16, 16]},
+            "net_arch": {"pi": [64, 64], "vf": [64, 64]},
             "log_std_init": -2.0,  # smaller initial exploration to avoid extremes
         },
     )

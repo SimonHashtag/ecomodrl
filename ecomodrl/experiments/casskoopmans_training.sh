@@ -60,7 +60,6 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 ############################
 
 # Define one common place in scratch for the plots/results.
-# Your python scripts check os.environ.get("RUNRESULTS_PATH").
 export RUNRESULTS_PATH="$WORKDIR/training_results/CassKoopmans"
 mkdir -p "$RUNRESULTS_PATH"
 
@@ -90,6 +89,13 @@ echo "------------------------------------------------"
 echo "Starting TD3..."
 python ecomodrl/experiments/casskoopmans_td3.py
 
+############################
+#   Unified Analysis       #
+############################
+
+echo "------------------------------------------------"
+echo "Generating unified comparison plots..."
+python ecomodrl/experiments/casskoopmans_compare.py
 
 ################
 # Finish       #

@@ -169,11 +169,19 @@ def get_policy_value_functions(
             else: # DDPG / TD3
                 q_min = q_out.flatten()
 
-            V_q = q_min.cpu().numpy()
+            Q_norm = q_min.cpu().numpy()
+
+            ret_rms = getattr(vecnorm, "ret_rms", None)
+            eps = float(getattr(vecnorm, "epsilon", 1e-8))
+            if getattr(vecnorm, "norm_reward", False) and ret_rms is not None:
+                scale = float(np.sqrt(ret_rms.var + eps))
+                Q = Q_norm * scale
+            else:
+                Q = Q_norm
 
         value_rl = RegularGridInterpolator(
             (k_grid, z_grid),
-            V_q.reshape(len(k_grid), len(z_grid)),
+            Q.reshape(len(k_grid), len(z_grid)),
             method="linear",
             bounds_error=False,
             fill_value=None,

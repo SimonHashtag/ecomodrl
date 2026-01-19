@@ -147,9 +147,18 @@ def get_policy_value_functions(
                 else:  # DDPG / TD3
                     q_min = q_out.flatten()
 
-                V_q = q_min.cpu().numpy()
+                Q_norm = q_min.cpu().numpy()
 
-            value_rl = CubicSpline(obs.squeeze(), V_q, bc_type="natural", extrapolate=True)
+            # Unnormalize Q-values
+            ret_rms = getattr(vecnorm, "ret_rms", None)
+            eps = float(getattr(vecnorm, "epsilon", 1e-8))
+            if getattr(vecnorm, "norm_reward", False) and ret_rms is not None:
+                scale = float(np.sqrt(ret_rms.var + eps))
+                Q = Q_norm * scale
+            else:
+                Q = Q_norm
+
+            value_rl = CubicSpline(obs.squeeze(), Q, bc_type="natural", extrapolate=True)
 
     return policy_rl, value_rl
 
@@ -284,7 +293,7 @@ def analyze_all_seeds(
     plt.axhline(return_bm, linestyle="-.", color="darkorange", label="Benchmark")
     plt.xlabel("Processed Samples")
     plt.ylabel("Avg discounted episode return (true scale)")
-    plt.title("Learning Curve (PPO on Cass–Koopmans)")
+    plt.title("Learning Curve (PPO on Cass-Koopmans)")
     plt.legend()
     plt.tight_layout()
     fig.savefig(out_dir / "learning_curve_agg.png", dpi=150)

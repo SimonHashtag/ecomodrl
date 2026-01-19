@@ -1,8 +1,12 @@
-0. .sh sbatch File für entsprechendes .py File anlegen, bspw.:
-
-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
 #!/bin/bash
+
+# Run via:
+# > cd ecomodrl/ecomodrl/tuning
+# > sed -i 's/\r$//' casskoopmans_tuning.sh
+# > chmod +x casskoopmans_tuning.sh
+# > sbatch casskoopmans_tuning.sh
+# logs will be in ecomodrl/ecomodrl/tuning/logs/
+# Incumbent in scratch in tuning_results/CassKoopmans/
 
 #SBATCH --job-name=CK_TUNE
 #SBATCH --partition=d0ow
@@ -73,7 +77,7 @@ for algo in "${ALGOS[@]}"; do
     python ecomodrl/tune/casskoopmans.py \
         --algo_name="$algo" \
         --total_cost=$BUDGET_PER_ALGO \
-        --hidden_nodes=32
+        --hidden_nodes=64
 
     echo "Finished tuning for $algo"
 done
@@ -82,15 +86,3 @@ echo
 echo "All tuning jobs finished."
 echo "Results are located in: $TUNERESULTS_PATH" 
 echo "Finished at: $(date)"
-
-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-1. gesamten ecomodrl Ordner in WinSCP pasten
-2. putty öffnen und folgende Command nacheinander ausführen:
-cd ~
-cd ecomodrl/ecomodrl/tune/HPC
-sed -i 's/\r$//' [FILENAME].sh
-chmod +x [FILENAME].sh
-sbatch [FILENAME].sh
-sacct -j [BATCH-ID] --format=JobID,JobName,Partitio,State,ExitCode,Elapsed
-3. Ergebnisse liegen dann unter ecomodrl/results/CK_Tuning_[JOB_ID]/

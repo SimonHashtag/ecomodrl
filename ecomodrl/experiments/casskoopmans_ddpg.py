@@ -37,8 +37,8 @@ class RunConfig:
     min_delta: float = 1e-3
 
     # Seeds
-    base_seed: int = 42
-    n_seeds: int = 1
+    base_seed: int = 200
+    n_seeds: int = 10
 
     # Use steady-state aware starting boundaries for RL algorithm
     # Intention: don't explore outside of the economically relevant state space
@@ -69,15 +69,15 @@ if __name__ == "__main__":
         name="ddpg",
         policy="MlpPolicy",
         algo_params={
-            "learning_rate": 0.0004551476101,
+            "learning_rate": 0.0011996543066,
             "buffer_size": 200_000,
-            "batch_size": 64,
-            "tau": 0.0136480174259,
+            "batch_size": 32,
+            "tau": 0.010400184125,
             "gamma": params.beta,
-            "train_freq": (cfg.max_episode_steps * 8, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 8,
+            "train_freq": (cfg.max_episode_steps * 4, "step"), # "step" is crucial for vectorized envs
+            "gradient_steps": 16,
             "learning_starts": 10_000,
-            "action_noise_std": 0.0894385049587,
+            "action_noise_std": 0.1005654323994,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
