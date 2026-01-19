@@ -116,6 +116,8 @@ def train_single_seed(
         train_env, eval_env = build_envs(env, params=params, cfg=cfg, seed=seed)
 
         model = build_model(algo_cfg, train_env, seed, tensorboard_log=out_dir, verbose=0)
+        
+        lr_obj = getattr(model, "learning_rate", None)
 
         callback = EarlyStoppingCallback(
             eval_env=eval_env,
@@ -128,6 +130,7 @@ def train_single_seed(
             deterministic_eval=True,
             best_model_path=best_model_path,
             vecnorm_path=vecnorm_path,
+            lr_schedule_obj=lr_obj if callable(getattr(lr_obj, "update", None)) else None,
             verbose=verbose,
         )
 
