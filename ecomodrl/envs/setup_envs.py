@@ -88,8 +88,8 @@ def build_envs(
         vec_env_cls=vec_cls,
         ) # Seeding: VecEnv seeds each sub-env with seed + env_number
     train_env = VecNormalize(
-        train_env, norm_obs=True, norm_reward=True, 
-        clip_obs=10.0, clip_reward=10.0, gamma=params.beta,
+        train_env, norm_obs=True, norm_reward=False, 
+        clip_obs=10.0, clip_reward=1000.0, gamma=params.beta,
     )
 
     # Eval env: fixed-start grid, deterministic eval

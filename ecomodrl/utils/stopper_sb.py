@@ -5,6 +5,8 @@ from typing import Optional, List, Tuple
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecNormalize
 
+from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples
+
 
 def unwrap_vecnormalize(env) -> Optional[VecNormalize]:
     """Return the inner VecNormalize wrapper if present, else None."""
@@ -87,6 +89,7 @@ class EarlyStoppingCallback(BaseCallback):
         deterministic_eval: bool = True,
         best_model_path: str = "best_model.zip",
         vecnorm_path: Optional[str] = "vecnormalize.pkl",
+        lr_schedule_obj: LinearScheduleByProcessedSamples | None = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -102,6 +105,9 @@ class EarlyStoppingCallback(BaseCallback):
 
         self.best_model_path = str(best_model_path)
         self.vecnorm_path = None if vecnorm_path is None else str(vecnorm_path)
+        
+        # learning rate schedule object (to update processed samples)
+        self.lr_schedule_obj = lr_schedule_obj
 
         # runtime state
         self.best_score = -np.inf
@@ -197,6 +203,9 @@ class EarlyStoppingCallback(BaseCallback):
             return
 
         self.processed_samples += planned
+        
+        if self.lr_schedule_obj is not None:
+            self.lr_schedule_obj.update(self.processed_samples)
 
         # Budget logging
         self.logger.record("budget/processed_samples", float(self.processed_samples))
