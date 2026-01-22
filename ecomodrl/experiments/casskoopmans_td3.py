@@ -33,7 +33,7 @@ class RunConfig:
     total_timesteps: int = 10_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
-    patience: int = 20
+    patience: int = 1000
     min_delta: float = 1e-3
 
     # Seeds
