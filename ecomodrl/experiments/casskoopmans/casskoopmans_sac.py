@@ -11,6 +11,7 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.utils.analysis_CK import analyze_all_seeds
 from ecomodrl.utils.params_loader import CassKoopmansParams
+from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples 
 
 
 # ----------------------------
@@ -33,7 +34,7 @@ class RunConfig:
     total_timesteps: int = 10_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
-    patience: int = 20
+    patience: int = 2000
     min_delta: float = 1e-3
 
     # Seeds
@@ -65,22 +66,25 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=0.0025080954267,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
+    
     algo_cfg = AlgoConfig(
-        name="td3",
+        name="sac",
         policy="MlpPolicy",
         algo_params={
-            "learning_rate": 0.0006207652006,
+            "learning_rate": lr_schedule,
             "buffer_size": 200_000,
             "batch_size": 64,
-            "tau": 0.0139904290884,
+            "tau": 0.0175788267655,
             "gamma": params.beta,
-            "train_freq": (cfg.max_episode_steps * 2, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 8,
+            "max_grad_norm": 0.5,
+            "train_freq": (cfg.max_episode_steps * 4, "step"), # "step" is crucial for vectorized envs
+            "gradient_steps": 16,
             "learning_starts": 10_000,
-            "policy_delay": 2,
-            "action_noise_std": 0.0515070057901,
-            "target_policy_noise": 0.0784148244779,
-            "target_noise_clip": 0.7099592918582,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,

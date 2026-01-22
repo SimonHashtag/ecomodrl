@@ -72,22 +72,22 @@ echo "Results will be stored in: $RUNRESULTS_PATH"
 # 1. PPO
 echo "------------------------------------------------"
 echo "Starting PPO..."
-python ecomodrl/experiments/casskoopmans_ppo.py
+python ecomodrl/experiments/casskoopmans/casskoopmans_ppo.py
 
 # 2. DDPG
 echo "------------------------------------------------"
 echo "Starting DDPG..."
-python ecomodrl/experiments/casskoopmans_ddpg.py
+python ecomodrl/experiments/casskoopmans/casskoopmans_ddpg.py
 
 # 3. SAC
 echo "------------------------------------------------"
 echo "Starting SAC..."
-python ecomodrl/experiments/casskoopmans_sac.py
+python ecomodrl/experiments/casskoopmans/casskoopmans_sac.py
 
 # 4. TD3
 echo "------------------------------------------------"
 echo "Starting TD3..."
-python ecomodrl/experiments/casskoopmans_td3.py
+python ecomodrl/experiments/casskoopmans/casskoopmans_td3.py
 
 ############################
 #   Unified Analysis       #
@@ -95,7 +95,7 @@ python ecomodrl/experiments/casskoopmans_td3.py
 
 echo "------------------------------------------------"
 echo "Generating unified comparison plots..."
-python ecomodrl/experiments/casskoopmans_compare.py
+python ecomodrl/experiments/casskoopmans/casskoopmans_compare.py
 
 ################
 # Finish       #

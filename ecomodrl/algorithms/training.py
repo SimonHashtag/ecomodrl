@@ -6,14 +6,15 @@ from typing import Optional, Callable, Union, Mapping, Any, List, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 
-import numpy as np
 import torch as th
+
 from stable_baselines3 import PPO, TD3, DDPG, SAC
-from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.utils import set_random_seed
 
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.stopper_sb import EarlyStoppingCallback
+from ecomodrl.utils.stopper import EarlyStoppingCallback
+from ecomodrl.utils.grad_norm_wrapper import add_grad_norm_rescaling
+from ecomodrl.utils.action_noise import make_action_noise
 
 # -------------------------------------------------------
 # Build deep RL algorithm
@@ -25,15 +26,6 @@ ALGO_REGISTRY = {
     "ddpg": DDPG,
     "sac":  SAC,
 }
-
-def _make_action_noise(env, algo_name: str, algo_params: dict):
-    """For TD3/DDPG with continuous actions, build NormalActionNoise if requested."""
-    if algo_name in {"td3", "ddpg"}:
-        std = float(algo_params.pop("action_noise_std", 0.0))
-        if std > 0.0:
-            action_dim = env.action_space.shape[0]
-            return NormalActionNoise(mean=np.zeros(action_dim), sigma=std * np.ones(action_dim))
-    return None
 
 @dataclass
 class AlgoConfig:
@@ -56,8 +48,12 @@ def build_model(
     algo_params.setdefault("verbose", verbose)
     algo_params.setdefault("seed", seed)
     algo_params.setdefault("tensorboard_log", str(tensorboard_log))
+    
+    # off-policy SB3 algos are incomptible with built-in grad norm scaling
+    if algo_cfg.name.lower() in {"td3", "ddpg", "sac"}:
+        algo_params.pop("max_grad_norm", None)
 
-    action_noise = _make_action_noise(env, algo_cfg.name.lower(), algo_params)
+    action_noise = make_action_noise(env, algo_cfg.name.lower(), algo_params)
     if action_noise is not None:
         algo_params["action_noise"] = action_noise
 
@@ -116,6 +112,15 @@ def train_single_seed(
         train_env, eval_env = build_envs(env, params=params, cfg=cfg, seed=seed)
 
         model = build_model(algo_cfg, train_env, seed, tensorboard_log=out_dir, verbose=0)
+        
+        max_grad_norm = getattr(algo_cfg, "max_grad_norm", None)
+        
+        if algo_cfg.name.lower() in {"td3", "ddpg", "sac"} and max_grad_norm is not None:
+            add_grad_norm_rescaling(
+                model, 
+                max_grad_norm=max_grad_norm,
+                clip_actor=True,
+                clip_critic=True)
         
         lr_obj = getattr(model, "learning_rate", None)
 
