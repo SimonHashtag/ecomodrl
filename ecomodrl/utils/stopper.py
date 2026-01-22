@@ -89,7 +89,7 @@ class EarlyStoppingCallback(BaseCallback):
         deterministic_eval: bool = True,
         best_model_path: str = "best_model.zip",
         vecnorm_path: Optional[str] = "vecnormalize.pkl",
-        lr_schedule_obj: LinearScheduleByProcessedSamples | None = None,
+        lr_schedule_obj: Optional[LinearScheduleByProcessedSamples] = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)

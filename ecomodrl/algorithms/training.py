@@ -113,7 +113,7 @@ def train_single_seed(
 
         model = build_model(algo_cfg, train_env, seed, tensorboard_log=out_dir, verbose=0)
         
-        max_grad_norm = getattr(algo_cfg, "max_grad_norm", None)
+        max_grad_norm = algo_cfg.algo_params.get('max_grad_norm', None) if algo_cfg.algo_params else None
         
         if algo_cfg.name.lower() in {"td3", "ddpg", "sac"} and max_grad_norm is not None:
             add_grad_norm_rescaling(
