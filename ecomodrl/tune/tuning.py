@@ -173,6 +173,7 @@ def get_algo_fixedcfgs(algo_name: str, params: BaseParams, hidden_nodes: int) ->
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
+                "max_grad_norm": 0.5,
                 "buffer_size": 100_000,
                 "learning_starts": 10_000,
             },
@@ -184,6 +185,7 @@ def get_algo_fixedcfgs(algo_name: str, params: BaseParams, hidden_nodes: int) ->
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
+                "max_grad_norm": 0.5,
                 "action_noise": None,
                 "target_update_interval": 1,
                 "use_sde": False,

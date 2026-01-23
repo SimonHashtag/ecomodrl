@@ -11,6 +11,7 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.utils.analysis_CK import analyze_all_seeds
 from ecomodrl.utils.params_loader import CassKoopmansParams
+from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples 
 
 
 # ----------------------------
@@ -65,15 +66,22 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=1e-3,#0.0006207652006,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
+    
     algo_cfg = AlgoConfig(
         name="td3",
         policy="MlpPolicy",
         algo_params={
-            "learning_rate": 0.0006207652006,
+            "learning_rate": lr_schedule,
             "buffer_size": 200_000,
             "batch_size": 64,
             "tau": 0.0139904290884,
             "gamma": params.beta,
+            "max_grad_norm": 0.5,
             "train_freq": (cfg.max_episode_steps * 2, "step"), # "step" is crucial for vectorized envs
             "gradient_steps": 8,
             "learning_starts": 10_000,

@@ -24,7 +24,7 @@ EGM step (working on a grid of resources saved rs):
 
 import numpy as np
 from numpy.polynomial.hermite import hermgauss
-from scipy.interpolate import PchipInterpolator
+from scipy.interpolate import interp1d
 from scipy.optimize import brentq
 
 
@@ -85,17 +85,18 @@ class PlanningProblem:
         m_min, m_max = span
         return np.linspace(m_min, m_max, points)
     
-    def make_spline(self, x: np.ndarray, y: np.ndarray) -> PchipInterpolator:
+    def make_spline(self, x: np.ndarray, y: np.ndarray, egm: bool = False) -> interp1d:
         """
         Create a PCHIP interpolator for the policy function a(m).
         Prepends the point (0, 1) to enforce the boundary condition that
         at zero cash-on-hand (m=0), the consumption share is 1.
         """
-        # Prepend boundary condition: a(0) = 1
-        x_ext = np.insert(x, 0, 0.0)
-        y_ext = np.insert(y, 0, 1.0)
+        if egm:
+            # Prepend boundary condition: a(0) = 1
+            x = np.insert(x, 0, 0.0)
+            y = np.insert(y, 0, 1.0)
 
-        return PchipInterpolator(x_ext, y_ext, extrapolate=True)
+        return interp1d(x, y, kind='linear', fill_value="extrapolate")
 
     # ------------------------------------------------------------------
     # Model primitives (preferences & technology)
@@ -154,7 +155,7 @@ class PlanningProblem:
         weights = self.probs * (self.psi ** (-self.gamma))
         return (self.beta * self.R / (self.G ** self.gamma)) * np.dot(weights, self.u_prime(c_next))
 
-    def euler_residual(self, a: float, m_t: float, policy: PchipInterpolator) -> float:
+    def euler_residual(self, a: float, m_t: float, policy: interp1d) -> float:
         """Euler residual."""
         c_t = self.consumption_from_share(a, m_t)
         rs_t = self.resources_saved(m_t, c_t)
@@ -239,15 +240,14 @@ class PlanningProblem:
     # Policy evaluation: value function from policy
     #-------------------------------------------------------------------
 
-    def V_from_a(self, grid, a_policy, conv) -> PchipInterpolator:
+    def V_from_a(self, grid, a_policy, conv) -> interp1d:
         """Compute value function on grid by iterating the Bellman equation under a fixed policy."""
         Vn = np.zeros(len(grid))
         V = self.make_spline(grid, Vn)
+        a = a_policy(grid)
         while True:
             # Policy evaluation step: compute Bellman operator under fixed policy
-            for i in range(len(grid)):
-                a_i = a_policy(grid[i])
-                Vn[i] = self.bellman(a_i, grid[i], V)
+            Vn = self.bellman(a, grid, V)
             # Check convergence and update spline
             err = np.max(np.abs(Vn - V(grid)))
             V = self.make_spline(grid, Vn)
@@ -293,7 +293,7 @@ class PlanningSolvers:
     # Time iteration (TI)
     # ------------------------------------------------------------------
     
-    def TI(self, model: PlanningProblem) -> PchipInterpolator:
+    def TI(self, model: PlanningProblem) -> interp1d:
         """Compute optimal consumption-share policy a(m) by time iteration."""
         # --- Setup -------------------------------------------------------
         grid, a_new, a_policy = self._init_policy(model)
@@ -329,7 +329,7 @@ class PlanningSolvers:
     # ---------------------------
     # Endogenous Grid Method (EGM)
     # ---------------------------
-    def EGM(self, model: PlanningProblem) -> PchipInterpolator:
+    def EGM(self, model: PlanningProblem) -> interp1d:
         """
         Compute optimal consumption-share policy a(m) by EGM.
         Works on a grid for 'rs' (resources saved before shocks) and maps back to current m.
@@ -369,9 +369,9 @@ class PlanningSolvers:
             # Interpolate a_t over current m (the endogenous grid)
             order = np.argsort(m_t)
             m_sorted, a_sorted = m_t[order], a_t[order]
-            a_policy = model.make_spline(m_sorted, a_sorted)
+            a_policy = model.make_spline(m_sorted, a_sorted, egm=True)
 
             # --- Convergence check ---------------------------------------
-            converged, a_new = self._check_convergence(a_old, a_policy, m_t)
+            converged, a_new = self._check_convergence(a_old, a_policy, rs_grid)
             if converged:
                 return a_policy

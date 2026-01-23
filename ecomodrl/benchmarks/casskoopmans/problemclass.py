@@ -144,11 +144,10 @@ class PlanningProblem():
         """Compute value function on grid by iterating the Bellman equation under a fixed policy."""
         Vn = np.zeros(len(grid))
         V = self.make_spline(grid, Vn)
+        a = a_policy(grid)
         while True:
             # Policy evaluation step: compute Bellman operator under fixed policy
-            for i in range(len(grid)):
-                a_i = a_policy(grid[i])
-                Vn[i] = self.bellman(a_i, grid[i], V)
+            Vn = self.bellman(a, grid, V)
             # Check convergence and update spline
             err = np.max(np.abs(Vn - V(grid)))
             V = self.make_spline(grid, Vn)
