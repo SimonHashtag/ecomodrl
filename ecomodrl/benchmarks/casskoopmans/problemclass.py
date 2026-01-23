@@ -107,7 +107,11 @@ class PlanningProblem():
         """
         Given a grid of capital values and a consumption-share policy a(k), computes Euler equation errors
         over episodes periods for each initial capital value on the grid. Returns flattened arrays.
+        Includes an automatic 20% burn-in removal for states and Euler errors to ensure analysis is performed on the ergodic set.
         """
+        # Define burn-in cutoff (20%)
+        burn_in = int(episodes * 0.2)
+
         grid_len = len(grid)
         states = np.empty((grid_len, episodes+1), dtype=float)
         euler_errors = np.empty((grid_len, episodes-1), dtype=float)
@@ -120,20 +124,31 @@ class PlanningProblem():
             U = 0.0
             power = 1.0
 
+            # Run simulation
             for t in range(episodes):
                 a_t = policy(state_path[t])
                 cons_path[t] = self.consumption_from_share(a_t, state_path[t])
                 state_path[t+1] = self.next_k(state_path[t], cons_path[t])
+                
+                # Accumulate Utility
                 U += power * self.u(cons_path[t])
                 power *= self.beta
 
             states[i, :] = state_path
+            
+            # Calculate Euler errors for the full path
             c, c_next = cons_path[:-1], cons_path[1:]
             k_next = state_path[1:-1]
             euler_errors[i, :] = self.euler_residual(c, c_next, k_next)
+            
             avg_return += U / grid_len
 
-        return euler_errors.ravel(), states.ravel(), avg_return
+        # Apply burn-in slicing only to the distribution metrics
+        states_final = states[:, burn_in:]
+        euler_errors_final = euler_errors[:, burn_in:]
+
+        # Return flattened arrays
+        return euler_errors_final.ravel(), states_final.ravel(), avg_return
 
 
     #-------------------------------------------------------------------
