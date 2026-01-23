@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch as th
 from scipy.interpolate import CubicSpline
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, wasserstein_distance
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecNormalize
@@ -15,7 +15,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.metrics.accuracy import cev_crra, wev
+from ecomodrl.utils.metrics.accuracy import cev_crra
 from ecomodrl.utils.metrics.performance import interquartile_mean, interquartile_range
 from ecomodrl.utils.tb_reader import tb_read_scalar
 
@@ -346,6 +346,26 @@ def analyze_all_seeds(
     )
     rl_all = np.concatenate(euler_logabs_list, axis=0)
 
+    # ---------------------------------------------------------------
+    # Wasserstein Distance
+    # ---------------------------------------------------------------
+    # Compute Wasserstein distance between EGM errors and RL errors for each seed
+    wd_list = []
+    for euler_rl_seed in euler_logabs_list:
+        wd = wasserstein_distance(euler_bm, euler_rl_seed)
+        wd_list.append(wd)
+    
+    # Prepare for bootstrapping
+    wd_arr = np.array(wd_list).reshape(-1, 1)
+
+    # Compute mean and CI
+    mean_wd, lo_wd, hi_wd = bootstrap_mean_ci(
+        wd_arr, 
+        n_boot=n_boot, 
+        alpha=alpha, 
+        seed=bootstrap_seed
+    )
+
     fig = plt.figure(figsize=(7.2, 4.5))
     plt.hist(rl_all, bins=50, density=True, alpha=0.7, label="RL policy (pooled)")
     plt.axvline(euler_bm.mean(), color="gray", linestyle="--", label="Mean EGM")
@@ -427,6 +447,7 @@ def analyze_all_seeds(
         **pack_ci("cev", mean_cev, lo_cev, hi_cev),
         **pack_ci("cev_relevant", mean_rel_cev, lo_rel_cev, hi_rel_cev),
         **pack_ci("max_abs_euler_error_rl", mean_max_euler, lo_max_euler, hi_max_euler),
+        **pack_ci("wasserstein_dist", mean_wd, lo_wd, hi_wd),
     }
 
     # Write aggregated metrics summary to JSON file
