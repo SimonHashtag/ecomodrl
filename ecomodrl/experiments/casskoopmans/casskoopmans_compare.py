@@ -19,7 +19,6 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, Plann
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.envs.setup_envs import build_envs
 from ecomodrl.utils.metrics.accuracy import cev_crra
-from ecomodrl.utils.metrics.performance import interquartile_mean, interquartile_range
 from ecomodrl.utils.params_loader import CassKoopmansParams
 from ecomodrl.utils.tb_reader import tb_read_scalar
 
@@ -56,23 +55,60 @@ logger = logging.getLogger("CombinedAnalysis")
 # Helper Functions
 # ----------------------------------------------------------------------------
 
-def bootstrap_mean_ci(
-    Y: np.ndarray,
+def get_bootstrapped_iqm_ci(
+    data: np.ndarray,
     *,
     n_boot: int = 1000,
     alpha: float = 0.05,
     seed: int = 123,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Two-sided bootstrap confidence interval for mean across seeds."""
+    """
+    Computes the Interquartile Mean (IQM) and its Bootstrapped 95% CI.
+    
+    Args:
+        data: Array of shape (n_seeds, n_points)
+        
+    Returns:
+        iqm_mean: The IQM of the original data.
+        ci_lower: The lower bound (alpha/2 percentile of bootstrapped IQMs).
+        ci_upper: The upper bound (1 - alpha/2 percentile of bootstrapped IQMs).
+    """
     rng = np.random.default_rng(seed)
-    n_seeds, _ = Y.shape
-    idx = rng.integers(0, n_seeds, size=(n_boot, n_seeds))
-    samples = Y[idx, :]
-    boot_means = samples.mean(axis=1)
-    mean = Y.mean(axis=0)
-    lower = np.percentile(boot_means, 100 * (alpha / 2), axis=0)
-    upper = np.percentile(boot_means, 100 * (1 - alpha / 2), axis=0)
-    return mean, lower, upper
+    n_seeds, n_points = data.shape
+    
+    # 1. Compute Point Estimate (IQM on raw data)
+    # -------------------------------------------
+    q25, q75 = np.percentile(data, [25, 75], axis=0, method="interpolated_inverted_cdf")
+    mask = (data >= q25[None, :]) & (data <= q75[None, :])
+    iqm_point = np.sum(data * mask, axis=0) / np.maximum(mask.sum(axis=0), 1.0)
+
+    # 2. Vectorized Bootstrap
+    # -----------------------
+    boot_idx = rng.integers(0, n_seeds, size=(n_boot, n_seeds))
+    
+    # Resample data: (n_boot, n_seeds, n_points)
+    boot_samples = data[boot_idx] 
+
+    # Compute IQM across axis 1 (seeds) for all bootstraps at once
+    # Quantiles shape: (2, n_boot, n_points)
+    b_q25, b_q75 = np.percentile(
+        boot_samples, [25, 75], axis=1, method="interpolated_inverted_cdf"
+    )
+    
+    # Mask shape: (n_boot, n_seeds, n_points)
+    # We expand dims of quantiles to broadcast over the seeds axis (axis 1)
+    b_mask = (boot_samples >= b_q25[:, None, :]) & (boot_samples <= b_q75[:, None, :])
+    
+    # Compute IQM for each bootstrap sample
+    boot_iqms = np.sum(boot_samples * b_mask, axis=1) / np.maximum(b_mask.sum(axis=1), 1.0)
+    
+    # 3. Compute Confidence Intervals
+    # -------------------------------
+    ci_lower = np.percentile(boot_iqms, 100 * (alpha / 2), axis=0)
+    ci_upper = np.percentile(boot_iqms, 100 * (1 - alpha / 2), axis=0)
+    
+    return iqm_point, ci_lower, ci_upper
+
 
 def compute_benchmark(params):
     """Computes the EGM benchmark solution."""
@@ -160,31 +196,26 @@ def get_policy_value_functions(
 # ----------------------------------------------------------------------------
 
 def plot_learning_curves(results, steps, benchmark_ret, out_dir):
-    """
-    (1x1) Learning curves: Relative Regret (Log-Scaled Axis, Decimal Labels).
-    Metric: | 1 - G_RL / G_EGM |.
-    """
+
     _, ax = plt.subplots(figsize=(8, 5))
     
-    # Absolute Relative Regret
+    # Absolute Relative Regret transformation
     transform = lambda x: np.abs(1 - x / benchmark_ret)
 
-    # Plot Algos
     for algo, data in results.items():
-        curves = data["return_curves"]
+        curves = data["return_curves"] # Shape: (n_seeds, n_steps)
         if len(curves) == 0: continue
         
-        # 1. Calculate stats on raw data first
-        iqm = interquartile_mean(curves)
-        q25, q75 = interquartile_range(curves)
+        # Compute stats on the raw return curves first
+        iqm, ci_lower, ci_upper = get_bootstrapped_iqm_ci(curves)
         
-        # 2. Apply transformation to the aggregates
+        # Apply transformation to the aggregated stats
         iqm_trans = transform(iqm)
-        q25_trans = transform(q25)
-        q75_trans = transform(q75)
+        lo_trans = transform(ci_lower)
+        hi_trans = transform(ci_upper)
         
         line = ax.plot(steps, iqm_trans, label=algo)
-        ax.fill_between(steps, q25_trans, q75_trans, color=line[0].get_color(), alpha=0.2)
+        ax.fill_between(steps, lo_trans, hi_trans, color=line[0].get_color(), alpha=0.2)
 
     ax.set_yscale('log')
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: '{:g}'.format(y)))
@@ -229,10 +260,9 @@ def plot_policy_functions(results, grid, policy_bm, out_dir):
             continue
 
         data = results[algo]["policies"]
-        mean, lo, hi = bootstrap_mean_ci(data)
+        mean, lo, hi = get_bootstrapped_iqm_ci(data)
         
-        # Labels changed to generic "RL Mean" for the unified legend
-        ax.plot(grid, mean, label="RL Mean")
+        ax.plot(grid, mean, label="RL IQM")
         ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI")
         ax.plot(grid, bm_vals, "k--", label="EGM", alpha=0.6)
         
@@ -289,10 +319,9 @@ def plot_value_functions(results, grid, V_bm, out_dir):
             continue
 
         data = results[algo]["values"]
-        mean, lo, hi = bootstrap_mean_ci(data)
+        mean, lo, hi = get_bootstrapped_iqm_ci(data)
         
-        # Labels changed to generic "RL Mean" for the unified legend
-        ax.plot(grid, mean, label="RL Mean")
+        ax.plot(grid, mean, label="RL IQM")
         ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI")
         ax.plot(grid, bm_vals, "k--", label="EGM", alpha=0.6)
         
@@ -351,32 +380,40 @@ def plot_euler_errors(results, out_dir):
 
 def plot_cev(results, grid, out_dir):
     """(1x4) CEV plots with State Density Histogram overlay and unified legend."""
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4), sharex=True)
     
+    # 1. Pre-compute stats to determine global y-limits
+    plot_data = {}
     y_min, y_max = np.inf, -np.inf
-    for data in results.values():
-        if len(data["cev"]) > 0:
-            y_min = min(y_min, data["cev"].min())
-            y_max = max(y_max, data["cev"].max())
-    
-    y_min = y_min * 0.9
-    y_max = y_max * 1.1
+    for algo in ALGOS:
+        if algo in results and len(results[algo]["cev"]) > 0:
+            cev_vals = results[algo]["cev"]
+            mean, lo, hi = get_bootstrapped_iqm_ci(cev_vals)
+            y_min = min(y_min, lo.min())
+            y_max = max(y_max, hi.max())
+            plot_data[algo] = (mean, lo, hi)
 
-    # Storage for legend handles
+    if y_min == np.inf: y_min, y_max = 0.001, 0.1  # Fallback if no data
+    else:
+        y_max = y_max * 1.1
+
+    # 2. Setup Plot
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4), sharex=True, sharey=True)
+    
     handles, labels = [], []
 
     for i, algo in enumerate(ALGOS):
         ax = axes[i]
-        if algo not in results or len(results[algo]["cev"]) == 0:
+        
+        if algo not in plot_data:
             ax.set_title(f"{algo} (No Data)")
             ax.set_xlabel("Capital k")
             continue
 
-        data = results[algo]
-        cev_vals = data["cev"]
-        mean, lo, hi = bootstrap_mean_ci(cev_vals)
+        # Retrieve pre-computed stats
+        mean, lo, hi = plot_data[algo]
+        data = results[algo] 
         
-        # 1. Plot CEV
+        # Plot CEV
         ax.plot(grid, mean, label="CEV", linewidth=2, zorder=3)
         ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI", zorder=2)
         
@@ -386,21 +423,19 @@ def plot_cev(results, grid, out_dir):
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: '{:g}'.format(y)))
         ax.set_ylim(y_min, y_max)
         
-        # 2. Plot State Density
+        # Plot State Density
         if "states" in data and len(data["states"]) > 0:
             ax2 = ax.twinx()
             ax2.hist(data["states"], bins=50, density=True, alpha=0.2, color='gray', edgecolor=None, label="Visited States")
             ax2.set_yticks([]) 
             ax2.set_ylabel("")
 
-            # Capture handles from both axes for the legend
             if not handles:
                 h1, l1 = ax.get_legend_handles_labels()
                 h2, l2 = ax2.get_legend_handles_labels()
                 handles = h1 + h2
                 labels = l1 + l2
         
-        # Fallback handle capture if no states exist but we have CEV data
         elif not handles:
              handles, labels = ax.get_legend_handles_labels()
 
@@ -411,7 +446,6 @@ def plot_cev(results, grid, out_dir):
     if handles:
         fig.legend(handles, labels, loc='lower center', ncol=3, bbox_to_anchor=(0.5, 0.02))
 
-    # Adjust layout to make room for legend at the bottom
     plt.tight_layout(rect=[0, 0.12, 1, 1])
     plt.savefig(out_dir / "5_cev_analysis.pdf", format="pdf")
     plt.close()

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Run via:
-# > cd ecomodrl/ecomodrl/experiments
+# > cd ecomodrl/ecomodrl/experiments/casskoopmans
 # > sed -i 's/\r$//' casskoopmans_training.sh
 # > chmod +x casskoopmans_training.sh
 # > sbatch casskoopmans_training.sh
