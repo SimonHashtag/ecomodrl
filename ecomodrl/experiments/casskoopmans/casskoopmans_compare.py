@@ -206,9 +206,9 @@ def plot_policy_functions(results, grid, policy_bm, out_dir):
             continue
 
         data = results[algo]["policies"]
-        mean, lo, hi = get_bootstrapped_iqm_ci(data)
+        iqm, lo, hi = get_bootstrapped_iqm_ci(data)
         
-        ax.plot(grid, mean, label="RL IQM")
+        ax.plot(grid, iqm, label="RL IQM")
         ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI")
         ax.plot(grid, bm_vals, "k--", label="EGM", alpha=0.6)
         
@@ -265,9 +265,9 @@ def plot_value_functions(results, grid, V_bm, out_dir):
             continue
 
         data = results[algo]["values"]
-        mean, lo, hi = get_bootstrapped_iqm_ci(data)
+        iqm, lo, hi = get_bootstrapped_iqm_ci(data)
         
-        ax.plot(grid, mean, label="RL IQM")
+        ax.plot(grid, iqm, label="RL IQM")
         ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI")
         ax.plot(grid, bm_vals, "k--", label="EGM", alpha=0.6)
         
@@ -333,10 +333,10 @@ def plot_cev(results, grid, out_dir):
     for algo in ALGOS:
         if algo in results and len(results[algo]["cev"]) > 0:
             cev_vals = results[algo]["cev"]
-            mean, lo, hi = get_bootstrapped_iqm_ci(cev_vals)
+            iqm, lo, hi = get_bootstrapped_iqm_ci(cev_vals)
             y_min = min(y_min, lo.min())
             y_max = max(y_max, hi.max())
-            plot_data[algo] = (mean, lo, hi)
+            plot_data[algo] = (iqm, lo, hi)
 
     if y_min == np.inf: y_min, y_max = 0.001, 0.1  # Fallback if no data
     else:
@@ -356,11 +356,11 @@ def plot_cev(results, grid, out_dir):
             continue
 
         # Retrieve pre-computed stats
-        mean, lo, hi = plot_data[algo]
+        iqm, lo, hi = plot_data[algo]
         data = results[algo] 
         
         # Plot CEV
-        ax.plot(grid, mean, label="CEV", linewidth=2, zorder=3)
+        ax.plot(grid, iqm, label="CEV", linewidth=2, zorder=3)
         ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI", zorder=2)
         
         ax.set_title(algo)

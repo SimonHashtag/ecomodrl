@@ -106,8 +106,8 @@ class PlanningProblem():
     def get_euler_errors(self, grid, policy, episodes=100):
         """
         Given a grid of capital values and a consumption-share policy a(k), computes Euler equation errors
-        over episodes periods for each initial capital value on the grid. Returns flattened arrays.
-        Includes an automatic 20% burn-in removal for states and Euler errors to ensure analysis is performed on the ergodic set.
+        over episodes periods for each initial capital value on the grid. Includes an automatic 20% burn-in 
+        removal for states and Euler errors to ensure analysis is performed on the ergodic set.
         """
         # Define burn-in cutoff (20%)
         burn_in = int(episodes * 0.2)

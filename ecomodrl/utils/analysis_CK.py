@@ -16,37 +16,8 @@ from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.envs.setup_envs import build_envs
 from ecomodrl.utils.metrics.accuracy import cev_crra
-from ecomodrl.utils.metrics.performance import interquartile_mean, interquartile_range
+from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
 from ecomodrl.utils.tb_reader import tb_read_scalar
-
-
-def bootstrap_mean_ci(
-    Y: np.ndarray,
-    *,
-    n_boot: int = 1000,
-    alpha: float = 0.05,
-    seed: int = 123,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Two-sided bootstrap confidence interval for mean across seeds.
-    """
-    # Initialize RNG and setup
-    rng = np.random.default_rng(seed)
-    n_seeds, _ = Y.shape
-
-    # Draw bootstrap samples with replacement
-    idx = rng.integers(0, n_seeds, size=(n_boot, n_seeds))
-    samples = Y[idx, :]
-
-    # Compute bootstrap means
-    boot_means = samples.mean(axis=1)
-
-    # Compute mean and percentile-based confidence interval
-    mean = Y.mean(axis=0)
-    lower = np.percentile(boot_means, 100 * (alpha / 2), axis=0)
-    upper = np.percentile(boot_means, 100 * (1 - alpha / 2), axis=0)
-
-    return mean, lower, upper
 
 
 def compute_benchmark(params: Union[Mapping[str, Any], Any]):
@@ -274,11 +245,13 @@ def analyze_all_seeds(
     # ---------------------------------------------------------------
     # Learning curve aggregation
     # ---------------------------------------------------------------
-    mean_Us, lo_Us, hi_Us = bootstrap_mean_ci(
+    iqm_Us, lo_Us, hi_Us = get_bootstrapped_iqm_ci(
         np.vstack(Us_rl), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
     )
-    iqm_return = interquartile_mean(return_curves)
-    q25_return, q75_return = interquartile_range(return_curves)
+    
+    iqm_return, lo_return, hi_return = get_bootstrapped_iqm_ci(
+        return_curves, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
+    )
 
     # Benchmark evaluation return (different grid during training)
     _, _, return_bm = p.get_euler_errors(
@@ -288,8 +261,8 @@ def analyze_all_seeds(
     )
 
     fig = plt.figure(figsize=(9, 4.5))
-    plt.fill_between(global_steps, q25_return, q75_return, alpha=0.3, label="IQR")
-    plt.plot(global_steps, iqm_return, label="Interquartile Mean")
+    plt.fill_between(global_steps, lo_return, hi_return, alpha=0.3, label="95% CI (IQM)")
+    plt.plot(global_steps, iqm_return, label="IQM")
     plt.axhline(return_bm, linestyle="-.", color="darkorange", label="Benchmark")
     plt.xlabel("Processed Samples")
     plt.ylabel("Avg discounted episode return (true scale)")
@@ -302,18 +275,25 @@ def analyze_all_seeds(
     # ---------------------------------------------------------------
     # Policy and value functions
     # ---------------------------------------------------------------
-    mean_pol, lo_pol, hi_pol = bootstrap_mean_ci(
+    # Policy
+    iqm_pol, lo_pol, hi_pol = get_bootstrapped_iqm_ci(
         rl_policy_vals, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
     )
-    mean_Vnn, lo_Vnn, hi_Vnn = bootstrap_mean_ci(
+    
+    # Value (Neural Net)
+    iqm_Vnn, lo_Vnn, hi_Vnn = get_bootstrapped_iqm_ci(
         rl_value_nn_vals, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed + 1
     )
-    mean_Vfrom = rl_value_from_policy.mean(axis=0)
+    
+    # Value (From Policy)
+    iqm_Vfrom, _, _ = get_bootstrapped_iqm_ci(
+        rl_value_from_policy, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed + 2
+    )
 
     fig, ax = plt.subplots(1, 2, figsize=(11, 4.5))
 
     # Policy
-    ax[0].plot(grid, mean_pol, label="RL Policy (mean)")
+    ax[0].plot(grid, iqm_pol, label="RL Policy (mean)")
     ax[0].fill_between(grid, lo_pol, hi_pol, alpha=0.25, label="95% CI (bootstrap)")
     ax[0].plot(grid, policy_bm(grid), linestyle="--", label="Benchmark (EGM)")
     ax[0].set_title("Policy Function")
@@ -322,10 +302,10 @@ def analyze_all_seeds(
     ax[0].legend()
 
     # Value
-    ax[1].plot(grid, mean_Vnn, label="RL Value (NN mean)")
+    ax[1].plot(grid, iqm_Vnn, label="RL Value (NN mean)")
     ax[1].fill_between(grid, lo_Vnn, hi_Vnn, alpha=0.25, label="95% CI (bootstrap)")
     ax[1].plot(grid, V_bm(grid), linestyle="--", label="Benchmark (EGM)")
-    ax[1].plot(grid, mean_Vfrom, label="RL Value (from policy mean)")
+    ax[1].plot(grid, iqm_Vfrom, label="RL Value (from policy mean)")
     ax[1].set_title("Value Function V(k)")
     ax[1].set_xlabel("Capital k")
     ax[1].set_ylabel("Value")
@@ -338,7 +318,7 @@ def analyze_all_seeds(
     # ---------------------------------------------------------------
     # Euler error distribution
     # ---------------------------------------------------------------
-    mean_max_euler, lo_max_euler, hi_max_euler = bootstrap_mean_ci(
+    iqm_max_euler, lo_max_euler, hi_max_euler = get_bootstrapped_iqm_ci(
         np.max(euler_logabs_list, axis=1).reshape(-1, 1),
         n_boot=n_boot,
         alpha=alpha,
@@ -359,7 +339,7 @@ def analyze_all_seeds(
     wd_arr = np.array(wd_list).reshape(-1, 1)
 
     # Compute mean and CI
-    mean_wd, lo_wd, hi_wd = bootstrap_mean_ci(
+    iqm_wd, lo_wd, hi_wd = get_bootstrapped_iqm_ci(
         wd_arr, 
         n_boot=n_boot, 
         alpha=alpha, 
@@ -394,16 +374,21 @@ def analyze_all_seeds(
     # ---------------------------------------------------------------
     # CEV
     # ---------------------------------------------------------------
-    mean_cev, lo_cev, hi_cev = bootstrap_mean_ci(
+    # Average CEV per seed (scalar)
+    iqm_cev_scalar, lo_cev_scalar, hi_cev_scalar = get_bootstrapped_iqm_ci(
         CEV_mat.mean(axis=1).reshape(-1, 1),
         n_boot=n_boot,
         alpha=alpha,
         seed=bootstrap_seed,
     )
-    mean_rel_cev, lo_rel_cev, hi_rel_cev = bootstrap_mean_ci(
+    
+    # Relevant CEV (scalar)
+    iqm_rel_cev, lo_rel_cev, hi_rel_cev = get_bootstrapped_iqm_ci(
         np.vstack(CEV_rel_mat), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
     )
-    mean_CEV, lo_CEV, hi_CEV = bootstrap_mean_ci(
+    
+    # CEV Curve (vector over grid)
+    iqm_CEV_curve, lo_CEV_curve, hi_CEV_curve = get_bootstrapped_iqm_ci(
         CEV_mat, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed + 3
     )
 
@@ -412,8 +397,8 @@ def analyze_all_seeds(
     fig, ax = plt.subplots(1, 1, figsize=(6, 5))
 
     # CEV
-    ax.plot(grid, mean_CEV, label="CEV (mean)")
-    ax.fill_between(grid, lo_CEV, hi_CEV, alpha=0.25, label="95% CI (bootstrap)")
+    ax.plot(grid, iqm_CEV_curve, label="CEV (mean)")
+    ax.fill_between(grid, lo_CEV_curve, hi_CEV_curve, alpha=0.25, label="95% CI (bootstrap)")
     ax.axhline(0, color="red", linestyle="--", label="Zero Line")
     ax.set_xlabel("Capital k")
     ax.set_ylabel("CEV")
@@ -432,22 +417,21 @@ def analyze_all_seeds(
     # Save metrics summary
     # ---------------------------------------------------------------
 
-    # Helper to unpack (mean, lo, hi) triplets into flat metric entries
-    pack_ci = lambda name, mean, lo, hi: {
-        f"mean_{name}": float(mean[0]),
+    # Helper to unpack (iqm, lo, hi) triplets
+    pack_ci = lambda name, iqm_val, lo, hi: {
+        f"iqm_{name}": float(iqm_val[0]),
         f"lo_{name}": float(lo[0]),
         f"hi_{name}": float(hi[0]),
     }
 
-    # Helper to unpack (mean, lo, hi) triplets into flat metric entries
     metrics = {
         "U_bm": float(U_bm),
         "max_abs_euler_error_bm": float(np.max(euler_bm)),
-        **pack_ci("U_rl", mean_Us, lo_Us, hi_Us),
-        **pack_ci("cev", mean_cev, lo_cev, hi_cev),
-        **pack_ci("cev_relevant", mean_rel_cev, lo_rel_cev, hi_rel_cev),
-        **pack_ci("max_abs_euler_error_rl", mean_max_euler, lo_max_euler, hi_max_euler),
-        **pack_ci("wasserstein_dist", mean_wd, lo_wd, hi_wd),
+        **pack_ci("U_rl", iqm_Us, lo_Us, hi_Us),
+        **pack_ci("cev", iqm_cev_scalar, lo_cev_scalar, hi_cev_scalar),
+        **pack_ci("cev_relevant", iqm_rel_cev, lo_rel_cev, hi_rel_cev),
+        **pack_ci("max_abs_euler_error_rl", iqm_max_euler, lo_max_euler, hi_max_euler),
+        **pack_ci("wasserstein_dist", iqm_wd, lo_wd, hi_wd),
     }
 
     # Write aggregated metrics summary to JSON file
