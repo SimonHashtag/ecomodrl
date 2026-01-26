@@ -22,6 +22,7 @@ from ecomodrl.utils.metrics.accuracy import cev_crra
 from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
 from ecomodrl.utils.params_loader import CassKoopmansParams
 from ecomodrl.utils.tb_reader import tb_read_scalar
+from ecomodrl.utils.latex_formatting import generate_latex_table
 
 # ----------------------------------------------------------------------------
 # Global Configuration
@@ -396,6 +397,38 @@ def plot_cev(results, grid, out_dir):
     plt.savefig(out_dir / "5_cev_analysis.pdf", format="pdf")
     plt.close()
 
+
+# ----------------------------------------------------------------------------
+# Table Generation Wrapper
+# ----------------------------------------------------------------------------
+
+def run_table_generation(out_dir: Path):
+    """
+    Loads metrics from JSON files and calls the latex generator.
+    """
+    logger.info("Preparing data for LaTeX table...")
+    
+    # Load all metrics into a clean dictionary
+    data = {}
+    for algo in ALGOS:
+        json_path = RUNRESULTS_PATH / algo / "metrics_analysis.json"
+        if json_path.exists():
+            with open(json_path, "r") as f:
+                data[algo] = json.load(f)
+        else:
+            logger.warning(f"Missing metrics for {algo}")
+
+    if not data:
+        logger.error("No data found for table generation.")
+        return
+
+    # Call the utility function
+    table_path = out_dir / "comparison_table.tex"
+    generate_latex_table(data, ALGOS, table_path)
+    
+    logger.info(f"LaTeX table saved to: {table_path}")
+
+
 # ----------------------------------------------------------------------------
 # Main Analysis Logic
 # ----------------------------------------------------------------------------
@@ -493,7 +526,7 @@ def run_combined_analysis():
         results[algo] = algo_data
 
     # 3. Plotting
-    out_dir = RUNRESULTS_PATH / "COMPARISON_PLOTS"
+    out_dir = RUNRESULTS_PATH / "Comparison"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     plot_learning_curves(results, global_steps, return_bm, out_dir)
@@ -502,7 +535,9 @@ def run_combined_analysis():
     plot_euler_errors(results, out_dir)
     plot_cev(results, grid, out_dir)
 
-    logger.info("Analysis complete. Check 'COMPARISON_PLOTS' folder.")
+    run_table_generation(out_dir)
+
+    logger.info("Analysis complete. Check 'Comparison' folder.")
 
 
 if __name__ == "__main__":
