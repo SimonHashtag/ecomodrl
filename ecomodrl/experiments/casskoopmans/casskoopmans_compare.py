@@ -92,7 +92,7 @@ def get_policy_value_functions(
     vecnorm.training = False
 
     obs = grid.reshape(-1, 1).astype(np.float32, copy=False)
-    obs_norm = vecnorm.normalize_obs(obs)
+    obs_norm = vecnorm.normalize_obs(np.log(obs))
 
     # Policy
     actions, _ = model.predict(obs_norm, deterministic=True)
