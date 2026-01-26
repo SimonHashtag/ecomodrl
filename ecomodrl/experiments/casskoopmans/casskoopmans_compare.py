@@ -91,6 +91,7 @@ def get_policy_value_functions(
     vecnorm = VecNormalize.load(str(vecnorm_path), dummy_env)
     vecnorm.training = False
 
+    # Log-transform grid
     obs = grid.reshape(-1, 1).astype(np.float32, copy=False)
     obs_norm = vecnorm.normalize_obs(np.log(obs))
 
@@ -101,16 +102,24 @@ def get_policy_value_functions(
 
     # Value
     value_spline = None
+    
+    ## Value Function Extraction
     # Check for PPO-style value prediction
     if hasattr(getattr(model, "policy", None), "predict_values"):
         with th.no_grad():
             V_norm = model.policy.predict_values(
                 th.as_tensor(obs_norm, dtype=th.float32, device=device)
             ).cpu().numpy().squeeze()
-        ret_rms = getattr(vecnorm, "ret_rms", None)
-        eps = float(getattr(vecnorm, "epsilon", 1e-8))
-        scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms else 1.0
-        V_nn = V_norm * scale
+        
+        # Scale if rewards were actually normalized during training
+        if getattr(vecnorm, "norm_reward", False):
+            ret_rms = getattr(vecnorm, "ret_rms", None)
+            eps = float(getattr(vecnorm, "epsilon", 1e-8))
+            scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms else 1.0
+            V_nn = V_norm * scale
+        else:
+            V_nn = V_norm
+            
         value_spline = CubicSpline(obs.squeeze(), V_nn, bc_type="natural", extrapolate=True)
     else:
         # Off-policy (SAC, TD3, DDPG)
@@ -126,13 +135,15 @@ def get_policy_value_functions(
                 else:
                     q_min = q_out.flatten()
                 Q_norm = q_min.cpu().numpy()
-            ret_rms = getattr(vecnorm, "ret_rms", None)
-            eps = float(getattr(vecnorm, "epsilon", 1e-8))
-            if getattr(vecnorm, "norm_reward", False) and ret_rms is not None:
-                scale = float(np.sqrt(ret_rms.var + eps))
+            
+            if getattr(vecnorm, "norm_reward", False):
+                ret_rms = getattr(vecnorm, "ret_rms", None)
+                eps = float(getattr(vecnorm, "epsilon", 1e-8))
+                scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms else 1.0
                 Q = Q_norm * scale
             else:
                 Q = Q_norm
+            
             value_spline = CubicSpline(obs.squeeze(), Q, bc_type="natural", extrapolate=True)
 
     return policy_spline, value_spline
