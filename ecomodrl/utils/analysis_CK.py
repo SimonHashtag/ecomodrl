@@ -94,11 +94,16 @@ def get_policy_value_functions(
                 ).cpu().numpy().squeeze()
             )
 
-        ret_rms = getattr(vecnorm, "ret_rms", None)
-        eps = float(getattr(vecnorm, "epsilon", 1e-8))
-        scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms else 1.0
+        # Check if norm_reward was actually True before scaling
+        if getattr(vecnorm, "norm_reward", False):
+            ret_rms = getattr(vecnorm, "ret_rms", None)
+            eps = float(getattr(vecnorm, "epsilon", 1e-8))
+            scale = float(np.sqrt(getattr(ret_rms, "var", 1.0) + eps)) if ret_rms else 1.0
+            V_nn = V_norm * scale
+        else:
+            # If rewards weren't normalized, the network predicts the raw value directly
+            V_nn = V_norm
 
-        V_nn = V_norm * scale
         value_rl = CubicSpline(obs.squeeze(), V_nn, bc_type="natural", extrapolate=True)
 
     # Off-policy algorithms (e.g., SAC, TD3, DDPG)
