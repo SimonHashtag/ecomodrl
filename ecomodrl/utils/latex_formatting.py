@@ -37,7 +37,7 @@ def generate_latex_table(
         r"\renewcommand{\arraystretch}{1.1}", 
         rf"\begin{{tabular}}{{l{col_str}}}",
         r"\toprule",
-        r"Metric & " + " & ".join(rf"\bm{{{algo}}}" for algo in algos) + r" \\",
+        r"Metric & " + " & ".join(rf"\textbf{{{algo}}}" for algo in algos) + r" \\",
         r"\midrule"
     ]
 
@@ -72,7 +72,7 @@ def generate_latex_table(
                 
                 # Bold the winner (accounting for float precision)
                 if best_val is not None and np.isclose(val, best_val, atol=1e-8):
-                    row_main += rf" & \textbf{{{val_str}}}"
+                    row_main += rf" & \bm{{{val_str}}}"
                 else:
                     row_main += rf" & {val_str}"
             else:
