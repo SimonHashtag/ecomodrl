@@ -1,5 +1,41 @@
 # EcoModRL
-Economic modeling meets deep reinforcement learning - an empirical analysis
+This repository accompanies the working paper “Deep Reinforcement Learning in Dynamic Economic Models: An Empirical Study”. The project evaluates deep reinforcement learning (RL) as a numerical solution method for dynamic economic models, with systematic algorithm comparisons and benchmark solutions.
+
+## Table of contents
+- [What this repository contains](#what-this-repository-contains)
+- [Repository structure](#repository-structure)
+- [Getting started](#getting-started)
+- [Run the baseline replication](#run-the-baseline-replication)
+- [Create your own experiments](#create-your-own-experiments)
+- [Cite this work](#cite-this-work)
+
+## What this repository contains
+- **Model environments (Gymnasium):** economic MDPs in [ecomodrl/envs](ecomodrl/envs) for Brock–Mirman growth, Cass–Koopmans growth, buffer‑stock saving, and portfolio choice.
+- **Benchmark solvers + theory notes:** EGM-based reference solutions and notebooks in [ecomodrl/benchmarks](ecomodrl/benchmarks).
+- **Experiment entry points:** training scripts in [ecomodrl/experiments](ecomodrl/experiments).
+- **Model parameter calibrations:** TOML files in [ecomodrl/experiments/model_params](ecomodrl/experiments/model_params).
+- **Hyperparameter tuning:** DEHB sweeps in [ecomodrl/tune](ecomodrl/tune).
+- **Analysis outputs:** aggregated plots and metrics (learning curves, policy/value functions, Euler errors, CEV) saved under `runs/` by [ecomodrl/utils](ecomodrl/utils).
+
+## Repository structure
+```
+ecomodrl/
+  algorithm/               # Model- and algorithm-agnostic training file
+  envs/                    # Economic environments/models
+  benchmarks/              # Benchmark solvers (EGM) + theory notebooks
+  experiments/
+    model_params/          # TOML calibrations for each model
+    brockmirman/           # Training + analysis entry point 
+    bufferstock/           # Training + analysis entry point 
+    casskoopmans/          # Training + analysis entry point 
+    portfoliochoice/       # Training + analysis entry point 
+  tune/                    # DEHB tuning entry points for multiple algorithms
+  utils/                   # Analysis, plotting, metrics
+```
+
+## Getting started
+
+**Platform note.** The conda environment definition in [requirements.yml](requirements.yml) targets `win-64` and Python 3.11.
 
 ### 1. Project setup
 
@@ -89,3 +125,73 @@ TensorBoard automatically downsamples logged summaries to prevent out-of-memory 
 control over downsampling, add the following flag to the terminal command with the category of the uploaded summary
 and the number of frames you wish to keep: <br>
 e.g. ```--samples_per_plugin "scalars=10000, images=100"```
+
+## Run the baseline replication
+
+### Tuning
+DEHB-based hyperparameter optimization is implemented in [ecomodrl/tune](ecomodrl/tune) and shared logic in [ecomodrl/tune/tuning.py](ecomodrl/tune/tuning.py). Outputs are written to `tune_results/<Model>/<ALGO>/` by default.
+
+Entry points:
+- [ecomodrl/tune/brockmirman.py](ecomodrl/tune/brockmirman.py)
+- [ecomodrl/tune/bufferstock.py](ecomodrl/tune/bufferstock.py)
+- [ecomodrl/tune/casskoopmans.py](ecomodrl/tune/casskoopmans.py)
+- [ecomodrl/tune/portfoliochoice.py](ecomodrl/tune/portfoliochoice.py)
+
+Example:
+```
+python ecomodrl/tune/casskoopmans.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
+```
+
+### Training
+Training scripts in [ecomodrl/experiments](ecomodrl/experiments) solve the economic models using deep RL. They log to TensorBoard, save best models by seed, and store metadata in `train_cfgs.json`.
+Entry points:
+- [ecomodrl/experiments/brockmirman/brockmirman_ppo.py](ecomodrl/experiments/brockmirman/brockmirman_ppo.py)
+- [ecomodrl/experiments/bufferstock/bufferstock_ppo.py](ecomodrl/experiments/bufferstock/bufferstock_ppo.py)
+- [ecomodrl/experiments/casskoopmans/casskoopmans_ppo.py](ecomodrl/experiments/casskoopmans/casskoopmans_ppo.py)
+- [ecomodrl/experiments/casskoopmans/casskoopmans_ddpg.py](ecomodrl/experiments/casskoopmans/casskoopmans_ddpg.py)
+- [ecomodrl/experiments/casskoopmans/casskoopmans_sac.py](ecomodrl/experiments/casskoopmans/casskoopmans_sac.py)
+- [ecomodrl/experiments/casskoopmans/casskoopmans_td3.py](ecomodrl/experiments/casskoopmans/casskoopmans_td3.py)
+- [ecomodrl/experiments/portfoliochoice/portfoliochoice_ppo.py](ecomodrl/experiments/portfoliochoice/portfoliochoice_ppo.py)
+
+### Analysis
+Post‑training evaluation in [ecomodrl/utils](ecomodrl/utils) generates plots and summary statistics:
+- `learning_curve_agg.png`
+- `policy_value_agg.png`
+- `euler_errors_agg.png`
+- `metrics_analysis.json` (welfare/accuracy summaries)
+- model‑specific welfare plots (e.g., `cev_agg.png`)
+ 
+Modules:
+- [ecomodrl/utils/analysis_BM.py](ecomodrl/utils/analysis_BM.py)
+- [ecomodrl/utils/analysis_BS.py](ecomodrl/utils/analysis_BS.py)
+- [ecomodrl/utils/analysis_CK.py](ecomodrl/utils/analysis_CK.py)
+
+Cross‑algorithm comparison (Cass–Koopmans):
+- [ecomodrl/experiments/casskoopmans/casskoopmans_compare.py](ecomodrl/experiments/casskoopmans/casskoopmans_compare.py)
+
+## Create your own experiments
+
+1. Create a gym-style environment in [ecomodrl/envs](ecomodrl/envs) featuring the economic model.
+2. Add a calibration in [ecomodrl/experiments/model_params](ecomodrl/experiments/model_params) as a `TOML`-file and add a dataclass in [ecomodrl/utils/params_loader.py](ecomodrl/utils/params_loader.py).
+3. Copy a training script in [ecomodrl/experiments](ecomodrl/experiments), update:
+   - `environment`
+   - `toml_path`
+   - `params_loader`
+   - `out_dir` or `RUNRESULTS_PATH`
+   - `n_seeds`, `total_timesteps`, and evaluation settings
+   - algorithm hyperparameters in `AlgoConfig` (should be tuned via custom file in [ecomodrl/tune](ecomodrl/tune))
+3. Run the script and inspect `runs/<Model>/<ALGO>/` outputs.
+
+## Cite this work
+
+```bibtex
+@techreport{Haastert.2026,
+  title       = {Deep Reinforcement Learning in Dynamic Economic Models: An Empirical Study},
+  author      = {Haastert, Simon and Micheel, Ruven},
+  year        = {2026},
+  institution = {Working paper},
+}
+```
+
+## Contributing and maintenance
+...
