@@ -146,8 +146,8 @@ def plot_learning_curves(results, steps, benchmark_ret, out_dir):
 
     _, ax = plt.subplots(figsize=(8, 5))
     
-    # Absolute Relative Regret transformation
-    transform = lambda x: np.abs(1 - x / benchmark_ret)
+    # Regret (G_EGM - G_RL)
+    transform = lambda x: benchmark_ret - x
 
     for algo, data in results.items():
         curves = data["return_curves"] # Shape: (n_seeds, n_steps)
@@ -158,17 +158,20 @@ def plot_learning_curves(results, steps, benchmark_ret, out_dir):
         
         # Apply transformation to the aggregated stats
         iqm_trans = transform(iqm)
-        lo_trans = transform(ci_lower)
-        hi_trans = transform(ci_upper)
+        # Note: Subtraction flips inequalities. 
+        # If ci_lower < ci_upper (Returns), then (Bench - ci_lower) > (Bench - ci_upper) (Regret).
+        regret_upper_bound = transform(ci_lower)
+        regret_lower_bound = transform(ci_upper)
         
         line = ax.plot(steps, iqm_trans, label=algo)
-        ax.fill_between(steps, lo_trans, hi_trans, color=line[0].get_color(), alpha=0.2)
+        ax.fill_between(steps, regret_lower_bound, regret_upper_bound, color=line[0].get_color(), alpha=0.2)
 
     ax.set_yscale('log')
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: '{:g}'.format(y)))
 
     ax.set_xlabel("Processed Samples")
-    ax.set_ylabel(r"Relative Regret $|1 - \frac{G_{RL}}{G_{EGM}}|$", fontsize=10)
+    # Updated label
+    ax.set_ylabel(r"Regret $(G_{EGM} - G_{RL})$", fontsize=10)
     
     ax.grid(True, which="major", linestyle="--", alpha=0.5)
     ax.grid(True, which="minor", linestyle=":", alpha=0.2)
