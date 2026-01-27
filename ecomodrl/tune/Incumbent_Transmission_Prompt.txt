@@ -1,0 +1,208 @@
+We are currently training different RL algorithms to solve dynamic economic models. We have conducted hyperparameter optimization and now have 4 incumbents (one for each of the algorithms: TD3, SAC, DDPG, PPO), that the HPO routine gave us: 
+
+"TD3
+{"batch_size": 32, "exploration_sigma": 0.0597402983878, "gradient_steps": 16, "learning_rate": 0.0001054048131, "n_episodes": 4, "target_noise_clip": 0.18709275537, "target_policy_noise": 0.1365991162134, "tau": 0.0076026428013}
+
+SAC
+{"batch_size": 32, "exploration_sigma": 0.4457773350089, "gradient_steps": 4, "learning_rate": 0.0022364997817, "n_episodes": 2, "target_noise_clip": 0.7837623127305, "target_policy_noise": 0.1403594919233, "tau": 0.0129090576628}
+
+DDPG
+{"batch_size": 32, "exploration_sigma": 0.1096284143125, "gradient_steps": 1, "learning_rate": 0.0001600470635, "n_episodes": 2, "target_noise_clip": 0.8242509923616, "target_policy_noise": 0.4759529942424, "tau": 0.0112718843547}
+
+PPO
+{"clip_range": 0.0638938424848, "ent_coef": 1.6658309e-06, "gae_lambda": 0.9232316953693, "learning_rate": 0.000788758578, "n_episodes": 1, "n_epochs": 6, "num_minibatches": 6, "vf_coef": 0.6823990507536}".
+
+We now want to transmit the relevant hyperparameters into our training scripts for the 4 algorithms, respectively. The relavant parts in these scripts are defined as follows (with old hyperparameters): 
+
+TD3: "lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=0.0006207652006,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
+    
+    algo_cfg = AlgoConfig(
+        name="td3",
+        policy="MlpPolicy",
+        algo_params={
+            "learning_rate": lr_schedule,
+            "buffer_size": 200_000,
+            "batch_size": 128,
+            "tau": 0.0110334774134,
+            "gamma": params.beta,
+            "max_grad_norm": 0.5,
+            "train_freq": (cfg.max_episode_steps * 1, "step"), 
+            "gradient_steps": 1,
+            "learning_starts": 10_000,
+            "policy_delay": 2,
+            "action_noise_std": 0.3098455652035,
+            "target_policy_noise": 0.3938915173792,
+            "target_noise_clip": 0.6473466977385,
+        },
+        policy_kwargs={
+            "activation_fn": th.nn.ReLU,
+            "net_arch": {"pi": [64, 64], "qf": [64, 64]},
+        },
+    )",
+
+SAC: "lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=0.0025080954267,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
+    
+    algo_cfg = AlgoConfig(
+        name="sac",
+        policy="MlpPolicy",
+        algo_params={
+            "learning_rate": lr_schedule,
+            "buffer_size": 200_000,
+            "batch_size": 64,
+            "tau": 0.007626453362,
+            "gamma": params.beta,
+            "max_grad_norm": 0.5,
+            "train_freq": (cfg.max_episode_steps * 4, "step"),
+            "gradient_steps": 4,
+            "learning_starts": 10_000,
+            "ent_coef": "auto",
+        },
+        policy_kwargs={
+            "activation_fn": th.nn.ReLU,
+            "net_arch": {"pi": [64, 64], "qf": [64, 64]},
+        },
+    )", 
+
+DDPG: "lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=0.0011996543066,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
+    
+    algo_cfg = AlgoConfig(
+        name="ddpg",
+        policy="MlpPolicy",
+        algo_params={
+            "learning_rate": lr_schedule,
+            "buffer_size": 200_000,
+            "batch_size": 128,
+            "tau": 0.0098845957489,
+            "gamma": params.beta,
+            "max_grad_norm": 0.5,
+            "train_freq": (cfg.max_episode_steps * 4, "step"),
+            "gradient_steps": 8,
+            "learning_starts": 10_000,
+            "action_noise_std": 0.0885134752169,
+        },
+        policy_kwargs={
+            "activation_fn": th.nn.ReLU,
+            "net_arch": {"pi": [64, 64], "qf": [64, 64]},
+        },
+    )", 
+
+PPO: "lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=0.0009191713154,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
+    
+    algo_cfg = AlgoConfig(
+        name="ppo",
+        policy="MlpPolicy",
+        algo_params={
+            "gamma": params.beta,
+            "n_steps": cfg.max_episode_steps * 2,
+            "batch_size": (cfg.n_envs * cfg.max_episode_steps * 2) // 10,
+            "n_epochs": 2,
+            "learning_rate": lr_schedule,
+            "ent_coef": 0.0001069691963,
+            "gae_lambda": 0.9545072569367,
+            "clip_range": 0.265497688449,
+            "vf_coef": 0.9735921972616,
+            "max_grad_norm": 0.5,
+        },
+        policy_kwargs={
+            "activation_fn": th.nn.ReLU,
+            "net_arch": {"pi": [64, 64], "vf": [64, 64]},
+            "log_std_init": -2.0,
+        },
+    )". 
+
+Note that the incumbent sometimes stores hyperparameters which are actually not used by the specific algorithm so one has to be quite careful there. Furthermore, please keep the 'final_lr' at 3e-5 and only update 'initial_lr' based on the incumbent. 
+
+To give you a bulletproof way to correctly assign the used hyperparameters to these scripts, the respective adapters are invaluable because they allow direct associations between the incumbent and where we have to input the respective numbers. Here they are: 
+
+"def _ppo_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
+    n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
+    B = cfg.n_envs * n_steps
+    M = int(hp["num_minibatches"])
+    batch_size = B // M
+
+    initial_lr = float(hp["learning_rate"])
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=initial_lr,
+        final_lr=min(initial_lr, 3e-5),
+        max_processed_samples=cfg.max_processed_samples, 
+    )
+
+    algo = replace(base)
+    algo.algo_params = {
+        **(base.algo_params or {}),
+        "learning_rate": lr_schedule,
+        "clip_range": float(hp["clip_range"]),
+        "gae_lambda": float(hp["gae_lambda"]),
+        "ent_coef": float(hp["ent_coef"]),
+        "vf_coef": float(hp["vf_coef"]),
+        "n_epochs": int(hp["n_epochs"]),
+        "n_steps": n_steps,
+        "batch_size": batch_size,
+    }
+    return algo
+
+
+def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> Dict:
+    """Translate shared HPs to SB3-style kwargs."""
+    n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
+    
+    initial_lr = float(hp["learning_rate"])
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=initial_lr,
+        final_lr=min(initial_lr, 3e-5),
+        max_processed_samples=cfg.max_processed_samples,
+    )
+
+    return {
+        **(base.algo_params or {}),
+        "learning_rate": lr_schedule,
+        "batch_size": int(hp["batch_size"]),
+        "tau": float(hp["tau"]),
+        "train_freq": (int(n_steps), "step"),
+        "gradient_steps": int(hp["gradient_steps"]),
+    }
+
+
+def _td3_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
+    algo = replace(base)
+    params = _offpolicy_adapter_common(hp, cfg, base)
+    params.setdefault("policy_delay", 2)
+    params["action_noise_std"] = float(hp["exploration_sigma"])
+    params["target_policy_noise"] = float(hp["target_policy_noise"])
+    params["target_noise_clip"] = float(max(hp["target_noise_clip"], hp["target_policy_noise"]))
+    algo.algo_params = params
+    return algo
+
+
+def _ddpg_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
+    algo = replace(base)
+    params = _offpolicy_adapter_common(hp, cfg, base)
+    params["action_noise_std"] = float(hp["exploration_sigma"])
+    algo.algo_params = params
+    return algo
+
+
+def _sac_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
+    algo = replace(base)
+    params = _offpolicy_adapter_common(hp, cfg, base)
+    params.setdefault("ent_coef", "auto")
+    algo.algo_params = params
+    return algo". 
+
+Please insert the numbers of the incumbents in the correct way to set up lr_schedule and algo_cfg for each algorithm such that we can start the training process.

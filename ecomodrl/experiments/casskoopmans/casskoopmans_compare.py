@@ -277,7 +277,7 @@ def plot_euler_errors(results, out_dir):
     axes[-1].set_xlabel(r"$\log_{10} | \text{Euler Error} |$", fontsize=11)
     
     plt.tight_layout()
-    plt.savefig(out_dir / "4_euler_errors.pdf", format="pdf")
+    plt.savefig(out_dir / "3_euler_errors.pdf", format="pdf")
     plt.close()
 
 
@@ -350,7 +350,7 @@ def plot_cev(results, grid, out_dir):
         fig.legend(handles, labels, loc='lower center', ncol=3, bbox_to_anchor=(0.5, 0.02))
 
     plt.tight_layout(rect=[0, 0.12, 1, 1])
-    plt.savefig(out_dir / "5_cev_analysis.pdf", format="pdf")
+    plt.savefig(out_dir / "4_cev_analysis.pdf", format="pdf")
     plt.close()
 
 

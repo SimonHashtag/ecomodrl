@@ -31,7 +31,7 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 10_000_000
+    total_timesteps: int = 1_000_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
     patience: int = 2000
@@ -67,22 +67,22 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0025080954267,
+        initial_lr=0.0022364997817,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
-    
+
     algo_cfg = AlgoConfig(
         name="sac",
         policy="MlpPolicy",
         algo_params={
-            "learning_rate": 0.0011620319001,
+            "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 64,
-            "tau": 0.007626453362,
+            "batch_size": 32,
+            "tau": 0.0129090576628,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"),
+            "train_freq": (cfg.max_episode_steps * 2, "step"),
             "gradient_steps": 4,
             "learning_starts": 10_000,
             "ent_coef": "auto",

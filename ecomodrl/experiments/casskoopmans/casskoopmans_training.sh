@@ -14,7 +14,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --export=NONE
 
 #SBATCH --output=logs/CK_TRAINING_%j.out

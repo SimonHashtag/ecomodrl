@@ -14,6 +14,7 @@ import torch as th
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.utils.params_loader import BaseParams
+from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples
 
 # ----------------------------
 # Utilities
@@ -67,10 +68,18 @@ def _ppo_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig)
     M = int(hp["num_minibatches"])
     batch_size = B // M
 
+    initial_lr = float(hp["learning_rate"])
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=initial_lr,
+        final_lr=min(initial_lr, 3e-5),
+        max_processed_samples=cfg.max_processed_samples, 
+    )
+    # ------------------------------
+
     algo = replace(base)
     algo.algo_params = {
         **(base.algo_params or {}),
-        "learning_rate": float(hp["learning_rate"]),
+        "learning_rate": lr_schedule,
         "clip_range": float(hp["clip_range"]),
         "gae_lambda": float(hp["gae_lambda"]),
         "ent_coef": float(hp["ent_coef"]),
@@ -104,9 +113,17 @@ def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
 def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> Dict:
     """Translate shared HPs to SB3-style kwargs."""
     n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
+    
+    initial_lr = float(hp["learning_rate"])
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=initial_lr,
+        final_lr=min(initial_lr, 3e-5),
+        max_processed_samples=cfg.max_processed_samples,
+    )
+
     return {
         **(base.algo_params or {}),
-        "learning_rate": float(hp["learning_rate"]),
+        "learning_rate": lr_schedule,
         "batch_size": int(hp["batch_size"]),
         "tau": float(hp["tau"]),
         "train_freq": (int(n_steps), "step"),
@@ -243,7 +260,11 @@ def target_function(
     except KeyError as exc:  # *
         raise ValueError(f"Unknown algorithm '{algo_cfg.name}'. Available: {list(ALGO_REGISTRY)}") from exc
 
-    trial_algo = adapter_fn(hp, trial_cfg, algo_cfg)
+    # Pass 'cfg' (Global) instead of 'trial_cfg' (Truncated) to the adapter.
+    # This ensures the LR Schedule is calculated based on the full 10M steps,
+    # even though training will stop early due to trial_cfg in the next step.
+    trial_algo = adapter_fn(hp, cfg, algo_cfg) 
+    
     trial_algo.policy_kwargs = {**(algo_cfg.policy_kwargs or {})}
 
     # Run training

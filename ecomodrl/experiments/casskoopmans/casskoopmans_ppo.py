@@ -67,24 +67,24 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0009191713154,
+        initial_lr=0.000788758578,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
-    
+
     algo_cfg = AlgoConfig(
         name="ppo",
         policy="MlpPolicy",
         algo_params={
             "gamma": params.beta,
-            "n_steps": cfg.max_episode_steps * 2,
-            "batch_size": (cfg.n_envs * cfg.max_episode_steps * 2) // 10,
-            "n_epochs": 2,
-            "learning_rate": 0.0002971943695,
-            "ent_coef": 0.0001069691963,
-            "gae_lambda": 0.9545072569367,
-            "clip_range": 0.265497688449,
-            "vf_coef": 0.9735921972616,
+            "n_steps": cfg.max_episode_steps * 1,
+            "batch_size": (cfg.n_envs * cfg.max_episode_steps * 1) // 6,
+            "n_epochs": 6,
+            "learning_rate": lr_schedule,
+            "ent_coef": 1.6658309e-06,
+            "gae_lambda": 0.9232316953693,
+            "clip_range": 0.0638938424848,
+            "vf_coef": 0.6823990507536,
             "max_grad_norm": 0.5,
         },
         policy_kwargs={

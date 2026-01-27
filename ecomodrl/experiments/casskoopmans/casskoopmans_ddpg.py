@@ -31,7 +31,7 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 10_000_000
+    total_timesteps: int = 1_000_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
     patience: int = 2000
@@ -67,25 +67,25 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0011996543066,
+        initial_lr=0.0001600470635,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
-    
+
     algo_cfg = AlgoConfig(
         name="ddpg",
         policy="MlpPolicy",
         algo_params={
-            "learning_rate": 0.0002067322717,
+            "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 128,
-            "tau": 0.0098845957489,
+            "batch_size": 32,
+            "tau": 0.0112718843547,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"),
-            "gradient_steps": 8,
+            "train_freq": (cfg.max_episode_steps * 2, "step"),
+            "gradient_steps": 1,
             "learning_starts": 10_000,
-            "action_noise_std": 0.0885134752169,
+            "action_noise_std": 0.1096284143125,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
