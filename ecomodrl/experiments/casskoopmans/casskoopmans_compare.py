@@ -252,64 +252,6 @@ def plot_policy_functions(results, grid, policy_bm, out_dir):
     plt.close()
 
 
-def plot_value_functions(results, grid, V_bm, out_dir):
-    """(2x2) Value functions with CI and unified legend."""
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
-    axes = axes.flatten()
-
-    # Determine global limits for uniform axes
-    y_min, y_max = np.inf, -np.inf
-    bm_vals = V_bm(grid)
-    y_min, y_max = min(y_min, bm_vals.min()), max(y_max, bm_vals.max())
-
-    for data in results.values():
-        if len(data["values"]) > 0:
-            y_min = min(y_min, data["values"].min())
-            y_max = max(y_max, data["values"].max())
-
-    # Storage for legend handles
-    handles, labels = [], []
-
-    # Plot
-    for i, algo in enumerate(ALGOS):
-        ax = axes[i]
-        if algo not in results or len(results[algo]["values"]) == 0:
-            ax.set_title(f"{algo} (No Data)")
-            ax.set_xlabel("Capital k")
-            ax.set_ylabel("Value V(k)")
-            continue
-
-        data = results[algo]["values"]
-        iqm, lo, hi = get_bootstrapped_iqm_ci(data)
-        
-        ax.plot(grid, iqm, label="RL IQM")
-        ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI")
-        ax.plot(grid, bm_vals, "k--", label="EGM", alpha=0.6)
-        
-        # Capture handles/labels from a populated axis
-        if not handles:
-            handles, labels = ax.get_legend_handles_labels()
-
-        ax.set_title(algo)
-        
-        ax.set_xlabel("Capital k")
-        ax.set_ylabel("Value V(k)")
-
-    # Set unified limits
-    pad = (y_max - y_min) * 0.05
-    for ax in axes:
-        ax.set_ylim(y_min - pad, y_max + pad)
-
-    # Unified Legend
-    if handles:
-        fig.legend(handles, labels, loc='lower center', ncol=3, bbox_to_anchor=(0.5, 0.02))
-
-    # Adjust layout to make room for legend
-    plt.tight_layout(rect=[0, 0.06, 1, 1])
-    plt.savefig(out_dir / "3_value_functions.pdf", format="pdf")
-    plt.close()
-
-
 def plot_euler_errors(results, out_dir):
     """(4x1) Vertical stack of Euler Error histograms with individual x-ticks."""
     _, axes = plt.subplots(len(ALGOS), 1, figsize=(8, 10))
@@ -545,7 +487,6 @@ def run_combined_analysis():
 
     plot_learning_curves(results, global_steps, return_bm, out_dir)
     plot_policy_functions(results, grid, policy_bm, out_dir)
-    plot_value_functions(results, grid, V_bm, out_dir)
     plot_euler_errors(results, out_dir)
     plot_cev(results, grid, out_dir)
 
