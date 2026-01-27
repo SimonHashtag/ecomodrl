@@ -76,16 +76,16 @@ if __name__ == "__main__":
         name="ddpg",
         policy="MlpPolicy",
         algo_params={
-            "learning_rate": lr_schedule,
+            "learning_rate": 0.0002067322717,
             "buffer_size": 200_000,
-            "batch_size": 32,
-            "tau": 0.010400184125,
+            "batch_size": 128,
+            "tau": 0.0098845957489,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 16,
+            "train_freq": (cfg.max_episode_steps * 4, "step"),
+            "gradient_steps": 8,
             "learning_starts": 10_000,
-            "action_noise_std": 0.1005654323994,
+            "action_noise_std": 0.0885134752169,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,

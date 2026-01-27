@@ -78,19 +78,19 @@ if __name__ == "__main__":
         algo_params={
             "gamma": params.beta,
             "n_steps": cfg.max_episode_steps * 2,
-            "batch_size": cfg.n_envs * cfg.max_episode_steps * 2 // 6,
-            "n_epochs": 10,
-            "learning_rate": lr_schedule, 
-            "ent_coef": 0.0021927392147,
-            "gae_lambda": 0.9488409062206,
-            "clip_range": 0.0534293369739,
-            "vf_coef": 0.6131367986268,
+            "batch_size": (cfg.n_envs * cfg.max_episode_steps * 2) // 10,
+            "n_epochs": 2,
+            "learning_rate": 0.0002971943695,
+            "ent_coef": 0.0001069691963,
+            "gae_lambda": 0.9545072569367,
+            "clip_range": 0.265497688449,
+            "vf_coef": 0.9735921972616,
             "max_grad_norm": 0.5,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
             "net_arch": {"pi": [64, 64], "vf": [64, 64]},
-            "log_std_init": -2.0,  # smaller initial exploration to avoid extremes
+            "log_std_init": -2.0,
         },
     )
     

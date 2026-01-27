@@ -76,15 +76,16 @@ if __name__ == "__main__":
         name="sac",
         policy="MlpPolicy",
         algo_params={
-            "learning_rate": lr_schedule,
+            "learning_rate": 0.0011620319001,
             "buffer_size": 200_000,
             "batch_size": 64,
-            "tau": 0.0175788267655,
+            "tau": 0.007626453362,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 16,
+            "train_freq": (cfg.max_episode_steps * 4, "step"),
+            "gradient_steps": 4,
             "learning_starts": 10_000,
+            "ent_coef": "auto",
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
