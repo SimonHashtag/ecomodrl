@@ -1,5 +1,6 @@
 import logging
 import multiprocessing as mp
+import math
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -66,26 +67,35 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    INITIAL_LR = 0.0011996543066 # learning rate
+    TAU = 0.010400184125
+    ACTION_NOISE_STD = 0.1005654323994
+    BATCH_SIZE = 32
+    UTD_RATIO = 1.0 # updates-to-data ratio
+    N_EPISODES = 4
+    
+    train_freq = cfg.max_episode_steps * N_EPISODES # max_episode_steps * n_episodes
+    gradient_steps = math.ceil(cfg.n_envs * train_freq * UTD_RATIO / BATCH_SIZE)
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0011996543066,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
-    
+        
     algo_cfg = AlgoConfig(
         name="ddpg",
         policy="MlpPolicy",
         algo_params={
             "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 32,
-            "tau": 0.010400184125,
+            "batch_size": BATCH_SIZE,
+            "tau": TAU,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 16,
+            "train_freq": (train_freq, "step"), # "step" is crucial for vectorized envs
+            "gradient_steps": gradient_steps,
             "learning_starts": 10_000,
-            "action_noise_std": 0.1005654323994,
+            "action_noise_std": ACTION_NOISE_STD,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,

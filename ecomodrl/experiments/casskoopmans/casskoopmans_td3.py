@@ -1,5 +1,6 @@
 import logging
 import multiprocessing as mp
+import math
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -66,8 +67,19 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    INITIAL_LR = 0.0006207652006 # learning rate
+    TAU = 0.0139904290884
+    ACTION_NOISE_STD = 0.0515070057901
+    TARGET_POLICY_NOISE = 0.0784148244779
+    TARGET_NOISE_CLIP = 0.7099592918582
+    BATCH_SIZE = 64
+    UTD_RATIO = 1.0 # updates-to-data ratio
+    N_EPISODES = 2
+    
+    train_freq = cfg.max_episode_steps * N_EPISODES # max_episode_steps * n_episodes
+    gradient_steps = math.ceil(cfg.n_envs * train_freq * UTD_RATIO / BATCH_SIZE)
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=1e-3,#0.0006207652006,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
@@ -78,17 +90,17 @@ if __name__ == "__main__":
         algo_params={
             "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 64,
-            "tau": 0.0139904290884,
+            "batch_size": BATCH_SIZE,
+            "tau": TAU,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 2, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 8,
+            "train_freq": (train_freq, "step"), # "step" is crucial for vectorized envs
+            "gradient_steps": gradient_steps,
             "learning_starts": 10_000,
             "policy_delay": 2,
-            "action_noise_std": 0.0515070057901,
-            "target_policy_noise": 0.0784148244779,
-            "target_noise_clip": 0.7099592918582,
+            "action_noise_std": ACTION_NOISE_STD,
+            "target_policy_noise": TARGET_POLICY_NOISE,
+            "target_noise_clip": TARGET_NOISE_CLIP,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,

@@ -1,5 +1,6 @@
 import logging
 import multiprocessing as mp
+import math
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -66,8 +67,16 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    INITIAL_LR = 0.0025080954267 # learning rate
+    TAU = 0.0175788267655
+    BATCH_SIZE = 64
+    UTD_RATIO = 1.0 # updates-to-data ratio
+    N_EPISODES = 4
+    
+    train_freq = cfg.max_episode_steps * N_EPISODES # max_episode_steps * n_episodes
+    gradient_steps = math.ceil(cfg.n_envs * train_freq * UTD_RATIO / BATCH_SIZE)
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0025080954267,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
@@ -78,12 +87,12 @@ if __name__ == "__main__":
         algo_params={
             "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 64,
-            "tau": 0.0175788267655,
+            "batch_size": BATCH_SIZE,
+            "tau": TAU,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 16,
+            "train_freq": (train_freq, "step"), # "step" is crucial for vectorized envs
+            "gradient_steps": gradient_steps,
             "learning_starts": 10_000,
         },
         policy_kwargs={
