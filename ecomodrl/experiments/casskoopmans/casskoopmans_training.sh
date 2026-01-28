@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Run via:
-# > cd ecomodrl/ecomodrl/experiments
+# > cd ecomodrl/ecomodrl/experiments/casskoopmans
 # > sed -i 's/\r$//' casskoopmans_training.sh
 # > chmod +x casskoopmans_training.sh
 # > sbatch casskoopmans_training.sh
@@ -14,7 +14,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --export=NONE
 
 #SBATCH --output=logs/CK_TRAINING_%j.out

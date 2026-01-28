@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch as th
+import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
@@ -31,7 +32,7 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 10_000_000
+    total_timesteps: int = 1_000_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
     patience: int = 2000
@@ -66,25 +67,36 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    # SAC Hyperparameters
+    INITIAL_LR = 0.002093071034
+    N_EPISODES = 1
+    BATCH_SIZE = 64
+    UTD_RATIO = 1.5675348515125
+    TAU = 0.0119129334461
+
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0025080954267,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
-    
+
+    train_freq = cfg.max_episode_steps * N_EPISODES
+    gradient_steps = math.ceil(cfg.n_envs * train_freq * UTD_RATIO / BATCH_SIZE)
+
     algo_cfg = AlgoConfig(
         name="sac",
         policy="MlpPolicy",
         algo_params={
             "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 64,
-            "tau": 0.0175788267655,
+            "batch_size": BATCH_SIZE,
+            "tau": TAU,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"), # "step" is crucial for vectorized envs
-            "gradient_steps": 16,
+            "train_freq": (train_freq, "step"),
+            "gradient_steps": gradient_steps,
             "learning_starts": 10_000,
+            "ent_coef": "auto",
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
@@ -96,4 +108,4 @@ if __name__ == "__main__":
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
     train_multiple_seeds(cfg, algo_cfg, CassKoopmansEnv, params, verbose=1)
-    analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
+    analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params)

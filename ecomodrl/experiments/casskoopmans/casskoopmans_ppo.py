@@ -31,10 +31,10 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 10_000_000
+    total_timesteps: int = 1_000_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
-    patience: int = 1000
+    patience: int = 2000
     min_delta: float = 1e-3
 
     # Seeds
@@ -66,31 +66,41 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    # PPO Hyperparameters
+    INITIAL_LR = 0.0004784086273
+    N_EPISODES = 1
+    N_EPOCHS = 4
+    NUM_MINIBATCHES = 5
+    CLIP_RANGE = 0.0578770396527
+    ENT_COEF = 2.0602833e-06
+    GAE_LAMBDA = 0.9762820744364
+    VF_COEF = 0.762363433347
+
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0009191713154,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
-    
+
     algo_cfg = AlgoConfig(
         name="ppo",
         policy="MlpPolicy",
         algo_params={
             "gamma": params.beta,
-            "n_steps": cfg.max_episode_steps * 2,
-            "batch_size": cfg.n_envs * cfg.max_episode_steps * 2 // 6,
-            "n_epochs": 10,
-            "learning_rate": lr_schedule, 
-            "ent_coef": 0.0021927392147,
-            "gae_lambda": 0.9488409062206,
-            "clip_range": 0.0534293369739,
-            "vf_coef": 0.6131367986268,
+            "n_steps": cfg.max_episode_steps * N_EPISODES,
+            "batch_size": (cfg.n_envs * cfg.max_episode_steps * N_EPISODES) // NUM_MINIBATCHES,
+            "n_epochs": N_EPOCHS,
+            "learning_rate": lr_schedule,
+            "ent_coef": ENT_COEF,
+            "gae_lambda": GAE_LAMBDA,
+            "clip_range": CLIP_RANGE,
+            "vf_coef": VF_COEF,
             "max_grad_norm": 0.5,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
             "net_arch": {"pi": [64, 64], "vf": [64, 64]},
-            "log_std_init": -2.0,  # smaller initial exploration to avoid extremes
+            "log_std_init": -2.0,
         },
     )
     
@@ -98,4 +108,4 @@ if __name__ == "__main__":
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
     train_multiple_seeds(cfg, algo_cfg, CassKoopmansEnv, params, verbose=1)
-    analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
+    analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params)
