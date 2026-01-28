@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Run via:
-# > cd ecomodrl/ecomodrl/tuning
+# > cd ecomodrl/ecomodrl/tune
 # > sed -i 's/\r$//' casskoopmans_tuning.sh
 # > chmod +x casskoopmans_tuning.sh
 # > sbatch casskoopmans_tuning.sh

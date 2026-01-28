@@ -48,10 +48,10 @@ class CassKoopmansEnv(gym.Env):
         # action (consumption)
         self.action_space = Box(TOL, 1.0-TOL, shape=(1,), dtype=self.floattype)
 
-        # states (capital)
+        # states (log(k))
         self.observation_space = Box(
-            low=np.array([0.0], dtype=self.floattype), 
-            high=np.array([np.finfo(self.floattype).max], dtype=self.floattype), 
+            low=np.array([-np.inf], dtype=self.floattype), 
+            high=np.array([np.inf], dtype=self.floattype), 
             shape=(1,), 
             dtype=self.floattype,)
 
@@ -64,7 +64,8 @@ class CassKoopmansEnv(gym.Env):
         self._k: Optional[float] = None
 
     def _get_obs(self) -> np.ndarray:
-        return np.array([self._k], dtype=self.floattype)
+        # Log-scale k
+        return np.array([np.log(self._k)], dtype=self.floattype)
 
     def _get_info(self) -> dict:
         return {

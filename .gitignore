@@ -139,8 +139,8 @@ dmypy.json
 /runs
 /tune_results
 
-# github prompts
-.github/prompts/
+# github copilot 
+/.github
 
 # vscode
 /.vscode
