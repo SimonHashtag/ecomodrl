@@ -1,9 +1,11 @@
 """
-Cass-Koopmans post-training analysis: computes and saves metrics for later comparison.
+Cass-Koopmans post-training analysis: extracts and saves raw per-seed metrics.
 
-This module provides `analyze_all_seeds()` which aggregates results across training seeds
-and saves metrics to JSON. No plots are generated here - use `casskoopmans_compare.py` 
-for visualization.
+This module provides `analyze_all_seeds()` which extracts raw data from trained models
+and saves to JSON. All aggregation (bootstrap CIs, benchmark comparison) is conducted
+in a separate script `casskoopmans_compare.py` to avoid redundant computation across algorithms.
+
+Output: `raw_metrics.json`.
 """
 import json
 import logging
@@ -13,35 +15,16 @@ from typing import Any, Callable, Mapping, Union
 import numpy as np
 import torch as th
 from scipy.interpolate import CubicSpline
-from scipy.stats import wasserstein_distance
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecNormalize
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, PlanningSolvers
+from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.metrics.accuracy import cev_crra
-from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
 from ecomodrl.utils.tb_reader import tb_read_scalar
 
 logger = logging.getLogger(__name__)
-
-
-def compute_benchmark(params: Union[Mapping[str, Any], Any]):
-    """Compute EGM benchmark solution for the Cass-Koopmans model."""
-    model = PlanningProblem(
-        gamma=params.gamma,
-        beta=params.beta,
-        delta=params.delta,
-        alpha=params.alpha,
-        A=params.A
-    )
-    solvers = PlanningSolvers(grid_points=1000, conv=1e-5)
-    policy_bm = solvers.EGM(model)
-    grid = model.make_grid(solvers.grid_points)
-    V_bm = model.V_from_a(grid, policy_bm, conv=1e-5)
-    return model, grid, policy_bm, V_bm
 
 
 def get_policy_value_functions(
@@ -128,40 +111,35 @@ def analyze_all_seeds(
     algo_cfg: Union[Mapping[str, Any], Any],
     env: Callable[..., Any],
     params: Union[Mapping[str, Any], Any],
-    *,
-    n_boot: int = 1000,
-    alpha: float = 0.05,
-    bootstrap_seed: int = 123,
 ):
     """
-    Aggregate metrics across training seeds and save to JSON.
+    Extract raw per-seed metrics and save to JSON.
     
-    This function computes all metrics needed for comparison plots:
-    - Learning curves (return over training steps)
-    - Policy and value function evaluations on grid
-    - Euler equation errors
-    - Consumption-Equivalent Variation (CEV)
-    - Wasserstein distance of error distributions
+    This function extracts data needed for comparison plots but does NOT compute:
+    - Benchmark solution (computed once in compare script)
+    - Bootstrap CIs (computed in compare script)  
+    - Derived metrics like CEV, Wasserstein distance (computed in compare script)
     
-    Saves `metrics_analysis.json` to cfg.out_dir with aggregated statistics.
+    Saves `raw_metrics.json` to cfg.out_dir with per-seed arrays only.
     """
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     
-    # Compute benchmark solution
-    planning_prob, grid, policy_bm, V_bm = compute_benchmark(params)
-    euler_bm, _, U_bm = planning_prob.get_euler_errors(grid, policy_bm, episodes=100)
-    euler_bm_log = np.log10(np.abs(euler_bm))
-
-    # Benchmark return on training evaluation grid
-    _, _, return_bm = planning_prob.get_euler_errors(
-        np.linspace(cfg.state_min, cfg.state_max, 20),
-        policy_bm,
-        episodes=100,
+    # Create grid for policy evaluation (same grid used by benchmark solver)
+    planning_prob = PlanningProblem(
+        gamma=params.gamma,
+        beta=params.beta,
+        delta=params.delta,
+        alpha=params.alpha,
+        A=params.A
     )
-
+    grid = planning_prob.make_grid(points=1000)
+    
     # Global step grid for learning curve interpolation
-    global_steps = np.linspace(0, cfg.max_processed_samples, int(cfg.max_processed_samples / cfg.eval_every) + 1)
+    global_steps = np.linspace(
+        0, cfg.max_processed_samples, 
+        int(cfg.max_processed_samples / cfg.eval_every) + 1
+    )
 
     # --- Initialize containers ---
     return_curves = []
@@ -170,14 +148,15 @@ def analyze_all_seeds(
     euler_logabs_list = []
     pooled_states = []
     Us_rl = []
-    CEV_mat = []
-    CEV_rel_mat = []
+    value_from_policy_list = []
+    compute_times = []
+    seeds_processed = []
 
     # Load per-seed training metadata
     with (out_dir / "train_cfgs.json").open("r", encoding="utf-8") as f:
         train_cfgs = json.load(f)
 
-    # --- Per-seed analysis ---
+    # --- Per-seed extraction ---
     for seed_entry in train_cfgs:
         best_model_path = Path(seed_entry["best_model_path"])
         vecnorm_path = Path(seed_entry["vecnorm_path"])
@@ -188,7 +167,9 @@ def analyze_all_seeds(
         try:
             _, returns = tb_read_scalar(tb_path, "eval/avg_discounted_return")
             _, steps_proc = tb_read_scalar(tb_path, "eval/x_processed_samples")
-            return_curves.append(np.interp(global_steps, steps_proc, returns))
+            _, wallclock = tb_read_scalar(tb_path, "eval/x_wallclock_seconds")
+            interp_returns = np.interp(global_steps, steps_proc, returns)
+            final_time = wallclock[-1] if len(wallclock) > 0 else 0.0
         except Exception as e:
             logger.warning(f"Could not read TensorBoard for seed {seed}: {e}")
             continue
@@ -202,94 +183,44 @@ def analyze_all_seeds(
             logger.error(f"Failed to load model for seed {seed}: {e}")
             continue
 
+        seeds_processed.append(seed)
+        return_curves.append(interp_returns.tolist())
+        compute_times.append(float(final_time))
+
         # Policy and value on grid
-        rl_policy_vals.append(policy_rl(grid))
+        rl_policy_vals.append(policy_rl(grid).tolist())
         if value_rl is not None:
-            rl_value_nn_vals.append(value_rl(grid))
+            rl_value_nn_vals.append(value_rl(grid).tolist())
 
         # Euler errors and episode utilities
         euler_rl, states, U_rl = planning_prob.get_euler_errors(grid, policy_rl, episodes=100)
-        euler_logabs_list.append(np.log10(np.abs(euler_rl)))
-        pooled_states.append(states)
-        Us_rl.append(U_rl)
+        euler_logabs_list.append(np.log10(np.abs(euler_rl)).tolist())
+        pooled_states.append(states.tolist())
+        Us_rl.append(float(U_rl))
 
-        # CEV metrics
+        # Value function from policy (for CEV computation in compare script)
         V_rl_rec = planning_prob.V_from_a(grid, policy_rl, conv=1e-9)
-        cev_on_grid = cev_crra(grid, V_bm, V_rl_rec, gamma=params.gamma)
-        CEV_mat.append(cev_on_grid)
-        avg_cev_rel = cev_crra(states, V_bm, V_rl_rec, gamma=params.gamma).mean()
-        CEV_rel_mat.append(avg_cev_rel)
+        value_from_policy_list.append(V_rl_rec(grid).tolist())
 
-    # --- Stack results ---
+    # --- Validation ---
     if not return_curves:
         logger.error("No valid seeds found for analysis.")
         return
 
-    return_curves = np.vstack(return_curves)
-    rl_policy_vals = np.vstack(rl_policy_vals)
-    rl_value_nn_vals = np.vstack(rl_value_nn_vals) if rl_value_nn_vals else np.array([])
-    CEV_mat = np.vstack(CEV_mat)
-
-    # --- Compute aggregated statistics with bootstrap CIs ---
-    
-    # Learning performance (utility)
-    iqm_Us, lo_Us, hi_Us = get_bootstrapped_iqm_ci(
-        np.array(Us_rl).reshape(-1, 1), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
-    )
-
-    # CEV (grid average per seed)
-    iqm_cev, lo_cev, hi_cev = get_bootstrapped_iqm_ci(
-        CEV_mat.mean(axis=1).reshape(-1, 1), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
-    )
-
-    # CEV (visited states)
-    iqm_rel_cev, lo_rel_cev, hi_rel_cev = get_bootstrapped_iqm_ci(
-        np.array(CEV_rel_mat).reshape(-1, 1), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
-    )
-
-    # Max Euler error
-    max_euler_per_seed = np.max(euler_logabs_list, axis=1).reshape(-1, 1)
-    iqm_max_euler, lo_max_euler, hi_max_euler = get_bootstrapped_iqm_ci(
-        max_euler_per_seed, n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
-    )
-
-    # Wasserstein distance
-    wd_list = [wasserstein_distance(euler_bm_log, euler_rl_seed) for euler_rl_seed in euler_logabs_list]
-    iqm_wd, lo_wd, hi_wd = get_bootstrapped_iqm_ci(
-        np.array(wd_list).reshape(-1, 1), n_boot=n_boot, alpha=alpha, seed=bootstrap_seed
-    )
-
-    # --- Save metrics JSON ---
-    def pack_ci(name, iqm_val, lo, hi):
-        return {
-            f"iqm_{name}": float(iqm_val[0]) if hasattr(iqm_val, '__len__') else float(iqm_val),
-            f"lo_{name}": float(lo[0]) if hasattr(lo, '__len__') else float(lo),
-            f"hi_{name}": float(hi[0]) if hasattr(hi, '__len__') else float(hi),
-        }
-
-    metrics = {
-        # Benchmark reference
-        "U_bm": float(U_bm),
-        "return_bm": float(return_bm),
-        "max_abs_euler_error_bm": float(np.max(euler_bm_log)),
-        # RL performance
-        **pack_ci("U_rl", iqm_Us, lo_Us, hi_Us),
-        **pack_ci("cev", iqm_cev, lo_cev, hi_cev),
-        **pack_ci("cev_relevant", iqm_rel_cev, lo_rel_cev, hi_rel_cev),
-        **pack_ci("max_abs_euler_error_rl", iqm_max_euler, lo_max_euler, hi_max_euler),
-        **pack_ci("wasserstein_dist", iqm_wd, lo_wd, hi_wd),
-        # Raw data for comparison plots (stored as lists for JSON serialization)
-        "_grid": grid.tolist(),
-        "_global_steps": global_steps.tolist(),
-        "_return_curves": return_curves.tolist(),
-        "_policies": rl_policy_vals.tolist(),
-        "_values": rl_value_nn_vals.tolist() if len(rl_value_nn_vals) > 0 else [],
-        "_euler_errors": [e.tolist() for e in euler_logabs_list],
-        "_cev": CEV_mat.tolist(),
-        "_states": [s.tolist() for s in pooled_states],
+    # --- Save raw metrics JSON ---
+    raw_metrics = {
+        "seeds": seeds_processed,
+        "return_curves": return_curves,
+        "compute_times": compute_times,
+        "policies": rl_policy_vals,
+        "values": rl_value_nn_vals,
+        "euler_errors": euler_logabs_list,
+        "states": pooled_states,
+        "utilities": Us_rl,
+        "value_from_policy": value_from_policy_list,
     }
 
-    with (out_dir / "metrics_analysis.json").open("w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2, ensure_ascii=False)
+    with (out_dir / "raw_metrics.json").open("w", encoding="utf-8") as f:
+        json.dump(raw_metrics, f, indent=2, ensure_ascii=False)
 
-    logger.info(f"Metrics saved to {out_dir / 'metrics_analysis.json'}")
+    logger.info(f"Raw metrics saved to {out_dir / 'raw_metrics.json'} ({len(seeds_processed)} seeds)")

@@ -26,9 +26,30 @@ train_env, eval_env = build_envs(CassKoopmansEnv, params=params, cfg=cfg, seed=4
 
 **Training**: `train_multiple_seeds()` parallelizes across seeds using `ProcessPoolExecutor`. Each seed outputs to `{out_dir}/seed_{N}/`.
 
-**Analysis workflow** (two-stage):
-1. Each experiment script calls `analyze_all_seeds()` after training → saves `metrics_analysis.json` with raw data and aggregated statistics
-2. Run `casskoopmans_compare.py` after all algorithms finish → loads JSON files and generates comparison plots + LaTeX table
+### Analysis Workflow (Two-Stage)
+
+The analysis pipeline is split into two stages to avoid redundant computation:
+
+**Stage 1: Per-Algorithm Raw Extraction** (`analyze_all_seeds()` in [analysis_CK.py](ecomodrl/utils/analysis_CK.py))
+- Called automatically after `train_multiple_seeds()` completes
+- Extracts per-seed data: learning curves, policy values, Euler errors, visited states
+- Saves lightweight `raw_metrics.json` (no bootstrap CIs, no benchmark comparison)
+- Output: `runs/CassKoopmans/{ALGO}/raw_metrics.json`
+
+**Stage 2: Unified Comparison** (`run_comparison()` in [casskoopmans_compare.py](ecomodrl/experiments/casskoopmans/casskoopmans_compare.py))
+- Run ONCE after all algorithms finish training
+- Computes benchmark solution (EGM) a single time
+- Loads `raw_metrics.json` from all algorithms
+- Computes all derived metrics (CEV, Wasserstein distance) against shared benchmark
+- Computes bootstrap CIs for all statistics
+- Generates comparison plots and LaTeX table
+- Output: `runs/CassKoopmans/Comparison/`
+
+**Why this architecture?**
+- Benchmark computed 1x instead of N×(algos) times
+- Bootstrap CIs computed centrally with consistent seed
+- Raw JSON files are ~80% smaller (no redundant grids/statistics)
+- Faster per-algorithm training runs
 
 ## Economic Model Conventions
 
@@ -57,11 +78,12 @@ sbatch ecomodrl/experiments/casskoopmans/casskoopmans_training.sh
 ```bash
 python ecomodrl/experiments/casskoopmans/casskoopmans_compare.py
 ```
-This loads `metrics_analysis.json` from each algorithm's output folder and produces:
+This loads `raw_metrics.json` from each algorithm's output folder and produces:
 - `1_learning_curves.pdf` - Regret curves (log scale)
 - `2_policy_functions.pdf` - 2x2 policy comparison
 - `3_euler_errors.pdf` - Euler error histograms
 - `4_cev_analysis.pdf` - CEV with state density
+- `comparison_metrics.json` - Full metrics with bootstrap CIs
 - `comparison_table.tex` - LaTeX summary table
 
 **Hyperparameter tuning**:
@@ -80,6 +102,7 @@ python ecomodrl/tune/casskoopmans.py --algo_name=ppo --total_cost=3600
 - **Learning rate schedule**: `LinearScheduleByProcessedSamples` decays LR based on total samples processed
 - **Off-policy gradient clipping**: TD3/DDPG/SAC use custom `add_grad_norm_rescaling()` wrapper since SB3 doesn't support it natively
 - **Steady-state aware bounds**: `RunConfig.__post_init__` computes economically relevant state bounds from `PlanningProblem().make_grid()`
+- **Bootstrap CIs**: Uses `get_bootstrapped_iqm_ci()` with IQM (interquartile mean) for robustness; consistent seed (12345) for reproducibility
 
 ## Adding a New Economic Model
 
@@ -88,6 +111,8 @@ python ecomodrl/tune/casskoopmans.py --algo_name=ppo --total_cost=3600
 3. Create `ecomodrl/experiments/model_params/{model}.toml` - Default parameters
 4. Add `{Model}Params` dataclass to [params_loader.py](ecomodrl/utils/params_loader.py)
 5. Create experiment script following pattern in [casskoopmans_ppo.py](ecomodrl/experiments/casskoopmans/casskoopmans_ppo.py)
+6. Create `ecomodrl/utils/analysis_{model}.py` following pattern in [analysis_CK.py](ecomodrl/utils/analysis_CK.py)
+7. Create `{model}_compare.py` following pattern in [casskoopmans_compare.py](ecomodrl/experiments/casskoopmans/casskoopmans_compare.py)
 
 ## Dependencies
 - Python 3.11+ (required for `tomllib`)

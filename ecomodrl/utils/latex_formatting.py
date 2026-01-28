@@ -25,6 +25,7 @@ def generate_latex_table(
         ("iqm_cev_relevant", r"CEV (Visited States)", "min"),
         ("iqm_max_abs_euler_error_rl", r"Max Euler Error ($\log_{10}$)", "min"),
         ("iqm_wasserstein_dist", r"Wasserstein Dist.", "min"),
+        ("iqm_compute_time", r"Compute Time (s)", "min"),
     ]
 
     # Build LaTeX String
