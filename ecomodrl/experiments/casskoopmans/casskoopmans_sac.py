@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch as th
+import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
@@ -66,11 +67,21 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    # SAC Hyperparameters
+    INITIAL_LR = 0.002093071034
+    N_EPISODES = 1
+    BATCH_SIZE = 64
+    UTD_RATIO = 1.5675348515125
+    TAU = 0.0119129334461
+
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0022364997817,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
+
+    train_freq = cfg.max_episode_steps * N_EPISODES
+    gradient_steps = math.ceil(cfg.n_envs * train_freq * UTD_RATIO / BATCH_SIZE)
 
     algo_cfg = AlgoConfig(
         name="sac",
@@ -78,12 +89,12 @@ if __name__ == "__main__":
         algo_params={
             "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 32,
-            "tau": 0.0129090576628,
+            "batch_size": BATCH_SIZE,
+            "tau": TAU,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 2, "step"),
-            "gradient_steps": 4,
+            "train_freq": (train_freq, "step"),
+            "gradient_steps": gradient_steps,
             "learning_starts": 10_000,
             "ent_coef": "auto",
         },

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch as th
+import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
@@ -66,11 +67,24 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    # TD3 Hyperparameters
+    INITIAL_LR = 0.0022096650421
+    N_EPISODES = 2
+    BATCH_SIZE = 32
+    UTD_RATIO = 2.0823055955274
+    TAU = 0.008525082612
+    ACTION_NOISE_STD = 0.2864283357589  # exploration_sigma
+    TARGET_POLICY_NOISE = 0.0534976029844
+    TARGET_NOISE_CLIP = 0.6808242863888 # max(0.6808..., 0.0534...)
+
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0001054048131,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
+
+    train_freq = cfg.max_episode_steps * N_EPISODES
+    gradient_steps = math.ceil(cfg.n_envs * train_freq * UTD_RATIO / BATCH_SIZE)
 
     algo_cfg = AlgoConfig(
         name="td3",
@@ -78,17 +92,17 @@ if __name__ == "__main__":
         algo_params={
             "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 32,
-            "tau": 0.0076026428013,
+            "batch_size": BATCH_SIZE,
+            "tau": TAU,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 4, "step"),
-            "gradient_steps": 16,
+            "train_freq": (train_freq, "step"),
+            "gradient_steps": gradient_steps,
             "learning_starts": 10_000,
             "policy_delay": 2,
-            "action_noise_std": 0.0597402983878,
-            "target_policy_noise": 0.1365991162134,
-            "target_noise_clip": 0.18709275537,
+            "action_noise_std": ACTION_NOISE_STD,
+            "target_policy_noise": TARGET_POLICY_NOISE,
+            "target_noise_clip": TARGET_NOISE_CLIP,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,

@@ -66,8 +66,18 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    # PPO Hyperparameters
+    INITIAL_LR = 0.0004784086273
+    N_EPISODES = 1
+    N_EPOCHS = 4
+    NUM_MINIBATCHES = 5
+    CLIP_RANGE = 0.0578770396527
+    ENT_COEF = 2.0602833e-06
+    GAE_LAMBDA = 0.9762820744364
+    VF_COEF = 0.762363433347
+
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.000788758578,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
@@ -77,14 +87,14 @@ if __name__ == "__main__":
         policy="MlpPolicy",
         algo_params={
             "gamma": params.beta,
-            "n_steps": cfg.max_episode_steps * 1,
-            "batch_size": (cfg.n_envs * cfg.max_episode_steps * 1) // 6,
-            "n_epochs": 6,
+            "n_steps": cfg.max_episode_steps * N_EPISODES,
+            "batch_size": (cfg.n_envs * cfg.max_episode_steps * N_EPISODES) // NUM_MINIBATCHES,
+            "n_epochs": N_EPOCHS,
             "learning_rate": lr_schedule,
-            "ent_coef": 1.6658309e-06,
-            "gae_lambda": 0.9232316953693,
-            "clip_range": 0.0638938424848,
-            "vf_coef": 0.6823990507536,
+            "ent_coef": ENT_COEF,
+            "gae_lambda": GAE_LAMBDA,
+            "clip_range": CLIP_RANGE,
+            "vf_coef": VF_COEF,
             "max_grad_norm": 0.5,
         },
         policy_kwargs={

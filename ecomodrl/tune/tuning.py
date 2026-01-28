@@ -11,6 +11,7 @@ import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
 import numpy as np
 import torch as th
+import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.utils.params_loader import BaseParams
@@ -74,7 +75,6 @@ def _ppo_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig)
         final_lr=min(initial_lr, 3e-5),
         max_processed_samples=cfg.max_processed_samples, 
     )
-    # ------------------------------
 
     algo = replace(base)
     algo.algo_params = {
@@ -100,7 +100,7 @@ def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
             CSH.CategoricalHyperparameter("batch_size", [32, 64, 128, 256, 512]),
             CSH.UniformFloatHyperparameter("tau", 2e-3, 2e-2),  # soft-update
             CSH.CategoricalHyperparameter("n_episodes", [1, 2, 4, 8]),
-            CSH.CategoricalHyperparameter("gradient_steps", [1, 4, 8, 16]),
+            CSH.UniformFloatHyperparameter("utd_ratio", 1.0, 5.0),  # updates-to-data ratio
             # Used by DDPG/TD3
             CSH.UniformFloatHyperparameter("exploration_sigma", 0.05, 0.50),
             CSH.UniformFloatHyperparameter("target_policy_noise", 0.05, 0.5),
@@ -112,7 +112,9 @@ def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
 
 def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> Dict:
     """Translate shared HPs to SB3-style kwargs."""
-    n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
+    n_steps = int(cfg.max_episode_steps) * int(hp["n_episodes"])
+    B = int(cfg.n_envs) * n_steps
+    gradient_steps = math.ceil(B * float(hp["utd_ratio"]) / int(hp["batch_size"]))
     
     initial_lr = float(hp["learning_rate"])
     lr_schedule = LinearScheduleByProcessedSamples(
@@ -127,7 +129,7 @@ def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base
         "batch_size": int(hp["batch_size"]),
         "tau": float(hp["tau"]),
         "train_freq": (int(n_steps), "step"),
-        "gradient_steps": int(hp["gradient_steps"]),
+        "gradient_steps": int(gradient_steps),
     }
 
 

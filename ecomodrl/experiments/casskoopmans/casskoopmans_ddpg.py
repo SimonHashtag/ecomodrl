@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch as th
+import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
@@ -66,11 +67,22 @@ if __name__ == "__main__":
     cfg = RunConfig()
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
+    # DDPG Hyperparameters
+    INITIAL_LR = 0.0024080977499
+    N_EPISODES = 1
+    BATCH_SIZE = 32
+    UTD_RATIO = 3.2766453901887
+    TAU = 0.0137254055431
+    ACTION_NOISE_STD = 0.0867911510799 # exploration_sigma
+
     lr_schedule = LinearScheduleByProcessedSamples(
-        initial_lr=0.0001600470635,
+        initial_lr=INITIAL_LR,
         final_lr=3e-5,
         max_processed_samples=cfg.max_processed_samples,
     )
+
+    train_freq = cfg.max_episode_steps * N_EPISODES
+    gradient_steps = math.ceil(cfg.n_envs * train_freq * UTD_RATIO / BATCH_SIZE)
 
     algo_cfg = AlgoConfig(
         name="ddpg",
@@ -78,14 +90,14 @@ if __name__ == "__main__":
         algo_params={
             "learning_rate": lr_schedule,
             "buffer_size": 200_000,
-            "batch_size": 32,
-            "tau": 0.0112718843547,
+            "batch_size": BATCH_SIZE,
+            "tau": TAU,
             "gamma": params.beta,
             "max_grad_norm": 0.5,
-            "train_freq": (cfg.max_episode_steps * 2, "step"),
-            "gradient_steps": 1,
+            "train_freq": (train_freq, "step"),
+            "gradient_steps": gradient_steps,
             "learning_starts": 10_000,
-            "action_noise_std": 0.1096284143125,
+            "action_noise_std": ACTION_NOISE_STD,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
