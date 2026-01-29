@@ -11,6 +11,7 @@ from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem
 from ecomodrl.envs.brockmirman import BrockMirmanEnv
 from ecomodrl.utils.analysis_BM import analyze_all_seeds
 from ecomodrl.utils.params_loader import BrockMirmanParams
+from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples  
 
 
 # ----------------------------
@@ -30,15 +31,15 @@ class RunConfig:
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 10_000_000
+    total_timesteps: int = 1_000_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
-    patience: int = 10
+    patience: int = 2000
     min_delta: float = 1e-3
 
     # Seeds
-    base_seed: int = 42
-    n_seeds: int = 1
+    base_seed: int = 200
+    n_seeds: int = 10
 
     # Use steady-state aware starting boundaries for RL algorithm
     # Intention: don't explore outside of the economically relevant state space
@@ -60,35 +61,51 @@ if __name__ == "__main__":
     mp.freeze_support()
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
     cfg = RunConfig()
     params = BrockMirmanParams.load_params(cfg.toml_path)
+    
+    # PPO Hyperparameters
+    INITIAL_LR = 0.0006005339473
+    N_EPISODES = 1
+    N_EPOCHS = 5
+    NUM_MINIBATCHES = 4
+    CLIP_RANGE = 0.0930215362358
+    ENT_COEF = 0.0002741657703
+    GAE_LAMBDA = 0.9019075061001
+    VF_COEF = 0.8923565322017
+
+    lr_schedule = LinearScheduleByProcessedSamples(
+        initial_lr=INITIAL_LR,
+        final_lr=3e-5,
+        max_processed_samples=cfg.max_processed_samples,
+    )
 
     algo_cfg = AlgoConfig(
         name="ppo",
         policy="MlpPolicy",
         algo_params={
             "gamma": params.beta,
-            "n_steps": cfg.max_episode_steps,
-            "batch_size": cfg.n_envs * cfg.max_episode_steps // 5,
-            "n_epochs": 2,
-            "learning_rate": 3.5e-4,
-            "ent_coef": 4.4e-5,
-            "gae_lambda": 0.925,
-            "clip_range": 0.27,
-            "vf_coef": 0.5,
+            "n_steps": cfg.max_episode_steps * N_EPISODES,
+            "batch_size": (cfg.n_envs * cfg.max_episode_steps * N_EPISODES) // NUM_MINIBATCHES,
+            "n_epochs": N_EPOCHS,
+            "learning_rate": lr_schedule,
+            "ent_coef": ENT_COEF,
+            "gae_lambda": GAE_LAMBDA,
+            "clip_range": CLIP_RANGE,
+            "vf_coef": VF_COEF,
             "max_grad_norm": 0.5,
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [128, 128], "vf": [128, 128]},
+            "net_arch": {"pi": [64, 64], "vf": [64, 64]},
             "log_std_init": -2.0,
         },
     )
-
+    
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
     train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params, verbose=1)
-    analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params, n_boot=1000, alpha=0.05, bootstrap_seed=12345)
+    analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params)

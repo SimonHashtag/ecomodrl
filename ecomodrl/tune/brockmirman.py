@@ -19,7 +19,7 @@ from ecomodrl.utils.params_loader import BrockMirmanParams
 # NOTE: set custom TUNERESULTS_PATH 
 #       on your Windows system via setx TUNERESULTS_PATH "my_custom_tune_results_path" (close & reopen terminal afterwards)
 #       on your mac/linux: export TUNERESULTS_PATH="my_custom_tune_results_path"
-#       otherwise defaults to relative path "./ecomodrl/tune_results/CassKoopmans"
+#       otherwise defaults to relative path "./ecomodrl/tune_results/BrockMirman"
 #
 # Run file with e.g.: python ecomodrl/tune/brockmirman.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 
@@ -34,7 +34,7 @@ class RunConfig:
     total_timesteps: int = 10_000_000
     max_processed_samples: int = 1_000_000
     eval_every: int = 10_000
-    patience: int = 10
+    patience: int = 2000
     min_delta: float = 1e-3
     
     # Use steady-state aware starting boundaries for RL algorithm
@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
     eta = 3
     rungs = 4
-    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs)), cfg.eval_every)
+    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs-1)), cfg.eval_every)
     max_fidelity = cfg.max_processed_samples
     n_workers = max(1, (os.cpu_count() or 2) - 1)
 
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         max_fidelity=max_fidelity,
         n_workers=n_workers,
         output_path=cfg.out_dir,
-        log_level="INFO",
+        log_level="DEBUG",
         eta=eta,
         crossover_prob=0.5,
         mutation_factor=0.5,

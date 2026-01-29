@@ -54,10 +54,10 @@ class BrockMirmanEnv(gym.Env):
         # action (consumption share)
         self.action_space = Box(TOL, 1.0 - TOL, shape=(1,), dtype=self.floattype)
 
-        # states (z, k)
+        # states (log(z), log(k))
         self.observation_space = Box(
-            low=np.array([0.0, 0.0], dtype=self.floattype),
-            high=np.array([np.finfo(self.floattype).max, np.finfo(self.floattype).max], dtype=self.floattype),
+            low=np.array([-np.inf, -np.inf], dtype=self.floattype),
+            high=np.array([np.inf, np.inf], dtype=self.floattype),
             shape=(2,),
             dtype=self.floattype,
         )
@@ -72,8 +72,9 @@ class BrockMirmanEnv(gym.Env):
         self._z: Optional[float] = None
 
     def _get_obs(self) -> np.ndarray:
+        # Log-scale z and k
         assert self._z is not None and self._k is not None
-        return np.array([self._z, self._k], dtype=self.floattype)
+        return np.array([np.log(self._z), np.log(self._k)], dtype=self.floattype)
 
     def _get_info(self) -> dict:
         return {
