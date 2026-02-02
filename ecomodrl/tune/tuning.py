@@ -253,7 +253,7 @@ def target_function(
         trial_cfg = replace(
             trial_cfg,
             max_processed_samples=int(fidelity),
-            n_seeds= _seeds_for_fidelity(int(fidelity), int(min_fidelity), int(max_fidelity), min_seeds=3, max_seeds=cfg.n_seeds), # Reduce number of training runs for low fertilities
+            n_seeds= cfg.n_seeds,
         )
     trial_dir.mkdir(parents=True, exist_ok=True)
 
