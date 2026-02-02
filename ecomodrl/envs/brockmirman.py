@@ -100,14 +100,13 @@ class BrockMirmanEnv(gym.Env):
 
         self._t = 0
 
-        # capital
+        # capital & technology
         if self._fixed_start or (options and options.get("fixed_start", False)):
             self._k = self.floattype(self.reset_state)
+            self._z = self.floattype(1.0)
         else:
             self._k = self.floattype(self._rng.uniform(self.state_min, self.state_max))
-
-        # technology
-        self._z = self.floattype(1.0)
+            self._z = self.floattype(self._rng.lognormal(mean=0.0, sigma=np.sqrt(self.SIGMA**2 / (1 - self.RHO**2))))
 
         return self._get_obs(), self._get_info()
 
