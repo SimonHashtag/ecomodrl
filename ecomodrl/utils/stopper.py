@@ -473,9 +473,6 @@ class WallClockEarlyStoppingCallback(_BaseEarlyStoppingEvalCallback):
             return
 
         elapsed = time.perf_counter() - self._t0
-        
-        if self.lr_schedule_obj is not None:
-            self.lr_schedule_obj.update(elapsed)
             
         if elapsed >= self.max_wallclock_seconds:
             self._stop_reason = "budget"
@@ -493,3 +490,8 @@ class WallClockEarlyStoppingCallback(_BaseEarlyStoppingEvalCallback):
                     f"{'Will do final eval if possible, then stop.' if self.final_eval_on_budget else 'Stopping.'}",
                     flush=True,
                 )
+                
+    def _on_rollout_end(self) -> None:
+        elapsed = time.perf_counter() - self._t0
+        if self.lr_schedule_obj is not None:
+            self.lr_schedule_obj.update(elapsed)

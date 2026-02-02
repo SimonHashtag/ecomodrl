@@ -105,7 +105,8 @@ if __name__ == "__main__":
 
     eta = 3
     rungs = 3
-    min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs-1)), cfg.eval_every)
+    MIN_FIDELITY_SECONDS = 30
+    min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs-1)), MIN_FIDELITY_SECONDS)
     max_fidelity = cfg.max_wallclock_seconds
     n_workers = max(1, (os.cpu_count() or 2) - 1)
 

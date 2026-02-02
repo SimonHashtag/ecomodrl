@@ -661,7 +661,7 @@ def run_comparison():
             if global_steps is None and len(results.return_curves) > 0:
                 n_steps = results.return_curves.shape[1]
                 # max_processed_samples=1_000_000, eval_every=10_000
-                global_steps = np.linspace(0, 1_000_000, n_steps)
+                global_steps = np.linspace(0, n_steps-1, n_steps)
 
     if not algo_results:
         logger.error("No algorithm results found. Run training first.")

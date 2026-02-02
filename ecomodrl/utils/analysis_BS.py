@@ -194,7 +194,7 @@ def analyze_all_seeds(
     plt.style.use("seaborn-v0_8-colorblind")
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    global_steps = np.linspace(0, cfg.max_wallclock_seconds, retstep=10)[0]
+    global_steps = np.linspace(0, cfg.max_wallclock_seconds, num=cfg.max_wallclock_seconds)
 
     # Benchmark reference solution
     p, grid, euler_grid, policy_bm, V_bm = compute_benchmark(params)
