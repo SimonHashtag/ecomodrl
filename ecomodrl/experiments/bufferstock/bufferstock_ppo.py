@@ -18,7 +18,7 @@ from ecomodrl.utils.beta_policy import BetaActorCriticPolicy
 # NOTE: set custom RUNRESULTS_PATH 
 #       on your Windows system via setx RUNRESULTS_PATH "my_custom_tune_results_path" (close & reopen terminal afterwards)
 #       on your mac/linux: export RUNRESULTS_PATH="my_custom_tune_results_path"
-#       otherwise defaults to relative path "./ecomodrl/runs/CassKoopmans"
+#       otherwise defaults to relative path "./ecomodrl/runs/BufferStock"
 @dataclass
 class RunConfig:
     toml_path: str = "./ecomodrl/experiments/model_params/bufferstock.toml"
@@ -28,7 +28,7 @@ class RunConfig:
     n_eval_episodes: int = 10
     n_envs: int = 10
     total_timesteps: int = 10_000_000
-    max_processed_samples: int = 1_000_000
+    max_wallclock_seconds: int = 120
     eval_every: int = 10_000
     patience: int = 20
     min_delta: float = 1e-3

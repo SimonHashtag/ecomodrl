@@ -12,7 +12,7 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.utils.analysis_CK import analyze_all_seeds
 from ecomodrl.utils.params_loader import CassKoopmansParams
-from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples 
+from ecomodrl.utils.learning_schedule import LinearScheduleByWallClockTime
 
 
 # ----------------------------
@@ -33,7 +33,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_processed_samples: int = 1_000_000
+    max_wallclock_seconds: int = 120
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -77,10 +77,10 @@ if __name__ == "__main__":
     TARGET_POLICY_NOISE = 0.0534976029844
     TARGET_NOISE_CLIP = 0.6808242863888 # max(0.6808..., 0.0534...)
 
-    lr_schedule = LinearScheduleByProcessedSamples(
+    lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,
         final_lr=3e-5,
-        max_processed_samples=cfg.max_processed_samples,
+        max_wallclock_seconds=cfg.max_wallclock_seconds,
     )
 
     train_freq = cfg.max_episode_steps * N_EPISODES

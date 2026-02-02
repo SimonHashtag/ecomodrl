@@ -12,7 +12,7 @@ from stable_baselines3 import PPO, TD3, DDPG, SAC
 from stable_baselines3.common.utils import set_random_seed
 
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.stopper import EarlyStoppingCallback
+from ecomodrl.utils.stopper import WallClockEarlyStoppingCallback
 from ecomodrl.utils.grad_norm_wrapper import add_grad_norm_rescaling
 from ecomodrl.utils.action_noise import make_action_noise
 
@@ -123,21 +123,22 @@ def train_single_seed(
                 clip_critic=True)
         
         lr_obj = getattr(model, "learning_rate", None)
-
-        callback = EarlyStoppingCallback(
+        
+        callback = WallClockEarlyStoppingCallback(
             eval_env=eval_env,
             beta=params.beta,
-            eval_freq=cfg.eval_every,
+            eval_freq_steps=cfg.eval_every,     # evaluation schedule in env steps
             patience=cfg.patience,
             min_delta=cfg.min_delta,
-            max_processed_samples=cfg.max_processed_samples,
+            max_wallclock_seconds=cfg.max_wallclock_seconds,
             n_eval_episodes=getattr(cfg, "n_eval_episodes", None) or 1.0,  # increase for stochastic envs
             deterministic_eval=True,
-            best_model_path=best_model_path,
-            vecnorm_path=vecnorm_path,
+            best_model_path=str(best_model_path),
+            vecnorm_path=str(vecnorm_path),
+            final_eval_on_budget=True,
             lr_schedule_obj=lr_obj if callable(getattr(lr_obj, "update", None)) else None,
             verbose=verbose,
-        )
+            )
 
         model.learn(total_timesteps=cfg.total_timesteps, callback=callback)
 

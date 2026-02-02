@@ -194,7 +194,7 @@ def analyze_all_seeds(
     plt.style.use("seaborn-v0_8-colorblind")
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    global_steps = np.linspace(0, cfg.max_processed_samples, retstep=cfg.eval_every)[0]
+    global_steps = np.linspace(0, cfg.max_wallclock_seconds, retstep=10)[0]
 
     # Benchmark reference solution
     p, grid, euler_grid, policy_bm, V_bm = compute_benchmark(params)
@@ -233,7 +233,7 @@ def analyze_all_seeds(
 
         # --- Learning curve (evaluation performance) ---
         _, returns = tb_read_scalar(tb_path, "eval/avg_discounted_return")
-        _, steps_proc = tb_read_scalar(tb_path, "eval/x_processed_samples")
+        _, steps_proc = tb_read_scalar(tb_path, "eval/x_wallclock_seconds")
         # Interpolate to global step grid for consistent aggregation
         return_curves.append(np.interp(global_steps, steps_proc, returns))
 
@@ -310,7 +310,7 @@ def analyze_all_seeds(
     plt.fill_between(global_steps, q25_return, q75_return, alpha=0.3, label="IQR")
     plt.plot(global_steps, iqm_return, label="Interquartile Mean")
     plt.axhline(return_bm, linestyle="-.", color="darkorange", label="Benchmark")
-    plt.xlabel("Processed Samples")
+    plt.xlabel("Wall-Clock Time (seconds)")
     plt.ylabel("Avg discounted episode return (true scale)")
     plt.title("Learning Curve (PPO Buffer Stock)")
     plt.legend()

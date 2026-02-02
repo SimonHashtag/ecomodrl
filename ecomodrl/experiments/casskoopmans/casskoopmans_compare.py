@@ -284,7 +284,7 @@ def plot_learning_curves(
 
     ax.set_yscale('log')
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: f'{y:g}'))
-    ax.set_xlabel("Processed Samples")
+    ax.set_xlabel("Wallclock time (seconds)", fontsize=10)
     ax.set_ylabel(r"Regret $(G_{EGM} - G_{RL})$", fontsize=10)
     ax.grid(True, which="major", linestyle="--", alpha=0.5)
     ax.grid(True, which="minor", linestyle=":", alpha=0.2)
@@ -577,7 +577,7 @@ def run_comparison():
             if global_steps is None and len(results.return_curves) > 0:
                 n_steps = results.return_curves.shape[1]
                 # max_processed_samples=1_000_000, eval_every=10_000
-                global_steps = np.linspace(0, 1_000_000, n_steps)
+                global_steps = np.linspace(0, 120, n_steps)
 
     if not algo_results:
         logger.error("No algorithm results found. Run training first.")

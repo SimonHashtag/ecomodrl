@@ -334,7 +334,7 @@ def plot_learning_curves(
 
     ax.set_yscale('log')
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: f'{y:g}'))
-    ax.set_xlabel("Processed Samples")
+    ax.set_xlabel("Wallclock time (seconds)", fontsize=10)
     ax.set_ylabel(r"Regret $(G_{EGM} - G_{RL})$", fontsize=10)
     ax.set_title("Learning Curves (Brock–Mirman)")
     ax.grid(True, which="major", linestyle="--", alpha=0.5)
