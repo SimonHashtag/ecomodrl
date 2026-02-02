@@ -212,34 +212,63 @@ class PlanningProblem():
     #-------------------------------------------------------------------
 
     def V_from_a(self, k_grid, z_grid, a_policy, conv) -> RegularGridInterpolator:
-        # Set up full grid
+        """
+        Compute value function on (k,z) grid by iterating the Bellman equation 
+        under a fixed policy. Fully vectorized for speed.
+        """
         Nk, Nz = len(k_grid), len(z_grid)
-        K, Z = np.meshgrid(k_grid, z_grid, indexing='ij')
-        # Evaluate policy once
-        a = a_policy(np.column_stack([K.ravel(), Z.ravel()])).reshape(Nk, Nz)
-        # Double-buffer for value iteration
+        gh = len(self.gh_w)
+        
+        # Build full grid
+        K, Z = np.meshgrid(k_grid, z_grid, indexing='ij')  # (Nk, Nz)
+        pts_kz = np.column_stack([K.ravel(), Z.ravel()])   # (Nk*Nz, 2)
+        
+        # Evaluate policy once: a(k,z) for all grid points
+        a = a_policy(pts_kz).reshape(Nk, Nz)  # (Nk, Nz)
+        
+        # Precompute consumption and next-period capital (fixed under the policy)
+        c = self.consumption_from_share(a, K, Z)           # (Nk, Nz)
+        k_next = self.next_k(K, Z, c)                       # (Nk, Nz)
+        u_c = self.u(c)                                     # (Nk, Nz)
+        
+        # Precompute z' at GH nodes for each z: shape (Nz, gh)
+        z_next_all = self.z_next_from(z_grid)               # (Nz, gh)
+        
+        # Build lookup points for V(k', z') for all (k,z) and GH nodes
+        # For each (i,j) grid point, we need V at (k_next[i,j], z_next_all[j, g]) for g in 0..gh-1
+        # Total points: Nk * Nz * gh
+        k_next_flat = k_next.ravel()                        # (Nk*Nz,)
+        # Tile k_next for each GH node
+        k_lookup = np.repeat(k_next_flat, gh)               # (Nk*Nz*gh,)
+        # For z': we need z_next_all[j, g] where j = idx % Nz, tiled for each k
+        # Build index array for z dimension
+        j_indices = np.tile(np.arange(Nz), Nk)              # (Nk*Nz,) - j index for each grid point
+        z_lookup = z_next_all[j_indices].ravel()            # (Nk*Nz*gh,)
+        
+        lookup_pts = np.column_stack([k_lookup, z_lookup])  # (Nk*Nz*gh, 2)
+        
+        # Value iteration
         V_old = np.zeros((Nk, Nz))
-        V_new = np.empty_like(V_old)
-        # Iterate
-        while(True):
-            # Interpolate value function from previous iteration
+        
+        while True:
+            # Interpolate V at all lookup points
             V_interp = self.make_bilinear(k_grid, z_grid, V_old)
+            V_next_flat = V_interp(lookup_pts)              # (Nk*Nz*gh,)
+            
+            # Weighted sum over GH nodes: reshape to (Nk*Nz, gh) then sum
+            V_next_gh = V_next_flat.reshape(Nk * Nz, gh)    # (Nk*Nz, gh)
+            EV = np.sum(self.gh_w * V_next_gh, axis=1)      # (Nk*Nz,)
+            EV = EV.reshape(Nk, Nz)                         # (Nk, Nz)
+            
             # Bellman update
-            max_err = 0.0
-            for i, k in enumerate(k_grid):
-                for j, z in enumerate(z_grid):
-                    a_ij = a[i, j]
-                    v = self.bellman(a_ij, k, z, V_interp)
-                    diff = abs(v - V_old[i, j])
-                    if diff > max_err:
-                        max_err = diff
-                    V_new[i, j] = v
+            V_new = u_c + self.beta * EV                    # (Nk, Nz)
+            
             # Convergence check
+            max_err = np.max(np.abs(V_new - V_old))
             if max_err < conv:
-                # Build the final interpolator once and
                 return self.make_bilinear(k_grid, z_grid, V_new)
-            # If not converged, swap buffers
-            V_old = V_new
+            
+            V_old = V_new.copy()
 
 
 

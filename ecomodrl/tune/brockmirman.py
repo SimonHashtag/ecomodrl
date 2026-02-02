@@ -49,7 +49,7 @@ class RunConfig:
     
     # Seeds
     base_seed: int = 100
-    n_seeds: int = 10
+    n_seeds: int = 3
 
     @property
     def seeds(self) -> list[int]:
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     cs = space_fn(seed=cfg.base_seed)
 
     eta = 3
-    rungs = 4
+    rungs = 3
     min_fidelity = max(cfg.max_processed_samples // (eta**(rungs-1)), cfg.eval_every)
     max_fidelity = cfg.max_processed_samples
     n_workers = max(1, (os.cpu_count() or 2) - 1)
