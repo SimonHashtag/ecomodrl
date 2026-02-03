@@ -138,7 +138,7 @@ def train_single_seed(
             final_eval_on_budget=True,
             lr_schedule_obj=lr_obj if callable(getattr(lr_obj, "update", None)) else None,
             verbose=verbose,
-            )
+        )
 
         model.learn(total_timesteps=cfg.total_timesteps, callback=callback)
 
