@@ -38,6 +38,10 @@ N_BOOT = 1000
 ALPHA = 0.05
 BOOTSTRAP_SEED = 12345
 
+# Analysis seeds (distinct from training seeds 200-209)
+ANALYSIS_SEED = 300  # For benchmark evaluation simulations
+CEV_SAMPLING_SEED = 400  # For CEV visited-states sampling
+
 # Plotting style
 plt.style.use("seaborn-v0_8-colorblind")
 plt.rcParams.update({
@@ -120,13 +124,13 @@ def compute_benchmark(params, state_min: float, state_max: float) -> Benchmark:
     V_bm = model.V_from_a(k_grid, z_grid, policy_bm, conv=1e-3)
     
     # Benchmark Euler errors and utility
-    euler_bm, _, U_bm = model.get_euler_errors(k_grid, z_grid, policy_bm, episodes=100)
+    euler_bm, _, U_bm = model.get_euler_errors(k_grid, z_grid, policy_bm, episodes=100, seed=ANALYSIS_SEED)
     euler_bm_log = np.log10(np.abs(euler_bm))
     
     # Benchmark return on evaluation grid (k-grid x z=1)
     k_eval = np.linspace(state_min, state_max, 20)
     z_eval = np.array([1.0])
-    _, _, return_bm = model.get_euler_errors(k_eval, z_eval, policy_bm, episodes=100)
+    _, _, return_bm = model.get_euler_errors(k_eval, z_eval, policy_bm, episodes=100, seed=ANALYSIS_SEED)
     
     return Benchmark(
         model=model,
@@ -202,7 +206,7 @@ def process_algo_results(raw: dict, benchmark: Benchmark, params) -> AlgoResults
         states_vis = np.column_stack([k_vis, z_vis])
         
         # Sample up to 1000 points for relevance approximation
-        rng = np.random.default_rng(seed=i)
+        rng = np.random.default_rng(seed=CEV_SAMPLING_SEED + i)
         n_sample = min(1000, states_vis.shape[0])
         idx_sample = rng.choice(states_vis.shape[0], size=n_sample, replace=False)
         states_sample = states_vis[idx_sample, :]

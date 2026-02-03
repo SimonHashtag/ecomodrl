@@ -26,6 +26,10 @@ from ecomodrl.utils.tb_reader import tb_read_scalar
 
 logger = logging.getLogger(__name__)
 
+# Analysis seed offset: ensures testing seeds are distinct from training seeds
+# For seed N, analysis uses ANALYSIS_SEED_OFFSET + N
+ANALYSIS_SEED_OFFSET = 100
+
 
 def get_policy_value_functions(
     model_path: Path,
@@ -225,9 +229,9 @@ def analyze_all_seeds(
             V_nn_grid = value_rl(pts_kz).reshape(len(k_grid), len(z_grid))
             rl_value_nn_vals.append(V_nn_grid.tolist())
 
-        # Euler errors and episode utilities
+        # Euler errors and episode utilities (use distinct analysis seed)
         euler_rl, k_states, U_rl = planning_prob.get_euler_errors(
-            k_grid, z_grid, policy_rl, episodes=100, seed=seed
+            k_grid, z_grid, policy_rl, episodes=100, seed=ANALYSIS_SEED_OFFSET + seed
         )
         euler_logabs_list.append(np.log10(np.abs(euler_rl)).tolist())
         pooled_states_k.append(k_states.tolist())
