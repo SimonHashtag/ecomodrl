@@ -15,7 +15,7 @@ import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.utils.params_loader import BaseParams
-from ecomodrl.utils.learning_schedule import LinearScheduleByProcessedSamples
+from ecomodrl.utils.learning_schedule import LinearScheduleByWallClockTime
 
 # ----------------------------
 # Utilities
@@ -32,11 +32,11 @@ def _to_dict(
     return {hpdef.name: val for hpdef, val in zip(list(cs.values()), hp)} 
 
 
-def _seeds_for_fidelity(fidelity: int, min_fid: int, max_fid: int, min_seeds: int, max_seeds: int) -> int:
-    """Simple seed ramping schedule based on relative budget."""
-    phi = (fidelity - min_fid) / float(max_fid - min_fid)
-    seeds = int(round((max_seeds - min_seeds) * phi + min_seeds))
-    return max(min_seeds, min(seeds, max_seeds))
+# def _seeds_for_fidelity(fidelity: int, min_fid: int, max_fid: int, min_seeds: int, max_seeds: int) -> int:
+#     """Simple seed ramping schedule based on relative budget."""
+#     phi = (fidelity - min_fid) / float(max_fid - min_fid)
+#     seeds = int(round((max_seeds - min_seeds) * phi + min_seeds))
+#     return max(min_seeds, min(seeds, max_seeds))
 
 
 # ----------------------------
@@ -70,10 +70,10 @@ def _ppo_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig)
     batch_size = B // M
 
     initial_lr = float(hp["learning_rate"])
-    lr_schedule = LinearScheduleByProcessedSamples(
+    lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=initial_lr,
         final_lr=min(initial_lr, 3e-5),
-        max_processed_samples=cfg.max_processed_samples, 
+        max_wallclock_seconds=cfg.max_wallclock_seconds, 
     )
 
     algo = replace(base)
@@ -117,10 +117,10 @@ def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base
     gradient_steps = math.ceil(B * float(hp["utd_ratio"]) / int(hp["batch_size"]))
     
     initial_lr = float(hp["learning_rate"])
-    lr_schedule = LinearScheduleByProcessedSamples(
+    lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=initial_lr,
         final_lr=min(initial_lr, 3e-5),
-        max_processed_samples=cfg.max_processed_samples,
+        max_wallclock_seconds=cfg.max_wallclock_seconds,
     )
 
     return {
@@ -252,7 +252,7 @@ def target_function(
     if fidelity is not None:
         trial_cfg = replace(
             trial_cfg,
-            max_processed_samples=int(fidelity),
+            max_wallclock_seconds=int(fidelity),
             n_seeds= cfg.n_seeds,
         )
     trial_dir.mkdir(parents=True, exist_ok=True)

@@ -137,8 +137,8 @@ def analyze_all_seeds(
     
     # Global step grid for learning curve interpolation
     global_steps = np.linspace(
-        0, cfg.max_processed_samples, 
-        int(cfg.max_processed_samples / cfg.eval_every) + 1
+        0, cfg.max_wallclock_seconds if hasattr(cfg, "max_wallclock_seconds") else cfg.total_timesteps,
+        int(cfg.max_wallclock_seconds) + 1 if hasattr(cfg, "max_wallclock_seconds") else int(cfg.total_timesteps / cfg.eval_every) + 1
     )
 
     # --- Initialize containers ---
@@ -168,7 +168,7 @@ def analyze_all_seeds(
             _, returns = tb_read_scalar(tb_path, "eval/avg_discounted_return")
             _, steps_proc = tb_read_scalar(tb_path, "eval/x_processed_samples")
             _, wallclock = tb_read_scalar(tb_path, "eval/x_wallclock_seconds")
-            interp_returns = np.interp(global_steps, steps_proc, returns)
+            interp_returns = np.interp(global_steps, wallclock, returns)
             final_time = wallclock[-1] if len(wallclock) > 0 else 0.0
         except Exception as e:
             logger.warning(f"Could not read TensorBoard for seed {seed}: {e}")

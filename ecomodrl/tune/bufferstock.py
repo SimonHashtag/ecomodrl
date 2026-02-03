@@ -18,7 +18,7 @@ from ecomodrl.utils.params_loader import BufferStockParams
 # NOTE: set custom TUNERESULTS_PATH 
 #       on your Windows system via setx TUNERESULTS_PATH "my_custom_tune_results_path" (close & reopen terminal afterwards)
 #       on your mac/linux: export TUNERESULTS_PATH="my_custom_tune_results_path"
-#       otherwise defaults to relative path "./ecomodrl/tune_results/CassKoopmans"
+#       otherwise defaults to relative path "./ecomodrl/tune_results/BufferStock"
 #
 # Run file with e.g.: python ecomodrl/tune/bufferstock.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 
@@ -31,7 +31,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 10_000_000
-    max_processed_samples: int = 1_000_000
+    max_wallclock_seconds: int = 120
     eval_every: int = 10_000
     patience: int = 10
     min_delta: float = 1e-3
@@ -59,7 +59,7 @@ def parse_args():
     # Optional overrides
     p.add_argument("--out_dir", type=str, default=None)
     p.add_argument("--n_envs", type=int, default=None)
-    p.add_argument("--max_processed_samples", type=int, default=None)
+    p.add_argument("--max_wallclock_seconds", type=int, default=None)
     p.add_argument("--eval_every", type=int, default=None)
     p.add_argument("--n_seeds", type=int, default=None)
     return p.parse_args()
@@ -78,8 +78,8 @@ if __name__ == "__main__":
         cfg = replace(cfg, out_dir=Path(args.out_dir))
     if args.n_envs is not None:
         cfg = replace(cfg, n_envs=args.n_envs)
-    if args.max_processed_samples is not None:
-        cfg = replace(cfg, max_processed_samples=args.max_processed_samples)
+    if args.max_wallclock_seconds is not None:
+        cfg = replace(cfg, max_wallclock_seconds=args.max_wallclock_seconds)
     if args.eval_every is not None:
         cfg = replace(cfg, eval_every=args.eval_every)
     if args.n_seeds is not None:
@@ -95,9 +95,10 @@ if __name__ == "__main__":
     cs = space_fn(seed=cfg.base_seed)
 
     eta = 3
-    rungs = 4
-    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs)), cfg.eval_every)
-    max_fidelity = cfg.max_processed_samples
+    rungs = 3
+    MIN_FIDELITY_SECONDS = 30
+    min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs)), MIN_FIDELITY_SECONDS)
+    max_fidelity = cfg.max_wallclock_seconds
     n_workers = max(1, (os.cpu_count() or 2) - 1)
 
     dehb = DEHB(

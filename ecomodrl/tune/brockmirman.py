@@ -32,7 +32,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 10_000_000
-    max_processed_samples: int = 1_000_000
+    max_wallclock_seconds: int = 120
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -68,7 +68,7 @@ def parse_args():
     # Optional overrides
     p.add_argument("--out_dir", type=str, default=None)
     p.add_argument("--n_envs", type=int, default=None)
-    p.add_argument("--max_processed_samples", type=int, default=None)
+    p.add_argument("--max_wallclock_seconds", type=int, default=None)
     p.add_argument("--eval_every", type=int, default=None)
     p.add_argument("--n_seeds", type=int, default=None)
     return p.parse_args()
@@ -87,8 +87,8 @@ if __name__ == "__main__":
         cfg = replace(cfg, out_dir=Path(args.out_dir))
     if args.n_envs is not None:
         cfg = replace(cfg, n_envs=args.n_envs)
-    if args.max_processed_samples is not None:
-        cfg = replace(cfg, max_processed_samples=args.max_processed_samples)
+    if args.max_wallclock_seconds is not None:
+        cfg = replace(cfg, max_wallclock_seconds=args.max_wallclock_seconds)
     if args.eval_every is not None:
         cfg = replace(cfg, eval_every=args.eval_every)
     if args.n_seeds is not None:
@@ -105,8 +105,9 @@ if __name__ == "__main__":
 
     eta = 3
     rungs = 3
-    min_fidelity = max(cfg.max_processed_samples // (eta**(rungs-1)), cfg.eval_every)
-    max_fidelity = cfg.max_processed_samples
+    MIN_FIDELITY_SECONDS = 30
+    min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs-1)), MIN_FIDELITY_SECONDS)
+    max_fidelity = cfg.max_wallclock_seconds
     n_workers = max(1, (os.cpu_count() or 2) - 1)
 
     dehb = DEHB(
