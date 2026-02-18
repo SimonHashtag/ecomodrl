@@ -156,14 +156,19 @@ class PlanningProblem:
         return (self.beta * self.R / (self.G ** self.gamma)) * np.dot(weights, self.u_prime(c_next))
 
     def euler_residual(self, a: float, m_t: float, policy: interp1d) -> float:
-        """Euler residual."""
+        """Euler residual in consumption units."""
+        # 1. Calculate actual consumption chosen today
         c_t = self.consumption_from_share(a, m_t)
-        rs_t = self.resources_saved(m_t, c_t)
-        m_next = self.m_next(rs_t)
-        a_next = policy(m_next)
-        c_next = self.consumption_from_share(a_next, m_next)
+        # 2. Calculate next period states for all shock realizations
+        m_next = self.m_next(self.resources_saved(m_t, c_t))
+        # 3. Interpolate policy to get c_{t+1} for all shock realizations
+        c_next = self.consumption_from_share(policy(m_next), m_next)
+        # 4. Compute RHS of Euler Equation (Expected Marginal Utility)
         rhs = self.demu_next(c_next)
-        return self.u_prime(c_t) - rhs
+        # 5. Invert Marginal Utility to get "Implied Consumption"
+        c_implied = self.u_prime_inv(rhs)
+        # 6. Calculate relative error in consumption terms
+        return (c_implied / c_t) - 1.0
     
     def c_from_euler(self, c_next: np.ndarray) -> float:
         """Recover c_t from: u'(c_t) = (β R / G) E[ u'(c_{t+1}) / Ψ_{t+1} ]."""
