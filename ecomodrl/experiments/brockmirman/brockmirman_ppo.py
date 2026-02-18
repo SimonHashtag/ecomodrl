@@ -32,7 +32,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_wallclock_seconds: int = 120
+    max_wallclock_seconds: int = 900
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -67,14 +67,14 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # PPO Hyperparameters
-    INITIAL_LR = 0.0006005339473
-    N_EPISODES = 1
-    N_EPOCHS = 5
-    NUM_MINIBATCHES = 4
-    CLIP_RANGE = 0.0930215362358
-    ENT_COEF = 0.0002741657703
-    GAE_LAMBDA = 0.9019075061001
-    VF_COEF = 0.8923565322017
+    INITIAL_LR = 0.0003550265788
+    N_EPISODES = 2
+    N_EPOCHS = 8
+    NUM_MINIBATCHES = 10
+    CLIP_RANGE = 0.0971216893831
+    ENT_COEF = 3.7059684e-06
+    GAE_LAMBDA = 0.9684867656075
+    VF_COEF = 0.7289239008103
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,
@@ -99,7 +99,7 @@ if __name__ == "__main__":
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [64, 64], "vf": [64, 64]},
+            "net_arch": {"pi": [128, 128], "vf": [128, 128]},
             "log_std_init": -2.0,
         },
     )

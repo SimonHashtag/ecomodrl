@@ -33,7 +33,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_wallclock_seconds: int = 120
+    max_wallclock_seconds: int = 900
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -68,11 +68,11 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # SAC Hyperparameters
-    INITIAL_LR = 0.0021633446859
+    INITIAL_LR = 0.0018567403043
     N_EPISODES = 1
-    BATCH_SIZE = 64
-    UTD_RATIO = 3.1963266444084
-    TAU = 0.0028806848154
+    BATCH_SIZE = 128
+    UTD_RATIO = 1.3366648256543
+    TAU = 0.0110754407011
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,
@@ -100,7 +100,7 @@ if __name__ == "__main__":
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [64, 64], "qf": [64, 64]},
+            "net_arch": {"pi": [128, 128], "qf": [128, 128]},
         },
     )
     

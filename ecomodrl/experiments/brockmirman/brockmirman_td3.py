@@ -33,7 +33,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_wallclock_seconds: int = 120
+    max_wallclock_seconds: int = 900
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -68,16 +68,16 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # TD3 Hyperparameters
-    INITIAL_LR = 0.0024508308099
+    INITIAL_LR = 8.18919494e-05
     N_EPISODES = 1
-    BATCH_SIZE = 32
-    UTD_RATIO = 4.947551057207
-    TAU = 0.0155640785394
-    ACTION_NOISE_STD = 0.4908687932151  # exploration_sigma
-    TARGET_POLICY_NOISE = 0.086630820585
-    # max(hp["target_noise_clip"], hp["target_policy_noise"])
-    # max(0.5628348107875, 0.086630820585) = 0.5628348107875
-    TARGET_NOISE_CLIP = 0.5628348107875
+    BATCH_SIZE = 64
+    UTD_RATIO = 3.2442935016701
+    TAU = 0.0160113247685
+    ACTION_NOISE_STD = 0.1148733635872  # exploration_sigma
+    TARGET_POLICY_NOISE = 0.2183011279498
+    # Logic from _td3_adapter: max(hp["target_noise_clip"], hp["target_policy_noise"])
+    # 0.145... < 0.218... therefore clip = policy_noise
+    TARGET_NOISE_CLIP = 0.2183011279498
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

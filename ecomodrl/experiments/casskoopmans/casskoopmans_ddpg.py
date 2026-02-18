@@ -68,12 +68,12 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     # DDPG Hyperparameters
-    INITIAL_LR = 0.0024080977499
-    N_EPISODES = 1
-    BATCH_SIZE = 32
-    UTD_RATIO = 3.2766453901887
-    TAU = 0.0137254055431
-    ACTION_NOISE_STD = 0.0867911510799 # exploration_sigma
+    INITIAL_LR = 0.0027227070143
+    N_EPISODES = 2
+    BATCH_SIZE = 64
+    UTD_RATIO = 4.5723822897736
+    TAU = 0.0116201176904
+    ACTION_NOISE_STD = 0.2158077845016 # exploration_sigma
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,
