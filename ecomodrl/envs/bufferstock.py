@@ -8,9 +8,9 @@ from ecomodrl.utils.params_loader import BufferStockParams  # drop-in dataclass 
 
 __all__ = ["BufferStockSavingsEnv"]
 
-# ---- Defaults (can be overridden via __init__) ----
+# Defaults (can be overridden via __init__)
 RESET_M_DEFAULT = 5.0      # normalized market resources at reset
-TOL = 0.0                  # clamp to avoid zero/one consumption corners TODO: make less static (e.g. as model_params) as TD3/DDPG might need it (no beta distribution)
+TOL = 1e-3                 # clamp to avoid zero/one consumption corners
 
 
 class BufferStockSavingsEnv(gym.Env):
@@ -74,10 +74,10 @@ class BufferStockSavingsEnv(gym.Env):
         # action: consumption share in (TOL, 1-TOL)
         self.action_space = Box(TOL, 1.0 - TOL, shape=(1,), dtype=self.floattype)
 
-        # observation: normalized market resources m_t >= 0 (no hard upper bound)
+        # observation: log-scaled market resources log(m_t)
         self.observation_space = Box(
-            low=np.array([0.0], dtype=self.floattype),
-            high=np.array([np.finfo(self.floattype).max], dtype=self.floattype),
+            low=np.array([-np.inf], dtype=self.floattype),
+            high=np.array([np.inf], dtype=self.floattype),
             shape=(1,),
             dtype=self.floattype,
         )
@@ -96,7 +96,8 @@ class BufferStockSavingsEnv(gym.Env):
 
     # ---------- helpers ----------
     def _get_obs(self) -> np.ndarray:
-        return np.array([self._m], dtype=self.floattype)
+        # Log-scale m
+        return np.array([np.log(self._m)], dtype=self.floattype)
 
     def _get_info(self) -> dict:
         return {
@@ -197,7 +198,7 @@ def crra_utility(consumption: float, gamma: float, floattype=np.float32) -> floa
     CRRA utility u(c) with guard for strictly positive c.
     gamma == 1 -> log utility.
     """
-    c = floattype(consumption)
+    c = float(np.maximum(consumption, TOL)) # guard against non-positive consumption
     if gamma == 1:
         u = np.log(c)
     else:

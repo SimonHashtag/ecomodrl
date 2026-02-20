@@ -142,8 +142,10 @@ class PlanningProblem:
         """Bellman operator given consumption-share policy a(m) and value function v(m)."""
         c_t = self.consumption_from_share(a, m_t)
         rs_t = self.resources_saved(m_t, c_t)
-        m_next = self.m_next(rs_t)
-        cont_value = np.dot(self.probs, value(m_next))
+        rs_t = np.atleast_1d(rs_t)
+        # (N,1) x (S,) -> (N,S) for each shock realization
+        m_next = self.R / (self.G * self.psi) * rs_t[:, None] + self.theta  # (N, S)
+        cont_value = value(m_next) @ self.probs  # (N, S) @ (S,) -> (N,)
         return self.u(c_t) + self.beta * cont_value
 
     # ---------------------------
@@ -206,7 +208,9 @@ class PlanningProblem:
             power = 1.0
 
             for t in range(T):
-                a_t_share = float(policy(m_path[t]))  # consumption share
+                # Clip: policy interpolant can extrapolate outside [0,1] at
+                # states beyond the fitted grid (not bounded by env action space)
+                a_t_share = float(np.clip(policy(m_path[t]), 1e-3, 1.0 - 1e-3))
                 c_t = self.consumption_from_share(a_t_share, m_path[t])
 
                 # draw shocks
@@ -231,8 +235,9 @@ class PlanningProblem:
                 else:
                     a_t_share = c_t / m_t  # implied share
                     res = self.euler_residual(a_t_share, m_t, policy)
-                    # log10 of absolute residual
-                    err[t] = np.log10(abs(res))
+                    # log10 of absolute residual; guard against inf/nan
+                    log_err = np.log10(max(abs(res), 1e-16))
+                    err[t] = log_err if np.isfinite(log_err) else np.nan
             
             euler_errors[i, :] = err
             states[i, :] = m_path

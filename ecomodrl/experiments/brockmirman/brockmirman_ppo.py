@@ -32,7 +32,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_wallclock_seconds: int = 900
+    max_wallclock_seconds: int = 1200
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
