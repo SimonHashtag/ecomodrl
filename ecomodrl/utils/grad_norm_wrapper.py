@@ -28,8 +28,8 @@ def add_grad_norm_rescaling(
         optimizer.step = clipped_step
         optimizer._has_grad_clip_wrapper = True
 
-    if clip_actor and hasattr(model, "actor") and hasattr(model.actor, "optimizer"):
-        _wrap_step(model.actor.optimizer, model.actor.parameters())
+    if clip_actor and hasattr(getattr(model, "policy", None), "actor") and hasattr(getattr(model.policy, "actor", None), "optimizer"):
+        _wrap_step(model.policy.actor.optimizer, model.policy.actor.parameters())
 
-    if clip_critic and hasattr(model, "critic") and hasattr(model.critic, "optimizer"):
-        _wrap_step(model.critic.optimizer, model.critic.parameters())
+    if clip_critic and hasattr(getattr(model, "policy", None), "critic") and hasattr(getattr(model.policy, "critic", None), "optimizer"):
+        _wrap_step(model.policy.critic.optimizer, model.policy.critic.parameters())

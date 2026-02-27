@@ -29,12 +29,37 @@ def sync_vecnormalize(dst: VecNormalize, src: VecNormalize) -> None:
     dst.ret_rms = src.ret_rms
 
 
+def _seed_eval_env(eval_env, seed: int) -> None:
+    if seed is None:
+        return
+    if hasattr(eval_env, "seed"):
+        try:
+            eval_env.seed(seed)
+            return
+        except Exception:
+            pass
+    if hasattr(eval_env, "venv") and hasattr(eval_env.venv, "seed"):
+        try:
+            eval_env.venv.seed(seed)
+            return
+        except Exception:
+            pass
+    if hasattr(eval_env, "envs"):
+        try:
+            for i, e in enumerate(eval_env.envs):
+                if hasattr(e, "seed"):
+                    e.seed(int(seed) + int(i))
+        except Exception:
+            pass
+
+
 def evaluate_policy_discounted(
     model,
     eval_env,
     beta: float,
     n_episodes: int = 1,
     deterministic: bool = True,
+    seed: Optional[int] = None,
 ) -> float:
     """
     Discounted-return evaluation on a VecEnv(-like) interface.
@@ -46,8 +71,13 @@ def evaluate_policy_discounted(
     avg_return = 0.0
     n_envs = int(getattr(eval_env, "num_envs", 1))
 
-    for _ in range(int(n_episodes)):
+    for i in range(int(n_episodes)):
+        ep_seed = None if seed is None else int(seed) + int(i)
+        if ep_seed is not None:
+            _seed_eval_env(eval_env, ep_seed)
         obs = eval_env.reset()
+        if isinstance(obs, tuple):
+            obs = obs[0]
         dones = np.zeros(n_envs, dtype=bool)
         G, power = 0.0, 1.0
 
@@ -89,6 +119,7 @@ class _BaseEarlyStoppingEvalCallback(BaseCallback):
         deterministic_eval: bool = True,
         best_model_path: str = "best_model.zip",
         vecnorm_path: Optional[str] = "vecnormalize.pkl",
+        eval_seed: Optional[int] = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -103,6 +134,7 @@ class _BaseEarlyStoppingEvalCallback(BaseCallback):
 
         self.best_model_path = str(best_model_path)
         self.vecnorm_path = None if vecnorm_path is None else str(vecnorm_path)
+        self.eval_seed = None if eval_seed is None else int(eval_seed)
 
         # runtime state
         self.best_score = -np.inf
@@ -210,6 +242,7 @@ class _BaseEarlyStoppingEvalCallback(BaseCallback):
                 beta=self.beta,
                 n_episodes=self.n_eval_episodes,
                 deterministic=self.deterministic_eval,
+                seed=self.eval_seed,
             )
         )
         self.last_eval_score = avg_return
@@ -280,6 +313,7 @@ class ProcessedSamplesEarlyStoppingCallback(_BaseEarlyStoppingEvalCallback):
         best_model_path: str = "best_model.zip",
         vecnorm_path: Optional[str] = "vecnormalize.pkl",
         lr_schedule_obj: Optional[LinearScheduleByProcessedSamples] = None,
+        eval_seed: Optional[int] = None,
         verbose: int = 0,
     ):
         super().__init__(
@@ -292,6 +326,7 @@ class ProcessedSamplesEarlyStoppingCallback(_BaseEarlyStoppingEvalCallback):
             deterministic_eval=deterministic_eval,
             best_model_path=best_model_path,
             vecnorm_path=vecnorm_path,
+            eval_seed=eval_seed,
             verbose=verbose,
         )
         self.max_processed_samples = None if max_processed_samples is None else int(max_processed_samples)
@@ -444,6 +479,7 @@ class WallClockEarlyStoppingCallback(_BaseEarlyStoppingEvalCallback):
         vecnorm_path: Optional[str] = "vecnormalize.pkl",
         final_eval_on_budget: bool = True,
         lr_schedule_obj: Optional[LinearScheduleByWallClockTime] = None,
+        eval_seed: Optional[int] = None,
         verbose: int = 0,
     ):
         super().__init__(
@@ -456,6 +492,7 @@ class WallClockEarlyStoppingCallback(_BaseEarlyStoppingEvalCallback):
             deterministic_eval=deterministic_eval,
             best_model_path=best_model_path,
             vecnorm_path=vecnorm_path,
+            eval_seed=eval_seed,
             verbose=verbose,
         )
         self.max_wallclock_seconds = None if max_wallclock_seconds is None else float(max_wallclock_seconds)

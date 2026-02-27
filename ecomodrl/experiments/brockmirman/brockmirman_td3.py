@@ -37,6 +37,7 @@ class RunConfig:
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
+    n_eval_episodes: int = 5  # average over multiple shock sequences per eval (stochastic env)
 
     # Seeds
     base_seed: int = 200
