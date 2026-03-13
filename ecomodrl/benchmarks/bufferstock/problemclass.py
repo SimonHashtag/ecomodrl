@@ -210,7 +210,7 @@ class PlanningProblem:
             for t in range(T):
                 # Clip: policy interpolant can extrapolate outside [0,1] at
                 # states beyond the fitted grid (not bounded by env action space)
-                a_t_share = float(np.clip(policy(m_path[t]), 1e-3, 1.0 - 1e-3))
+                a_t_share = float(np.clip(policy(m_path[t]), 1e-3, 1.0))
                 c_t = self.consumption_from_share(a_t_share, m_path[t])
 
                 # draw shocks
