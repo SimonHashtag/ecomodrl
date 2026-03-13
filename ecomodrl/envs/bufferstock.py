@@ -71,8 +71,8 @@ class BufferStockSavingsEnv(gym.Env):
         self.state_min, self.state_max = state_min, state_max
         self.floattype = floattype
 
-        # action: consumption share in (TOL, 1-TOL)
-        self.action_space = Box(TOL, 1.0 - TOL, shape=(1,), dtype=self.floattype)
+        # action: consumption share in (TOL, 1]
+        self.action_space = Box(TOL, 1.0, shape=(1,), dtype=self.floattype)
 
         # observation: log-scaled market resources log(m_t)
         self.observation_space = Box(
@@ -158,7 +158,7 @@ class BufferStockSavingsEnv(gym.Env):
           - reward r = u(c),
           - transition m' = (R/(G*ψ)) * (m - c) + θ .
         """
-        a_share = self.floattype(np.clip(np.asarray(action, dtype=self.floattype).reshape(-1)[0], TOL, 1.0 - TOL))
+        a_share = self.floattype(np.clip(np.asarray(action, dtype=self.floattype).reshape(-1)[0], TOL, 1.0))
         assert self._m is not None, "Call reset before using step method."
 
         self._t += 1
