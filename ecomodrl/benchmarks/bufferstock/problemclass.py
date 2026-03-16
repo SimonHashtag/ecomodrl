@@ -190,6 +190,7 @@ class PlanningProblem:
         """
         Simulate Euler residuals along sample paths starting from each m on the grid,
         using the provided consumption-share policy a(·). Returns (errors, states, avg_return).
+        Includes automatic 20% burn-in removal for states and Euler residuals.
         """
         T = int(episodes)
         grid = np.asarray(grid, dtype=float)
@@ -243,7 +244,12 @@ class PlanningProblem:
             states[i, :] = m_path
             avg_return += U / grid_len
 
-        return euler_errors.ravel(), states.ravel(), avg_return
+        # Apply burn-in slicing only to distribution metrics.
+        burn_in = int(T * 0.2)
+        states_final = states[:, burn_in:]
+        euler_errors_final = euler_errors[:, burn_in:]
+
+        return euler_errors_final.ravel(), states_final.ravel(), avg_return
 
 
     def get_return_on_eval_grid(self, m_eval, policy, T=100, seed=200, n_episodes=1):
