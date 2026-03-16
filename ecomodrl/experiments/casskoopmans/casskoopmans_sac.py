@@ -33,7 +33,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_wallclock_seconds: int = 120
+    max_wallclock_seconds: int = 600
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -68,11 +68,11 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     # SAC Hyperparameters
-    INITIAL_LR = 0.002093071034
+    INITIAL_LR = 0.0019476510256
     N_EPISODES = 1
-    BATCH_SIZE = 64
-    UTD_RATIO = 1.5675348515125
-    TAU = 0.0119129334461
+    BATCH_SIZE = 32
+    UTD_RATIO = 1.602496189892
+    TAU = 0.0031056825739
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

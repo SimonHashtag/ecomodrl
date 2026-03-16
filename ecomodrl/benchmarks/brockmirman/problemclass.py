@@ -124,11 +124,17 @@ class PlanningProblem():
     # ------------------------------------------------------------------
 
     def euler_residual(self, c_t, c_next, k_next, z_next):
-        """Euler residual."""
-        c_t = np.asarray(c_t)
-        term = (np.expand_dims(c_t, -1) / c_next) ** self.gamma
-        R = self.f_prime(k_next[..., None], z_next) + (1 - self.delta)
-        return self.beta * np.sum(self.gh_w * term * R, axis=-1) - 1.0
+        """Computes Euler error in consumption units."""
+        # 1. Marginal Utility of consumption tomorrow: u'(c_{t+1})
+        up_next = self.u_prime(c_next)
+        # 2. Return on capital tomorrow: f'(k_{t+1}, z_{t+1}) + (1 - delta)
+        R_next = self.f_prime(k_next[..., None], z_next) + (1 - self.delta)
+        # 3. Compute RHS of Euler Equation: beta * E[ u'(c_{t+1}) * R_{t+1} ]
+        rhs = self.beta * np.sum(self.gh_w * up_next * R_next, axis=-1)
+        # 4. Invert Marginal Utility to get "Implied Consumption": c_implied = (u')^-1( RHS )
+        c_implied = self.u_prime_inv(rhs)
+        # 5. Calculate relative error in consumption terms
+        return (c_implied / c_t) - 1.0
 
     def c_from_euler(self, c_next, k_next, z_next):
         """
@@ -139,7 +145,7 @@ class PlanningProblem():
         return self.u_prime_inv(EmuR)
 
     def get_euler_errors(self, k_grid, z_grid, policy, episodes=100, seed=123):
-        """Compute Euler equation errors over simulated paths from every (k,z) grid node. Returns flattened arrays."""
+        """Compute Euler errors over simulated paths with 20% burn-in removed for errors and states."""
         rng = np.random.default_rng(seed)
         T = episodes # rename for brevity
         
@@ -204,7 +210,12 @@ class PlanningProblem():
             # Accumulate average discounted utility over all starting states
             avg_return += U / grid_len
 
-        return euler_errors.ravel(), k_states.ravel(), avg_return
+        # Apply burn-in slicing only to distribution metrics.
+        burn_in = int(T * 0.2)
+        k_states_final = k_states[:, burn_in:]
+        euler_errors_final = euler_errors[:, burn_in:]
+
+        return euler_errors_final.ravel(), k_states_final.ravel(), avg_return
 
 
     def get_return_on_eval_grid(self, k_eval, policy, T=100, seed=200, n_episodes=1):

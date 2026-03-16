@@ -824,8 +824,8 @@ class PlanningProblem:
         errors : 1D ndarray
             log10(max-abs residual) per step (NaN in constrained region).
         states : dict
-            'm' : ndarray (len(m_grid), T+1)
-            'z' : ndarray (len(m_grid), T+1, n_risky)
+            'm' : ndarray (len(m_grid), T + 1 - burn_in)
+            'z' : ndarray (len(m_grid), T + 1 - burn_in, n_risky)
         avg_return : float
             Average discounted utility over start nodes.
         """
@@ -936,8 +936,14 @@ class PlanningProblem:
             states_z[i, :, :] = z_path
             avg_return += U / n_nodes
 
-        states = {"m": states_m, "z": states_z}
-        return euler_errors.ravel(), states, avg_return
+        # Apply burn-in slicing only to distribution metrics.
+        burn_in = int(T * 0.2)
+        states = {
+            "m": states_m[:, burn_in:],
+            "z": states_z[:, burn_in:, :],
+        }
+        euler_errors_final = euler_errors[:, burn_in:]
+        return euler_errors_final.ravel(), states, avg_return
 
     # -------------------------------------------------------------------
     # Policy evaluation: value function from policy

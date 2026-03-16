@@ -14,7 +14,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=04:30:00
+#SBATCH --time=24:00:00
 #SBATCH --export=NONE
 
 #SBATCH --output=logs/BM_TUNE_%j.out
@@ -67,7 +67,7 @@ export TUNERESULTS_PATH="$WORKDIR/tune_results/BrockMirman"
 mkdir -p "$TUNERESULTS_PATH"
 
 # 3. Budget per algorithm
-BUDGET_PER_ALGO=3600
+BUDGET_PER_ALGO=14400 # 4 hours
 
 for algo in "${ALGOS[@]}"; do
     echo "------------------------------------------------"
@@ -77,7 +77,7 @@ for algo in "${ALGOS[@]}"; do
     python ecomodrl/tune/brockmirman.py \
         --algo_name="$algo" \
         --total_cost=$BUDGET_PER_ALGO \
-        --hidden_nodes=64
+        --hidden_nodes=128
 
     echo "Finished tuning for $algo"
 done
