@@ -246,6 +246,77 @@ class PlanningProblem:
         return euler_errors.ravel(), states.ravel(), avg_return
 
 
+    def get_return_on_eval_grid(self, m_eval, policy, T=100, seed=200, n_episodes=1):
+        """
+        Compute mean discounted return on an evaluation grid of starting
+        cash-on-hand values, replicating the exact seeding structure of the
+        RL evaluation pipeline.
+
+        Each starting state *i* receives an independent RNG seeded with
+        ``ep_seed + i``, matching how ``DummyVecEnv.seed(ep_seed)`` assigns
+        seed ``ep_seed + i`` to sub-env *i*.  All episodes start with
+        ``m₀ = m_eval[i]`` (matching ``fixed_start`` eval environments).
+
+        The return is computed as ``G = Σ_t β^t · mean_i(u(c_t^i))``,
+        exactly as ``evaluate_policy_discounted`` does via
+        ``np.mean(rewards) * power``.
+
+        Args:
+            m_eval: 1-D array of starting cash-on-hand values (typically
+                ``np.linspace(state_min, state_max, 20)``).
+            policy: callable ``m → a`` (consumption-share interpolator).
+            T: episode length (should equal ``max_eval_episode_steps``).
+            seed: base seed (should equal ``eval_seed`` used during training).
+            n_episodes: number of episodes to average (should equal
+                ``n_eval_episodes``).
+
+        Returns:
+            float: mean discounted return, directly comparable to the value
+            logged as ``eval/avg_discounted_return`` during training.
+        """
+        N = len(m_eval)
+        avg_return = 0.0
+
+        for ep in range(n_episodes):
+            # evaluate_policy_discounted: ep_seed = int(seed) + int(i)
+            ep_seed = seed + ep
+
+            # Initialise paths
+            m = np.array(m_eval, dtype=float)
+
+            # Per-env RNGs: DummyVecEnv.seed(ep_seed) → env_i gets ep_seed + i
+            rngs = [np.random.default_rng(ep_seed + i) for i in range(N)]
+
+            G, power = 0.0, 1.0
+            for _ in range(T):
+                rewards = np.empty(N)
+                m_next = np.empty(N)
+                for i in range(N):
+                    a_t = float(np.clip(policy(m[i]), 1e-3, 1.0))
+                    c_t = a_t * m[i]
+
+                    # Draw shocks matching BufferStockSavingsEnv._draw_shocks()
+                    # 1) unemployment check (uniform)
+                    if rngs[i].uniform(0.0, 1.0) < self.unemp_prob:
+                        theta = self.theta_low
+                    else:
+                        # 2) transitory shock (normal) — only drawn if employed
+                        theta = np.exp(rngs[i].normal(self.mu_z, self.sigma_tran))
+                    # 3) permanent shock (normal)
+                    psi = np.exp(rngs[i].normal(-0.5 * self.sigma_perm**2, self.sigma_perm))
+
+                    m_next[i] = self.R / (self.G * psi) * (m[i] - c_t) + theta
+                    rewards[i] = self.u(c_t)
+
+                G += float(np.mean(rewards)) * power
+                power *= self.beta
+                m = m_next
+
+            avg_return += G
+
+        return avg_return / n_episodes
+
+
     #-------------------------------------------------------------------
     # Policy evaluation: value function from policy
     #-------------------------------------------------------------------

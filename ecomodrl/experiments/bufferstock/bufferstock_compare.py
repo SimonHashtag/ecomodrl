@@ -43,6 +43,12 @@ BOOTSTRAP_SEED = 12345
 
 # Analysis seeds (distinct from training seeds 200-209)
 # Required because the Buffer Stock model is stochastic (income shocks)
+
+# Evaluation episodes (must match n_eval_episodes used in BS RunConfig during training)
+# TODO: Load N_EVAL_EPISODES & TRAINING_SEEDS from each algo's train_cfgs.json if available, to ensure consistency with training config
+N_EVAL_EPISODES = 5
+
+TRAINING_SEEDS = list(range(200, 210))
 ANALYSIS_SEED = 300  # For benchmark evaluation simulations
 
 # Plotting style
@@ -77,7 +83,7 @@ class Benchmark:
     V: Callable
     euler_errors_log: np.ndarray
     utility: float
-    return_eval: float  # Return on evaluation grid
+    returns_eval: np.ndarray  # Return on evaluation grid (per training seed)
 
 
 @dataclass  
@@ -131,10 +137,15 @@ def compute_benchmark(params, state_min: float, state_max: float) -> Benchmark:
     euler_bm, _, U_bm = model.get_euler_errors(grid, policy_bm, episodes=100)
     euler_bm_log = euler_bm[~np.isnan(euler_bm)]
     
-    # Benchmark return on evaluation grid (same as used during training)
+    # Benchmark return on evaluation grid, matching RL eval structure:
+    # - Per-env independent seeding (DummyVecEnv.seed(s) gives env_i seed s+i)
     eval_grid = np.linspace(state_min, state_max, 20)
-    np.random.seed(ANALYSIS_SEED)
-    _, _, return_bm = model.get_euler_errors(eval_grid, policy_bm, episodes=100)
+    per_seed_returns = np.array([
+        model.get_return_on_eval_grid(
+            eval_grid, policy_bm, T=100, seed=s, n_episodes=N_EVAL_EPISODES
+        )
+        for s in TRAINING_SEEDS
+    ])
     
     return Benchmark(
         model=model,
@@ -143,7 +154,7 @@ def compute_benchmark(params, state_min: float, state_max: float) -> Benchmark:
         V=V_bm,
         euler_errors_log=euler_bm_log,
         utility=U_bm,
-        return_eval=return_bm,
+        returns_eval=per_seed_returns,
     )
 
 
@@ -253,7 +264,7 @@ def compute_summary_stats(results: AlgoResults, benchmark: Benchmark) -> dict:
     
     return {
         "U_bm": float(benchmark.utility),
-        "return_bm": float(benchmark.return_eval),
+        "returns_bm": benchmark.returns_eval.tolist(),
         "max_abs_euler_error_bm": float(np.max(benchmark.euler_errors_log)),
         **pack_ci("U_rl", iqm_U, lo_U, hi_U),
         **pack_ci("cev", iqm_cev, lo_cev, hi_cev),
@@ -288,10 +299,8 @@ def plot_learning_curves(
             continue
 
         # Compute regret: (benchmark - RL return)
-        iqm, ci_lower, ci_upper = get_bootstrapped_iqm_ci(curves, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED)
-        regret_iqm = benchmark.return_eval - iqm
-        regret_upper = benchmark.return_eval - ci_lower
-        regret_lower = benchmark.return_eval - ci_upper
+        regret_curves = benchmark.returns_eval.reshape(-1, 1) - curves
+        regret_iqm, regret_lower, regret_upper = get_bootstrapped_iqm_ci(regret_curves, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED)
 
         line = ax.plot(global_steps, regret_iqm, label=algo)
         ax.fill_between(global_steps, regret_lower, regret_upper, color=line[0].get_color(), alpha=0.2)
@@ -519,7 +528,7 @@ def save_full_metrics(
     """Save full metrics JSON with all computed data for reproducibility."""
     metrics = {
         "benchmark": {
-            "return_eval": float(benchmark.return_eval),
+            "returns_eval": benchmark.returns_eval.tolist(),
             "max_abs_euler_error_log": float(np.max(benchmark.euler_errors_log)),
             "grid": benchmark.grid.tolist(),
         },
@@ -583,7 +592,6 @@ def run_comparison():
     
     # Compute benchmark
     benchmark = compute_benchmark(params, state_min, state_max)
-    logger.info(f"Benchmark computed: G_EGM = {benchmark.return_eval:.6f}")
 
     # 2 & 3. Load raw metrics and process for all algorithms
     algo_results: dict[str, AlgoResults] = {}
