@@ -22,7 +22,7 @@ from scipy.stats import wasserstein_distance
 
 from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.utils.metrics.accuracy import cev_crra
-from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
+from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci, interquartile_mean
 from ecomodrl.utils.params_loader import BrockMirmanParams
 from ecomodrl.utils.latex_formatting import generate_latex_table
 
@@ -38,7 +38,12 @@ N_BOOT = 1000
 ALPHA = 0.05
 BOOTSTRAP_SEED = 12345
 
+# Evaluation episodes (must match n_eval_episodes used in BM RunConfig during training)
+# TODO: Load N_EVAL_EPISODES & TRAINING_SEEDS from each algo's train_cfgs.json if available, to ensure consistency with training config
+N_EVAL_EPISODES = 5
+
 # Analysis seeds (distinct from training seeds 200-209)
+TRAINING_SEEDS = list(range(200, 210))
 ANALYSIS_SEED = 300  # For benchmark evaluation simulations
 CEV_SAMPLING_SEED = 400  # For CEV visited-states sampling
 
@@ -75,7 +80,7 @@ class Benchmark:
     V: Callable                   # RegularGridInterpolator on (k, z)
     euler_errors_log: np.ndarray  # Flattened log10|error|
     utility: float
-    return_eval: float            # Return on evaluation grid
+    returns_eval: np.ndarray      # Return on evaluation grid (n_seeds, n_eval_episodes)
 
 
 @dataclass  
@@ -127,10 +132,15 @@ def compute_benchmark(params, state_min: float, state_max: float) -> Benchmark:
     euler_bm, _, U_bm = model.get_euler_errors(k_grid, z_grid, policy_bm, episodes=100, seed=ANALYSIS_SEED)
     euler_bm_log = np.log10(np.abs(euler_bm))
     
-    # Benchmark return on evaluation grid (k-grid x z=1)
+    # Benchmark return on evaluation grid, matching RL eval structure:
+    # - Per-env independent seeding (DummyVecEnv.seed(s) gives env_i seed s+i)
     k_eval = np.linspace(state_min, state_max, 20)
-    z_eval = np.array([1.0])
-    _, _, return_bm = model.get_euler_errors(k_eval, z_eval, policy_bm, episodes=100, seed=ANALYSIS_SEED)
+    per_seed_returns = np.array([
+        model.get_return_on_eval_grid(
+            k_eval, policy_bm, T=100, seed=s, n_episodes=N_EVAL_EPISODES
+        )
+        for s in TRAINING_SEEDS
+    ])
     
     return Benchmark(
         model=model,
@@ -140,7 +150,7 @@ def compute_benchmark(params, state_min: float, state_max: float) -> Benchmark:
         V=V_bm,
         euler_errors_log=euler_bm_log.ravel(),
         utility=U_bm,
-        return_eval=return_bm,
+        returns_eval=per_seed_returns,
     )
 
 
@@ -279,7 +289,7 @@ def compute_summary_stats(results: AlgoResults, benchmark: Benchmark) -> dict:
     
     return {
         "U_bm": float(benchmark.utility),
-        "return_bm": float(benchmark.return_eval),
+        "returns_bm": benchmark.returns_eval.tolist(),
         "max_abs_euler_error_bm": float(np.max(benchmark.euler_errors_log)),
         **pack_ci("U_rl", iqm_U, lo_U, hi_U),
         **pack_ci("cev", iqm_cev, lo_cev, hi_cev),
@@ -328,10 +338,8 @@ def plot_learning_curves(
             continue
 
         # Compute regret: (benchmark - RL return)
-        iqm, ci_lower, ci_upper = get_bootstrapped_iqm_ci(curves, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED)
-        regret_iqm = benchmark.return_eval - iqm
-        regret_upper = benchmark.return_eval - ci_lower
-        regret_lower = benchmark.return_eval - ci_upper
+        regret_curves = benchmark.returns_eval.reshape(-1, 1) - curves
+        regret_iqm, regret_lower, regret_upper = get_bootstrapped_iqm_ci(regret_curves, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED)
 
         line = ax.plot(global_steps, regret_iqm, label=algo)
         ax.fill_between(global_steps, regret_lower, regret_upper, color=line[0].get_color(), alpha=0.2)
@@ -340,7 +348,7 @@ def plot_learning_curves(
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: f'{y:g}'))
     ax.set_xlabel("Wallclock time (seconds)", fontsize=10)
     ax.set_ylabel(r"Regret $(G_{EGM} - G_{RL})$", fontsize=10)
-    ax.set_title("Learning Curves (Brock–Mirman)")
+    ax.set_title("Learning Curves (Brock-Mirman)")
     ax.grid(True, which="major", linestyle="--", alpha=0.5)
     ax.grid(True, which="minor", linestyle=":", alpha=0.2)
     ax.legend()
@@ -588,7 +596,7 @@ def save_full_metrics(
     """Save full metrics JSON with all computed data for reproducibility."""
     metrics = {
         "benchmark": {
-            "return_eval": float(benchmark.return_eval),
+            "returns_eval": benchmark.returns_eval.tolist(),
             "utility": float(benchmark.utility),
             "max_abs_euler_error_log": float(np.max(benchmark.euler_errors_log)),
             "k_grid": benchmark.k_grid.tolist(),
@@ -648,7 +656,6 @@ def run_comparison():
     
     # Compute benchmark
     benchmark = compute_benchmark(params, state_min, state_max)
-    logger.info(f"Benchmark computed: G_EGM = {benchmark.return_eval:.6f}")
 
     # 2 & 3. Load raw metrics and process for all algorithms
     algo_results: dict[str, AlgoResults] = {}

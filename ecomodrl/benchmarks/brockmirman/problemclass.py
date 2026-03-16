@@ -207,6 +207,66 @@ class PlanningProblem():
         return euler_errors.ravel(), k_states.ravel(), avg_return
 
 
+    def get_return_on_eval_grid(self, k_eval, policy, T=100, seed=200, n_episodes=1):
+        """
+        Compute mean discounted return on an evaluation grid of starting capitals,
+        replicating the exact seeding structure of the RL evaluation pipeline.
+
+        Each starting state *i* receives an independent RNG seeded with ``ep_seed + i``,
+        matching how ``DummyVecEnv.seed(ep_seed)`` assigns seed ``ep_seed + i`` to
+        sub-env *i*.  All episodes start with z₀ = 1.0 (matching ``fixed_start``
+        eval environments).
+
+        The return is computed as ``G = Σ_t β^t · mean_i(u(c_t^i))``, exactly
+        as ``evaluate_policy_discounted`` does via ``np.mean(rewards) * power``.
+
+        Args:
+            k_eval: 1-D array of starting capitals (typically ``np.linspace(state_min, state_max, 20)``).
+            policy: callable ``(k, z) → a`` (consumption-share interpolator).
+            T: episode length (should equal ``max_eval_episode_steps``).
+            seed: base seed (should equal ``eval_seed`` used during training).
+            n_episodes: number of episodes to average (should equal ``n_eval_episodes``).
+
+        Returns:
+            float: mean discounted return, directly comparable to the value
+            logged as ``eval/avg_discounted_return`` during training.
+        """
+        N = len(k_eval)
+        avg_return = 0.0
+
+        for ep in range(n_episodes):
+            # evaluate_policy_discounted: ep_seed = int(seed) + int(i)
+            ep_seed = seed + ep
+
+            # Initialise paths
+            k = np.array(k_eval, dtype=float)
+            z = np.ones(N, dtype=float)            # z_0 = 1 for eval envs
+
+            # Per-env RNGs: DummyVecEnv.seed(ep_seed) → env_i gets ep_seed + i
+            rngs = [np.random.default_rng(ep_seed + i) for i in range(N)]
+
+            G, power = 0.0, 1.0
+            for _ in range(T):
+                rewards = np.empty(N)
+                k_next = np.empty(N)
+                z_next = np.empty(N)
+                for i in range(N):
+                    a_t = policy([[k[i], z[i]]])[0]
+                    c_t = self.consumption_from_share(a_t, k[i], z[i])
+                    k_next[i] = self.next_k(k[i], z[i], c_t)
+                    eps = rngs[i].normal()           # same RNG call as env.step
+                    z_next[i] = np.exp(self.rho * np.log(z[i]) + self.sigma * eps)
+                    rewards[i] = self.u(c_t)
+
+                G += float(np.mean(rewards)) * power
+                power *= self.beta
+                k, z = k_next, z_next
+
+            avg_return += G
+
+        return avg_return / n_episodes
+
+
     #-------------------------------------------------------------------
     # Policy evaluation: value function from policy
     #-------------------------------------------------------------------
