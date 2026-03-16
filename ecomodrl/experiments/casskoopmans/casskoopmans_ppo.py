@@ -32,7 +32,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_wallclock_seconds: int = 120
+    max_wallclock_seconds: int = 600
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -67,14 +67,14 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     # PPO Hyperparameters
-    INITIAL_LR = 0.0004784086273
-    N_EPISODES = 1
-    N_EPOCHS = 4
-    NUM_MINIBATCHES = 5
-    CLIP_RANGE = 0.0578770396527
-    ENT_COEF = 2.0602833e-06
-    GAE_LAMBDA = 0.9762820744364
-    VF_COEF = 0.762363433347
+    INITIAL_LR = 0.0009055688578
+    N_EPISODES = 8
+    N_EPOCHS = 5
+    NUM_MINIBATCHES = 6
+    CLIP_RANGE = 0.1957875897471
+    ENT_COEF = 0.002382674334
+    GAE_LAMBDA = 0.9930788166857
+    VF_COEF = 0.6938102569742
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

@@ -142,8 +142,10 @@ class PlanningProblem:
         """Bellman operator given consumption-share policy a(m) and value function v(m)."""
         c_t = self.consumption_from_share(a, m_t)
         rs_t = self.resources_saved(m_t, c_t)
-        m_next = self.m_next(rs_t)
-        cont_value = np.dot(self.probs, value(m_next))
+        rs_t = np.atleast_1d(rs_t)
+        # (N,1) x (S,) -> (N,S) for each shock realization
+        m_next = self.R / (self.G * self.psi) * rs_t[:, None] + self.theta  # (N, S)
+        cont_value = value(m_next) @ self.probs  # (N, S) @ (S,) -> (N,)
         return self.u(c_t) + self.beta * cont_value
 
     # ---------------------------
@@ -156,14 +158,19 @@ class PlanningProblem:
         return (self.beta * self.R / (self.G ** self.gamma)) * np.dot(weights, self.u_prime(c_next))
 
     def euler_residual(self, a: float, m_t: float, policy: interp1d) -> float:
-        """Euler residual."""
+        """Euler residual in consumption units."""
+        # 1. Calculate actual consumption chosen today
         c_t = self.consumption_from_share(a, m_t)
-        rs_t = self.resources_saved(m_t, c_t)
-        m_next = self.m_next(rs_t)
-        a_next = policy(m_next)
-        c_next = self.consumption_from_share(a_next, m_next)
+        # 2. Calculate next period states for all shock realizations
+        m_next = self.m_next(self.resources_saved(m_t, c_t))
+        # 3. Interpolate policy to get c_{t+1} for all shock realizations
+        c_next = self.consumption_from_share(policy(m_next), m_next)
+        # 4. Compute RHS of Euler Equation (Expected Marginal Utility)
         rhs = self.demu_next(c_next)
-        return self.u_prime(c_t) - rhs
+        # 5. Invert Marginal Utility to get "Implied Consumption"
+        c_implied = self.u_prime_inv(rhs)
+        # 6. Calculate relative error in consumption terms
+        return (c_implied / c_t) - 1.0
     
     def c_from_euler(self, c_next: np.ndarray) -> float:
         """Recover c_t from: u'(c_t) = (β R / G) E[ u'(c_{t+1}) / Ψ_{t+1} ]."""
@@ -201,7 +208,9 @@ class PlanningProblem:
             power = 1.0
 
             for t in range(T):
-                a_t_share = float(policy(m_path[t]))  # consumption share
+                # Clip: policy interpolant can extrapolate outside [0,1] at
+                # states beyond the fitted grid (not bounded by env action space)
+                a_t_share = float(np.clip(policy(m_path[t]), 1e-3, 1.0))
                 c_t = self.consumption_from_share(a_t_share, m_path[t])
 
                 # draw shocks
@@ -226,8 +235,9 @@ class PlanningProblem:
                 else:
                     a_t_share = c_t / m_t  # implied share
                     res = self.euler_residual(a_t_share, m_t, policy)
-                    # log10 of absolute residual
-                    err[t] = np.log10(abs(res))
+                    # log10 of absolute residual; guard against inf/nan
+                    log_err = np.log10(max(abs(res), 1e-16))
+                    err[t] = log_err if np.isfinite(log_err) else np.nan
             
             euler_errors[i, :] = err
             states[i, :] = m_path

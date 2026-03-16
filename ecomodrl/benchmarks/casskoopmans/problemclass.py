@@ -96,8 +96,17 @@ class PlanningProblem():
     # ------------------------------------------------------------------
 
     def euler_residual(self, c_t, c_next, k_next):
-        """Euler residual."""
-        return self.beta * (c_t / c_next) ** self.gamma * (self.f_prime(k_next) + (1 - self.delta)) - 1.0
+        """Computes Euler error in consumption units for the deterministic model."""
+        # 1. Marginal Utility tomorrow: u'(c_{t+1})
+        up_next = self.u_prime(c_next)
+        # 2. Return on capital: f'(k_{t+1}) + (1 - delta)
+        R_next = self.f_prime(k_next) + (1 - self.delta)
+        # 3. RHS of Euler Equation: beta * u'(c_{t+1}) * R_{t+1}
+        rhs = self.beta * up_next * R_next
+        # 4. Invert to get Implied Consumption: (u')^-1(RHS)
+        c_implied = self.u_prime_inv(rhs)
+        # 5. Calculate Relative Error: (c_implied / c_actual) - 1
+        return (c_implied / c_t) - 1.0
 
     def c_from_euler(self, c_next, k_next):
         """Compute current optimal consumption c_t from Euler equation given c_{t+1} and k_{t+1}."""

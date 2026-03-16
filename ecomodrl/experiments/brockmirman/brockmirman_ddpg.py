@@ -33,7 +33,7 @@ class RunConfig:
     max_eval_episode_steps: int = 100
     n_envs: int = 10
     total_timesteps: int = 1_000_000_000
-    max_wallclock_seconds: int = 120
+    max_wallclock_seconds: int = 1200
     eval_every: int = 10_000
     patience: int = 2000
     min_delta: float = 1e-3
@@ -69,12 +69,12 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # DDPG Hyperparameters
-    INITIAL_LR = 0.0021677722794
-    N_EPISODES = 1
+    INITIAL_LR = 0.0007980009482
+    N_EPISODES = 2
     BATCH_SIZE = 32
-    UTD_RATIO = 3.4681054132283
-    TAU = 0.0193792888765
-    ACTION_NOISE_STD = 0.0620864994  # exploration_sigma
+    UTD_RATIO = 1.2686531583404
+    TAU = 0.0059304347923
+    ACTION_NOISE_STD = 0.0753373557556  # exploration_sigma
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         },
         policy_kwargs={
             "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [64, 64], "qf": [64, 64]},
+            "net_arch": {"pi": [128, 128], "qf": [128, 128]},
         },
     )
     

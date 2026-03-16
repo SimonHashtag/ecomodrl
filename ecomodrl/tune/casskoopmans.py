@@ -87,8 +87,8 @@ if __name__ == "__main__":
         cfg = replace(cfg, out_dir=Path(args.out_dir))
     if args.n_envs is not None:
         cfg = replace(cfg, n_envs=args.n_envs)
-    if args.max_processed_samples is not None:
-        cfg = replace(cfg, max_processed_samples=args.max_processed_samples)
+    if args.max_wallclock_seconds is not None:
+        cfg = replace(cfg, max_wallclock_seconds=args.max_wallclock_seconds)
     if args.eval_every is not None:
         cfg = replace(cfg, eval_every=args.eval_every)
     if args.n_seeds is not None:
