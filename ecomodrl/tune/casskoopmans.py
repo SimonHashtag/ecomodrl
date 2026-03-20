@@ -104,7 +104,7 @@ if __name__ == "__main__":
     cs = space_fn(seed=cfg.base_seed)
 
     eta = 3
-    rungs = 3
+    rungs = 2
     MIN_FIDELITY_SECONDS = 30
     min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs-1)), MIN_FIDELITY_SECONDS)
     max_fidelity = cfg.max_wallclock_seconds
