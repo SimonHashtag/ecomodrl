@@ -1,6 +1,7 @@
 # DEHB hyperparameter optimization for PPO, TD3, SAC, DDPG
 from __future__ import annotations
 
+import gc
 import json
 import time
 import uuid
@@ -272,36 +273,39 @@ def target_function(
     # Run training
     start = time.time()
     try:
-        train_multiple_seeds(
-            trial_cfg, trial_algo, env, params,
-            seed_parallel=False, max_workers=1, verbose=train_verbose)
-    except Exception as exc:
-        # Fail-safe: return a bad fitness but with measured cost
+        try:
+            train_multiple_seeds(
+                trial_cfg, trial_algo, env, params,
+                seed_parallel=False, max_workers=1, verbose=train_verbose)
+        except Exception as exc:
+            # Fail-safe: return a bad fitness but with measured cost
+            cost = time.time() - start
+            return {"fitness": 1e9, "cost": cost, "info": {"error": repr(exc)}}
         cost = time.time() - start
-        return {"fitness": 1e9, "cost": cost, "info": {"error": repr(exc)}}
-    cost = time.time() - start
 
-    # Read results
-    train_cfgs_path = trial_dir / "train_cfgs.json"
-    if not train_cfgs_path.exists():
-        return {"fitness": 1e9, "cost": cost, "info": {"error": "train_cfgs.json missing"}}
+        # Read results
+        train_cfgs_path = trial_dir / "train_cfgs.json"
+        if not train_cfgs_path.exists():
+            return {"fitness": 1e9, "cost": cost, "info": {"error": "train_cfgs.json missing"}}
 
-    with open(train_cfgs_path, "r") as f:
-        train_cfgs = json.load(f)
+        with open(train_cfgs_path, "r") as f:
+            train_cfgs = json.load(f)
 
-    if not train_cfgs:
-        return {"fitness": 1e9, "cost": cost, "info": {"error": "empty train_cfgs.json"}}
+        if not train_cfgs:
+            return {"fitness": 1e9, "cost": cost, "info": {"error": "empty train_cfgs.json"}}
 
-    avg_last_return = sum(s["last_eval_return"] for s in train_cfgs) / len(train_cfgs) # TODO: Last eval return?
+        avg_last_return = sum(s["last_eval_return"] for s in train_cfgs) / len(train_cfgs) # TODO: Last eval return?
 
-    # Minimize
-    result = {
-        "fitness": -float(avg_last_return),
-        "cost": cost,
-        "info": {
-            "trial_dir": str(trial_dir),
-            "n_seeds": trial_cfg.n_seeds,
-            "seeds": trial_cfg.seeds,
-        },
-    }
-    return result
+        # Minimize
+        result = {
+            "fitness": -float(avg_last_return),
+            "cost": cost,
+            "info": {
+                "trial_dir": str(trial_dir),
+                "n_seeds": trial_cfg.n_seeds,
+                "seeds": trial_cfg.seeds,
+            },
+        }
+        return result
+    finally:
+        gc.collect()

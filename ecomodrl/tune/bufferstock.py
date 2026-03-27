@@ -27,20 +27,20 @@ class RunConfig:
     """Static run configuration for a sweep."""
     toml_path: str = "./ecomodrl/experiments/model_params/bufferstock.toml"
     out_dir: Path = Path(os.environ.get("TUNERESULTS_PATH", "./tune_results/BufferStock")) 
-    max_episode_steps: int = 20
+    max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
     n_envs: int = 10
-    total_timesteps: int = 10_000_000
-    max_wallclock_seconds: int = 120
+    total_timesteps: int = 100_000_000
+    max_wallclock_seconds: int = 900
     eval_every: int = 10_000
-    patience: int = 10
+    patience: int = 2000
     min_delta: float = 1e-3
     state_min: float = 1.0
     state_max: float = 10.0
     
     # Seeds
     base_seed: int = 100
-    n_seeds: int = 10
+    n_seeds: int = 3
 
     @property
     def seeds(self) -> list[int]:
@@ -97,9 +97,9 @@ if __name__ == "__main__":
     eta = 3
     rungs = 3
     MIN_FIDELITY_SECONDS = 30
-    min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs)), MIN_FIDELITY_SECONDS)
+    min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs-1)), MIN_FIDELITY_SECONDS)
     max_fidelity = cfg.max_wallclock_seconds
-    n_workers = max(1, (os.cpu_count() or 2) - 1)
+    n_workers = min(max(1, (os.cpu_count() or 2) - 1), 20)
 
     dehb = DEHB(
         f=target_function,

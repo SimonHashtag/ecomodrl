@@ -108,7 +108,7 @@ if __name__ == "__main__":
     MIN_FIDELITY_SECONDS = 30
     min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs-1)), MIN_FIDELITY_SECONDS)
     max_fidelity = cfg.max_wallclock_seconds
-    n_workers = max(1, (os.cpu_count() or 2) - 1)
+    n_workers = min(max(1, (os.cpu_count() or 2) - 1), 20)
 
     dehb = DEHB(
         f=target_function,
