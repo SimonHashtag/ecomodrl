@@ -70,14 +70,14 @@ if __name__ == "__main__":
     params = BufferStockParams.load_params(cfg.toml_path)
 
     # PPO Hyperparameters
-    INITIAL_LR = 3.5e-4
-    N_EPISODES = 2
+    INITIAL_LR = 0.0003177782943
+    N_EPISODES = 8
     N_EPOCHS = 10
-    NUM_MINIBATCHES = 4
-    CLIP_RANGE = 0.2
-    ENT_COEF = 4.4e-5
-    GAE_LAMBDA = 0.95
-    VF_COEF = 0.5
+    NUM_MINIBATCHES = 5
+    CLIP_RANGE = 0.2833321070741
+    ENT_COEF = 1.6759064e-06
+    GAE_LAMBDA = 0.9616553953087
+    VF_COEF = 0.967557240519
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

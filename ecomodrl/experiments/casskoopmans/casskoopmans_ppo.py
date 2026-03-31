@@ -67,14 +67,14 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     # PPO Hyperparameters
-    INITIAL_LR = 0.0009055688578
-    N_EPISODES = 8
-    N_EPOCHS = 5
-    NUM_MINIBATCHES = 6
-    CLIP_RANGE = 0.1957875897471
-    ENT_COEF = 0.002382674334
-    GAE_LAMBDA = 0.9930788166857
-    VF_COEF = 0.6938102569742
+    INITIAL_LR = 0.0004322994492
+    N_EPISODES = 2
+    N_EPOCHS = 7
+    NUM_MINIBATCHES = 4
+    CLIP_RANGE = 0.0545356382642
+    ENT_COEF = 2.2816594e-06
+    GAE_LAMBDA = 0.9515547720523
+    VF_COEF = 0.8745344247954
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

@@ -69,12 +69,12 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # DDPG Hyperparameters
-    INITIAL_LR = 0.0007980009482
-    N_EPISODES = 2
+    INITIAL_LR = 0.0027051726975
+    N_EPISODES = 8
     BATCH_SIZE = 32
-    UTD_RATIO = 1.2686531583404
-    TAU = 0.0059304347923
-    ACTION_NOISE_STD = 0.0753373557556  # exploration_sigma
+    UTD_RATIO = 1.5855303302638
+    TAU = 0.0175568248496
+    ACTION_NOISE_STD = 0.0630440355355  # exploration_sigma
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

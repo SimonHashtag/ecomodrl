@@ -68,14 +68,14 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     # TD3 Hyperparameters
-    INITIAL_LR = 8.18919494e-05
-    N_EPISODES = 1
-    BATCH_SIZE = 64
-    UTD_RATIO = 3.2442935016701
-    TAU = 0.0160113247685
-    ACTION_NOISE_STD = 0.1148733635872  # exploration_sigma
-    TARGET_POLICY_NOISE = 0.2183011279498
-    TARGET_NOISE_CLIP = 0.2183011279498 # max(0.1452..., 0.2183...)
+    INITIAL_LR = 0.000114581812
+    N_EPISODES = 8
+    BATCH_SIZE = 128
+    UTD_RATIO = 2.9955758081166
+    TAU = 0.0191478178573
+    ACTION_NOISE_STD = 0.0719458569661  # exploration_sigma
+    TARGET_POLICY_NOISE = 0.400908654907
+    TARGET_NOISE_CLIP = 0.70374512261 # max(0.70374..., 0.40090...)
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

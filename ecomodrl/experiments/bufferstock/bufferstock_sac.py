@@ -71,11 +71,11 @@ if __name__ == "__main__":
     params = BufferStockParams.load_params(cfg.toml_path)
     
     # SAC Hyperparameters
-    INITIAL_LR = 0.0018567403043
-    N_EPISODES = 1
-    BATCH_SIZE = 128
-    UTD_RATIO = 1.3366648256543
-    TAU = 0.0110754407011
+    INITIAL_LR = 0.0018227279408
+    N_EPISODES = 4
+    BATCH_SIZE = 32
+    UTD_RATIO = 3.6038083197985
+    TAU = 0.0125005329741
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

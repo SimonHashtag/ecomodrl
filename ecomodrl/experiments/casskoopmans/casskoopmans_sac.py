@@ -68,11 +68,11 @@ if __name__ == "__main__":
     params = CassKoopmansParams.load_params(cfg.toml_path)
     
     # SAC Hyperparameters
-    INITIAL_LR = 0.0019476510256
-    N_EPISODES = 1
+    INITIAL_LR = 0.000912197728
+    N_EPISODES = 2
     BATCH_SIZE = 32
-    UTD_RATIO = 1.602496189892
-    TAU = 0.0031056825739
+    UTD_RATIO = 3.838238394459
+    TAU = 0.0056876576924
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

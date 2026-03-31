@@ -69,11 +69,11 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # SAC Hyperparameters
-    INITIAL_LR = 0.0018567403043
-    N_EPISODES = 1
+    INITIAL_LR = 0.00161664351
+    N_EPISODES = 4
     BATCH_SIZE = 128
-    UTD_RATIO = 1.3366648256543
-    TAU = 0.0110754407011
+    UTD_RATIO = 2.5821761779902
+    TAU = 0.0038639824952
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

@@ -71,16 +71,16 @@ if __name__ == "__main__":
     params = BufferStockParams.load_params(cfg.toml_path)
     
     # TD3 Hyperparameters
-    INITIAL_LR = 0.0009771130432
+    INITIAL_LR = 0.0007752697376
     N_EPISODES = 1
     BATCH_SIZE = 32
-    UTD_RATIO = 2.143118403272
-    TAU = 0.0136203795913
-    ACTION_NOISE_STD = 0.0848123875565  # exploration_sigma
-    TARGET_POLICY_NOISE = 0.0597164215216
+    UTD_RATIO = 3.5747407139826
+    TAU = 0.0119678716963
+    ACTION_NOISE_STD = 0.0603773826813  # exploration_sigma
+    TARGET_POLICY_NOISE = 0.0614898042671
     # max(hp["target_noise_clip"], hp["target_policy_noise"])
-    # max(0.691899339891, 0.0597164215216) = 0.691899339891
-    TARGET_NOISE_CLIP = 0.691899339891
+    # max(0.2112520756806, 0.0614898042671) = 0.2112520756806
+    TARGET_NOISE_CLIP = 0.2112520756806
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

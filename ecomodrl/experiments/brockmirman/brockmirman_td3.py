@@ -69,16 +69,16 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # TD3 Hyperparameters
-    INITIAL_LR = 0.0009771130432
-    N_EPISODES = 1
-    BATCH_SIZE = 32
-    UTD_RATIO = 2.143118403272
-    TAU = 0.0136203795913
-    ACTION_NOISE_STD = 0.0848123875565  # exploration_sigma
-    TARGET_POLICY_NOISE = 0.0597164215216
+    INITIAL_LR = 0.0009405396428
+    N_EPISODES = 4
+    BATCH_SIZE = 64
+    UTD_RATIO = 3.9217385608281
+    TAU = 0.0184336640767
+    ACTION_NOISE_STD = 0.0585842514503  # exploration_sigma
+    TARGET_POLICY_NOISE = 0.1018948072371
     # max(hp["target_noise_clip"], hp["target_policy_noise"])
-    # max(0.691899339891, 0.0597164215216) = 0.691899339891
-    TARGET_NOISE_CLIP = 0.691899339891
+    # max(0.1115663097238, 0.1018948072371) = 0.1115663097238
+    TARGET_NOISE_CLIP = 0.1115663097238
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,

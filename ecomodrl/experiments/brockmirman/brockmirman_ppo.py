@@ -68,14 +68,14 @@ if __name__ == "__main__":
     params = BrockMirmanParams.load_params(cfg.toml_path)
     
     # PPO Hyperparameters
-    INITIAL_LR = 0.0003550265788
-    N_EPISODES = 2
-    N_EPOCHS = 8
-    NUM_MINIBATCHES = 10
-    CLIP_RANGE = 0.0971216893831
-    ENT_COEF = 3.7059684e-06
-    GAE_LAMBDA = 0.9684867656075
-    VF_COEF = 0.7289239008103
+    INITIAL_LR = 0.0003904664776
+    N_EPISODES = 4
+    N_EPOCHS = 2
+    NUM_MINIBATCHES = 4
+    CLIP_RANGE = 0.2470436633579
+    ENT_COEF = 0.0002568147945
+    GAE_LAMBDA = 0.9083026725455
+    VF_COEF = 0.8030369879929
 
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=INITIAL_LR,
