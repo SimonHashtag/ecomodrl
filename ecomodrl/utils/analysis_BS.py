@@ -142,9 +142,7 @@ def analyze_all_seeds(
         theta_low=params.theta_low,
         gh_order=params.gh_order,
     )
-    state_min = getattr(cfg, "state_min", 1e-6)
-    state_max = getattr(cfg, "state_max", 15.0)
-    grid = planning_prob.make_grid(points=1000, span = (state_min, state_max))
+    grid = planning_prob.make_grid(points=1000)
     
     # Global step grid for learning curve interpolation
     global_steps = np.linspace(
