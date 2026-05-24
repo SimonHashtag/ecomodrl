@@ -3,7 +3,7 @@ from typing import Union, Tuple, Optional
 import gymnasium as gym
 from gymnasium.spaces import Box
 import numpy as np
-from ecomodrl.utils.params_loader import CassKoopmansParams
+from ecomodrl.envs.parameters import CassKoopmansParams
 
 __all__ = ["CassKoopmansEnv"]
 

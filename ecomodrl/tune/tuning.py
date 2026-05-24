@@ -15,7 +15,6 @@ import torch as th
 import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
-from ecomodrl.utils.params_loader import BaseParams
 from ecomodrl.utils.learning_schedule import LinearScheduleByWallClockTime
 
 # ----------------------------
@@ -167,7 +166,7 @@ ALGO_REGISTRY: Dict[str, Tuple[SearchSpaceFn, AdapterFn]] = {
     "ddpg": (_offpolicy_space, _ddpg_adapter),
 }
 
-def get_algo_fixedcfgs(algo_name: str, params: BaseParams, hidden_nodes: int) -> AlgoConfig:
+def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoConfig:
     algo_name = algo_name.lower()
     if algo_name == "ppo":
         return AlgoConfig(
@@ -229,7 +228,7 @@ def target_function(
     *,
     cfg: Union[Mapping[str, Any], Any],
     algo_cfg: AlgoConfig,
-    params: BaseParams,
+    params: Any,
     env,
     cs: CS.ConfigurationSpace,
     min_fidelity: int,

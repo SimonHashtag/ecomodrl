@@ -10,7 +10,7 @@ from dehb import DEHB
 
 from ecomodrl.envs.bufferstock import BufferStockSavingsEnv
 from ecomodrl.tune.tuning import get_algo_fixedcfgs, ALGO_REGISTRY, target_function
-from ecomodrl.utils.params_loader import BufferStockParams
+from ecomodrl.envs.parameters import BufferStockParams
 
 # ----------------------------
 # Run configuration
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     if args.n_seeds is not None:
         cfg = replace(cfg, n_seeds=args.n_seeds)
     
-    params = BufferStockParams.load_params(cfg.toml_path)
+    params = BufferStockParams()
     algo_cfg = get_algo_fixedcfgs(args.algo_name, params, hidden_nodes=args.hidden_nodes)
     
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())

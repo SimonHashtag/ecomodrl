@@ -11,7 +11,7 @@ from dehb import DEHB
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 from ecomodrl.tune.tuning import get_algo_fixedcfgs, ALGO_REGISTRY, target_function
-from ecomodrl.utils.params_loader import CassKoopmansParams
+from ecomodrl.envs.parameters import CassKoopmansParams
 
 # ----------------------------
 # Run configuration
@@ -26,7 +26,6 @@ from ecomodrl.utils.params_loader import CassKoopmansParams
 @dataclass
 class RunConfig:
     """Static run configuration for a sweep."""
-    toml_path: str = "./ecomodrl/experiments/model_params/casskoopmans.toml"
     out_dir: Path = Path(os.environ.get("TUNERESULTS_PATH", "./tune_results/CassKoopmans")) 
     max_episode_steps: int = 30
     max_eval_episode_steps: int = 100
@@ -94,7 +93,7 @@ if __name__ == "__main__":
     if args.n_seeds is not None:
         cfg = replace(cfg, n_seeds=args.n_seeds)
     
-    params = CassKoopmansParams.load_params(cfg.toml_path)
+    params = CassKoopmansParams()
     algo_cfg = get_algo_fixedcfgs(args.algo_name, params, hidden_nodes=args.hidden_nodes)
     
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())

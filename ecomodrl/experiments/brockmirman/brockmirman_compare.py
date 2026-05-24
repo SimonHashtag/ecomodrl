@@ -23,7 +23,7 @@ from scipy.stats import wasserstein_distance
 from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.utils.metrics.accuracy import cev_crra
 from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci, interquartile_mean
-from ecomodrl.utils.params_loader import BrockMirmanParams
+from ecomodrl.envs.parameters import BrockMirmanParams
 from ecomodrl.utils.latex_formatting import generate_latex_table
 
 # ----------------------------------------------------------------------------
@@ -640,7 +640,7 @@ def run_comparison():
     logger.info(f"Loading results from: {RUNRESULTS_PATH}")
 
     # 1. Load parameters
-    params = BrockMirmanParams.load_params(TOML_PATH)
+    params = BrockMirmanParams()
     
     # Compute state bounds from economic model
     model = PlanningProblem(

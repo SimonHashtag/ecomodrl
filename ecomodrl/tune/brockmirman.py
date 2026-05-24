@@ -11,7 +11,7 @@ from dehb import DEHB
 from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem
 from ecomodrl.envs.brockmirman import BrockMirmanEnv
 from ecomodrl.tune.tuning import get_algo_fixedcfgs, ALGO_REGISTRY, target_function
-from ecomodrl.utils.params_loader import BrockMirmanParams
+from ecomodrl.envs.parameters import BrockMirmanParams
 
 # ----------------------------
 # Run configuration
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     if args.n_seeds is not None:
         cfg = replace(cfg, n_seeds=args.n_seeds)
     
-    params = BrockMirmanParams.load_params(cfg.toml_path)
+    params = BrockMirmanParams()
     algo_cfg = get_algo_fixedcfgs(args.algo_name, params, hidden_nodes=args.hidden_nodes)
     
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())

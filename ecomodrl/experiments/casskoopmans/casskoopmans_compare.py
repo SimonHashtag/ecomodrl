@@ -26,14 +26,13 @@ from scipy.stats import wasserstein_distance
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.utils.metrics.accuracy import cev_crra
 from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
-from ecomodrl.utils.params_loader import CassKoopmansParams
+from ecomodrl.envs.parameters import CassKoopmansParams
 from ecomodrl.utils.latex_formatting import generate_latex_table
 
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
 ALGOS = ["PPO", "DDPG", "SAC", "TD3"]
-TOML_PATH = Path("ecomodrl/experiments/model_params/casskoopmans.toml")
 RUNRESULTS_PATH = Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans"))
 
 # Bootstrap settings
@@ -545,7 +544,7 @@ def run_comparison():
     logger.info(f"Loading results from: {RUNRESULTS_PATH}")
 
     # 1. Load parameters
-    params = CassKoopmansParams.load_params(TOML_PATH)
+    params = CassKoopmansParams()
     
     # Compute state bounds from economic model
     model = PlanningProblem(
