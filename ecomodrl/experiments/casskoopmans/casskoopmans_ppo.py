@@ -2,14 +2,13 @@ import logging
 import multiprocessing as mp
 from dataclasses import replace
 
-import torch as th
-
 from ecomodrl.experiments.casskoopmans.configs import RunConfig
-from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
+from ecomodrl.algorithms.training import train_multiple_seeds
+from ecomodrl.algorithms.hyperparams import ALGO_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.envs.parameters import CassKoopmansParams
 from ecomodrl.utils.analysis_CK import analyze_all_seeds
-from ecomodrl.utils.learning_schedule import LinearScheduleByWallClockTime
+from ecomodrl.utils.hyperparam_import import load_tuned_config
 
 if __name__ == "__main__":
     mp.freeze_support()
@@ -19,44 +18,12 @@ if __name__ == "__main__":
     )
     cfg = RunConfig()
     params = CassKoopmansParams()
-    
-    # PPO Hyperparameters
-    INITIAL_LR = 0.0004322994492
-    N_EPISODES = 2
-    N_EPOCHS = 7
-    NUM_MINIBATCHES = 4
-    CLIP_RANGE = 0.0545356382642
-    ENT_COEF = 2.2816594e-06
-    GAE_LAMBDA = 0.9515547720523
-    VF_COEF = 0.8745344247954
 
-    lr_schedule = LinearScheduleByWallClockTime(
-        initial_lr=INITIAL_LR,
-        final_lr=3e-5,
-        max_wallclock_seconds=cfg.max_wallclock_seconds,
-    )
+    algo_key = "ppo"
+    hp = load_tuned_config(env_name=cfg.env_name, algo_name=algo_key)
 
-    algo_cfg = AlgoConfig(
-        name="ppo",
-        policy="MlpPolicy",
-        algo_params={
-            "gamma": params.beta,
-            "n_steps": cfg.max_episode_steps * N_EPISODES,
-            "batch_size": (cfg.n_envs * cfg.max_episode_steps * N_EPISODES) // NUM_MINIBATCHES,
-            "n_epochs": N_EPOCHS,
-            "learning_rate": lr_schedule,
-            "ent_coef": ENT_COEF,
-            "gae_lambda": GAE_LAMBDA,
-            "clip_range": CLIP_RANGE,
-            "vf_coef": VF_COEF,
-            "max_grad_norm": 0.5,
-        },
-        policy_kwargs={
-            "activation_fn": th.nn.ReLU,
-            "net_arch": {"pi": [64, 64], "vf": [64, 64]},
-            "log_std_init": -2.0,
-        },
-    )
+    base_cfg = get_algo_fixedcfgs(algo_key, params, hidden_nodes=64)
+    algo_cfg = ALGO_REGISTRY[algo_key](hp, cfg, base_cfg)
     
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)

@@ -1,3 +1,4 @@
+import argparse
 import os
 
 from dataclasses import dataclass, field
@@ -15,6 +16,10 @@ from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
 
 @dataclass
 class RunConfig:
+    # Name
+    env_name: str = "CassKoopmans"
+    algo_name: str = "ppo"
+
     # Paths
     out_dir: Path = Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans"))
 
@@ -46,3 +51,21 @@ class RunConfig:
     def seeds(self) -> list[int]:
         """List of random seeds for multiple runs."""
         return list(range(self.base_seed, self.base_seed + self.n_seeds))
+    
+
+def parse_run_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--algo_name", type=str, default="ppo", choices=["ppo", "ddpg", "td3", "sac"])
+    p.add_argument("--out_dir", type=Path, default=Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans")))
+    p.add_argument("--max_episode_steps", type=int, default=30)
+    p.add_argument("--max_eval_episode_steps", type=int, default=100)
+    p.add_argument("--n_envs", type=int, default=10)
+    p.add_argument("--total_timesteps", type=int, default=1_000_000_000)
+    p.add_argument("--max_wallclock_seconds", type=int, default=600)
+    p.add_argument("--eval_every", type=int, default=10_000)
+    p.add_argument("--patience", type=int, default=2000)
+    p.add_argument("--n_seeds", type=int, default=10)
+    
+    args = p.parse_args()
+    
+    return RunConfig(**vars(args))

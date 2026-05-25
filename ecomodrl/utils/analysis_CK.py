@@ -166,7 +166,6 @@ def analyze_all_seeds(
         # Learning curve from TensorBoard
         try:
             _, returns = tb_read_scalar(tb_path, "eval/avg_discounted_return")
-            _, steps_proc = tb_read_scalar(tb_path, "eval/x_processed_samples")
             _, wallclock = tb_read_scalar(tb_path, "eval/x_wallclock_seconds")
             interp_returns = np.interp(global_steps, wallclock, returns)
             final_time = wallclock[-1] if len(wallclock) > 0 else 0.0

@@ -10,7 +10,7 @@ from dehb import DEHB
 
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem
-from ecomodrl.tune.tuning import get_algo_fixedcfgs, ALGO_REGISTRY, target_function
+from ecomodrl.tune.tuning import get_algo_fixedcfgs, TUNE_REGISTRY, target_function
 from ecomodrl.envs.parameters import CassKoopmansParams
 
 # ----------------------------
@@ -48,7 +48,7 @@ class RunConfig:
     
     # Seeds
     base_seed: int = 100
-    n_seeds: int = 10
+    n_seeds: int = 3
 
     @property
     def seeds(self) -> list[int]:
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    space_fn, _ = ALGO_REGISTRY[algo_cfg.name.lower()]
+    space_fn, _ = TUNE_REGISTRY[algo_cfg.name.lower()]
     cs = space_fn(seed=cfg.base_seed)
 
     eta = 3

@@ -9,7 +9,7 @@ from pathlib import Path
 from dehb import DEHB
 
 from ecomodrl.envs.bufferstock import BufferStockSavingsEnv
-from ecomodrl.tune.tuning import get_algo_fixedcfgs, ALGO_REGISTRY, target_function
+from ecomodrl.tune.tuning import get_algo_fixedcfgs, TUNE_REGISTRY, target_function
 from ecomodrl.envs.parameters import BufferStockParams
 
 # ----------------------------
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     cfg = replace(cfg, out_dir=cfg.out_dir / algo_cfg.name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    space_fn, _ = ALGO_REGISTRY[algo_cfg.name.lower()]
+    space_fn, _ = TUNE_REGISTRY[algo_cfg.name.lower()]
     cs = space_fn(seed=cfg.base_seed)
 
     eta = 3

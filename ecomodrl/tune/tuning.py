@@ -11,15 +11,13 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple, Union
 import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
 import numpy as np
-import torch as th
-import math
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
-from ecomodrl.utils.learning_schedule import LinearScheduleByWallClockTime
+from ecomodrl.algorithms.hyperparams import ALGO_REGISTRY
 
-# ----------------------------
-# Utilities
-# ----------------------------
+SearchSpaceFn = Callable[[Union[Mapping[str, Any], Any], int | None], CS.ConfigurationSpace]
+
+
 def _to_dict(
     hp: Union[CS.Configuration, Mapping, Iterable, np.ndarray],
     cs: CS.ConfigurationSpace,
@@ -30,20 +28,6 @@ def _to_dict(
     if isinstance(hp, Mapping):
         return dict(hp)
     return {hpdef.name: val for hpdef, val in zip(list(cs.values()), hp)} 
-
-
-# def _seeds_for_fidelity(fidelity: int, min_fid: int, max_fid: int, min_seeds: int, max_seeds: int) -> int:
-#     """Simple seed ramping schedule based on relative budget."""
-#     phi = (fidelity - min_fid) / float(max_fid - min_fid)
-#     seeds = int(round((max_seeds - min_seeds) * phi + min_seeds))
-#     return max(min_seeds, min(seeds, max_seeds))
-
-
-# ----------------------------
-# Algorithm registry
-# ----------------------------
-SearchSpaceFn = Callable[[Union[Mapping[str, Any], Any], int | None], CS.ConfigurationSpace]
-AdapterFn = Callable[[Dict, Union[Mapping[str, Any], Any], AlgoConfig], AlgoConfig]
 
 
 def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
@@ -61,34 +45,6 @@ def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
         ]
     )
     return cs
-
-
-def _ppo_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
-    n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
-    B = cfg.n_envs * n_steps
-    M = int(hp["num_minibatches"])
-    batch_size = B // M
-
-    initial_lr = float(hp["learning_rate"])
-    lr_schedule = LinearScheduleByWallClockTime(
-        initial_lr=initial_lr,
-        final_lr=min(initial_lr, 3e-5),
-        max_wallclock_seconds=cfg.max_wallclock_seconds, 
-    )
-
-    algo = replace(base)
-    algo.algo_params = {
-        **(base.algo_params or {}),
-        "learning_rate": lr_schedule,
-        "clip_range": float(hp["clip_range"]),
-        "gae_lambda": float(hp["gae_lambda"]),
-        "ent_coef": float(hp["ent_coef"]),
-        "vf_coef": float(hp["vf_coef"]),
-        "n_epochs": int(hp["n_epochs"]),
-        "n_steps": n_steps,
-        "batch_size": batch_size,
-    }
-    return algo
 
 
 def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
@@ -110,114 +66,17 @@ def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
     return cs
 
 
-def _offpolicy_adapter_common(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> Dict:
-    """Translate shared HPs to SB3-style kwargs."""
-    n_steps = int(cfg.max_episode_steps) * int(hp["n_episodes"])
-    B = int(cfg.n_envs) * n_steps
-    gradient_steps = math.ceil(B * float(hp["utd_ratio"]) / int(hp["batch_size"]))
-    
-    initial_lr = float(hp["learning_rate"])
-    lr_schedule = LinearScheduleByWallClockTime(
-        initial_lr=initial_lr,
-        final_lr=min(initial_lr, 3e-5),
-        max_wallclock_seconds=cfg.max_wallclock_seconds,
-    )
-
-    return {
-        **(base.algo_params or {}),
-        "learning_rate": lr_schedule,
-        "batch_size": int(hp["batch_size"]),
-        "tau": float(hp["tau"]),
-        "train_freq": (int(n_steps), "step"),
-        "gradient_steps": int(gradient_steps),
-    }
-
-
-def _td3_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
-    algo = replace(base)
-    params = _offpolicy_adapter_common(hp, cfg, base)
-    params.setdefault("policy_delay", 2)
-    params["action_noise_std"] = float(hp["exploration_sigma"])
-    params["target_policy_noise"] = float(hp["target_policy_noise"])
-    params["target_noise_clip"] = float(max(hp["target_noise_clip"], hp["target_policy_noise"]))
-    algo.algo_params = params
-    return algo
-
-
-def _ddpg_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
-    algo = replace(base)
-    params = _offpolicy_adapter_common(hp, cfg, base)
-    params["action_noise_std"] = float(hp["exploration_sigma"])
-    algo.algo_params = params
-    return algo
-
-
-def _sac_adapter(hp: Dict, cfg: Union[Mapping[str, Any], Any], base: AlgoConfig) -> AlgoConfig:
-    algo = replace(base)
-    params = _offpolicy_adapter_common(hp, cfg, base)
-    params.setdefault("ent_coef", "auto")
-    algo.algo_params = params
-    return algo
-
-ALGO_REGISTRY: Dict[str, Tuple[SearchSpaceFn, AdapterFn]] = {
-    "ppo": (_ppo_space, _ppo_adapter),
-    "td3": (_offpolicy_space, _td3_adapter),
-    "sac": (_offpolicy_space, _sac_adapter),
-    "ddpg": (_offpolicy_space, _ddpg_adapter),
+SEARCH_SPACE_REGISTRY: Dict[str, SearchSpaceFn] = {
+    "ppo": _ppo_space,
+    "td3": _offpolicy_space,
+    "sac": _offpolicy_space,
+    "ddpg": _offpolicy_space,
 }
 
-def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoConfig:
-    algo_name = algo_name.lower()
-    if algo_name == "ppo":
-        return AlgoConfig(
-            name="ppo",
-            policy="MlpPolicy",
-            algo_params={
-                "gamma": params.beta,
-                "max_grad_norm": 0.5,
-                "normalize_advantage": True,
-                "clip_range_vf": None,
-                "target_kl": None,
-                "use_sde": False,
-            },
-            policy_kwargs={
-                "activation_fn": th.nn.ReLU,
-                "net_arch": {"pi": [hidden_nodes, hidden_nodes], "vf": [hidden_nodes, hidden_nodes]},
-                "log_std_init": -2.0,
-            },
-        )
-    elif algo_name in {"td3", "ddpg"}:
-        return AlgoConfig(
-            name=algo_name,
-            policy="MlpPolicy",
-            algo_params={
-                "gamma": params.beta,
-                "max_grad_norm": 0.5,
-                "buffer_size": 100_000,
-                "learning_starts": 10_000,
-            },
-            policy_kwargs={"activation_fn": th.nn.ReLU, "net_arch": [hidden_nodes, hidden_nodes]},
-        )
-    elif algo_name == "sac":
-        return AlgoConfig(
-            name="sac",
-            policy="MlpPolicy",
-            algo_params={
-                "gamma": params.beta,
-                "max_grad_norm": 0.5,
-                "action_noise": None,
-                "target_update_interval": 1,
-                "use_sde": False,
-                "buffer_size": 100_000,
-                "learning_starts": 10_000,
-            },
-            policy_kwargs={
-                "activation_fn": th.nn.ReLU, 
-                "net_arch": [hidden_nodes, hidden_nodes],
-                },
-        )
-    else:
-        raise ValueError("Unsupported algo_name")
+TUNE_REGISTRY: Dict[str, Tuple[SearchSpaceFn, Any]] = {
+    algo: (space_fn, ALGO_REGISTRY[algo])
+    for algo, space_fn in SEARCH_SPACE_REGISTRY.items()
+}
 
 # ----------------------------
 # Target function for DEHB
@@ -258,9 +117,11 @@ def target_function(
     trial_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        _, adapter_fn = ALGO_REGISTRY[algo_cfg.name.lower()]
-    except KeyError as exc:  # *
-        raise ValueError(f"Unknown algorithm '{algo_cfg.name}'. Available: {list(ALGO_REGISTRY)}") from exc
+        adapter_fn = ALGO_REGISTRY[algo_cfg.name.lower()]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown algorithm '{algo_cfg.name}'. Available: {list(ALGO_REGISTRY)}"
+        ) from exc
 
     # Pass 'cfg' (Global) instead of 'trial_cfg' (Truncated) to the adapter.
     # This ensures the LR Schedule is calculated based on the full 10M steps,
