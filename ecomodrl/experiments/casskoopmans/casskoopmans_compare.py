@@ -33,7 +33,7 @@ from ecomodrl.utils.latex_formatting import generate_latex_table
 # Configuration
 # ----------------------------------------------------------------------------
 ALGOS = ["PPO", "DDPG", "SAC", "TD3"]
-RUNRESULTS_PATH = Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans"))
+RUNRESULTS_PATH = Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans"), "CassKoopmans")
 
 # Bootstrap settings
 N_BOOT = 1000

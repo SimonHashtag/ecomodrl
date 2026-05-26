@@ -22,7 +22,7 @@ from scipy.stats import wasserstein_distance
 
 from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.utils.metrics.accuracy import cev_crra
-from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci, interquartile_mean
+from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
 from ecomodrl.envs.parameters import BrockMirmanParams
 from ecomodrl.utils.latex_formatting import generate_latex_table
 
@@ -30,8 +30,7 @@ from ecomodrl.utils.latex_formatting import generate_latex_table
 # Configuration
 # ----------------------------------------------------------------------------
 ALGOS = ["PPO", "DDPG", "SAC", "TD3"]
-TOML_PATH = Path("ecomodrl/experiments/model_params/brockmirman.toml")
-RUNRESULTS_PATH = Path(os.environ.get("RUNRESULTS_PATH", "./runs/BrockMirman"))
+RUNRESULTS_PATH = Path(os.environ.get("RUNRESULTS_PATH", "./runs"), "BrockMirman")
 
 # Bootstrap settings
 N_BOOT = 1000

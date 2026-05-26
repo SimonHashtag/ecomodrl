@@ -63,7 +63,7 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 ALGOS=("ppo" "ddpg" "sac" "td3")
 
 # 2. Define where Python should write results in scratch
-export TUNERESULTS_PATH="$WORKDIR/tune_results/BrockMirman"
+export TUNERESULTS_PATH="$WORKDIR/tune_results"
 mkdir -p "$TUNERESULTS_PATH"
 
 # 3. Budget per algorithm

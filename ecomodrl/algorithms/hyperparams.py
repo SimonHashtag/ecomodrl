@@ -52,19 +52,21 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
 
 
 def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
+    base_params = dict(base.algo_params or {})
     n_steps = cfg.max_episode_steps * int(hp["n_episodes"])
     batch_size = (cfg.n_envs * n_steps) // int(hp["num_minibatches"])
 
     initial_lr = float(hp["learning_rate"])
+    final_lr_multiplier = float(base_params.pop("final_lr_multiplier", 1.0))
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=initial_lr,
-        final_lr=min(initial_lr, 3e-5),
+        final_lr=initial_lr * final_lr_multiplier,
         max_wallclock_seconds=cfg.max_wallclock_seconds,
     )
 
     algo = replace(base)
     algo.algo_params = {
-        **(base.algo_params or {}),
+        **base_params,
         "learning_rate": lr_schedule,
         "clip_range": float(hp["clip_range"]),
         "gae_lambda": float(hp["gae_lambda"]),
@@ -78,6 +80,7 @@ def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
 
 
 def _offpolicy_adapter_common(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> Dict[str, Any]:
+    base_params = dict(base.algo_params or {})
     n_steps = int(cfg.max_episode_steps) * int(hp["n_episodes"])
     total_steps = int(cfg.n_envs) * n_steps
     gradient_steps = math.ceil(
@@ -85,14 +88,15 @@ def _offpolicy_adapter_common(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) ->
     )
 
     initial_lr = float(hp["learning_rate"])
+    final_lr_multiplier = float(base_params.pop("final_lr_multiplier", 1.0))
     lr_schedule = LinearScheduleByWallClockTime(
         initial_lr=initial_lr,
-        final_lr=min(initial_lr, 3e-5),
+        final_lr=initial_lr * final_lr_multiplier,
         max_wallclock_seconds=cfg.max_wallclock_seconds,
     )
 
     return {
-        **(base.algo_params or {}),
+        **base_params,
         "learning_rate": lr_schedule,
         "batch_size": int(hp["batch_size"]),
         "tau": float(hp["tau"]),
@@ -151,6 +155,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "clip_range_vf": None,
                 "target_kl": None,
                 "use_sde": False,
+                "final_lr_multiplier": 1.0, # TODO: Decide for a final LR multiplier
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -170,6 +175,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "max_grad_norm": 0.5,
                 "buffer_size": 100_000,
                 "learning_starts": 10_000,
+                "final_lr_multiplier": 1.0, # TODO: Decide for a final LR multiplier
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -188,6 +194,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "use_sde": False,
                 "buffer_size": 100_000,
                 "learning_starts": 10_000,
+                "final_lr_multiplier": 1.0, # TODO: Decide for a final LR multiplier
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,

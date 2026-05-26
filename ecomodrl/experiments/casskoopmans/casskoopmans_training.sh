@@ -59,8 +59,11 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 #   Configuration Setup    #
 ############################
 
+# 1. Define list of algorithms
+ALGOS=("ppo" "ddpg" "sac" "td3")
+
 # Define one common place in scratch for the plots/results.
-export RUNRESULTS_PATH="$WORKDIR/training_results/CassKoopmans"
+export RUNRESULTS_PATH="$WORKDIR/training_results"
 mkdir -p "$RUNRESULTS_PATH"
 
 echo "Results will be stored in: $RUNRESULTS_PATH"
@@ -69,25 +72,17 @@ echo "Results will be stored in: $RUNRESULTS_PATH"
 #   Run Training Scripts   #
 ############################
 
-# 1. PPO
-echo "------------------------------------------------"
-echo "Starting PPO..."
-python ecomodrl/experiments/casskoopmans/casskoopmans_ppo.py
+for algo in "${ALGOS[@]}"; do
+    echo "------------------------------------------------"
+    echo "Starting $algo..."
+    echo "------------------------------------------------"
+    
+    python ecomodrl/experiments/casskoopmans/casskoopmans.py \
+        --algo_name="$algo" \
+        --hidden_nodes=64
 
-# 2. DDPG
-echo "------------------------------------------------"
-echo "Starting DDPG..."
-python ecomodrl/experiments/casskoopmans/casskoopmans_ddpg.py
-
-# 3. SAC
-echo "------------------------------------------------"
-echo "Starting SAC..."
-python ecomodrl/experiments/casskoopmans/casskoopmans_sac.py
-
-# 4. TD3
-echo "------------------------------------------------"
-echo "Starting TD3..."
-python ecomodrl/experiments/casskoopmans/casskoopmans_td3.py
+    echo "Finished training for $algo"
+done
 
 ############################
 #   Unified Analysis       #
