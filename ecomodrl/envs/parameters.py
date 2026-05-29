@@ -72,7 +72,7 @@ class BrockMirmanParams:
     delta: float = 0.02
     alpha: float = 0.33
     rho: float = 0.95
-    sigma: float = 0.007
+    sigma: float = 0.03
 
     # -------- Validation --------
     def __post_init__(self):

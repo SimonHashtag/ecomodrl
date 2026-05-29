@@ -232,6 +232,13 @@ class WallClockEarlyStoppingCallback(BaseCallback):
             self.lr_schedule_obj.update(elapsed)
 
     def _on_training_end(self) -> None:
+        if self._final_eval_pending:
+            self._final_eval_pending = False
+            try:
+                self._run_eval_and_maybe_stop()
+            except Exception as e:
+                if self.verbose:
+                    print(f"Warning: could not run final eval ({e}).", flush=True)
         # Reload best parameters
         try:
             if self.best_model_path and os.path.exists(self.best_model_path):
@@ -291,7 +298,7 @@ class WallClockEarlyStoppingCallback(BaseCallback):
                 train_norm.save(self.vecnorm_path)
         else:
             self.patience_counter += 1
-            if self.patience_counter >= self.patience:
+            if self.patience_counter >= self.patience and self._stop_reason == "none":
                 self._stop_reason = "early_stop"
 
         # Logging (dump at eval cadence)
