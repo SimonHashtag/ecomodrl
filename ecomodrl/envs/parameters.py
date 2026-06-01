@@ -71,6 +71,7 @@ class BrockMirmanParams:
     beta: float = 0.95
     delta: float = 0.02
     alpha: float = 0.33
+    A: float = 1.0
     rho: float = 0.95
     sigma: float = 0.03
 
@@ -84,6 +85,8 @@ class BrockMirmanParams:
             raise ValueError("delta (δ) must be in [0, 1]")
         if not (0 < self.alpha < 1):
             raise ValueError("alpha (α) must be in (0, 1)")
+        if not (self.A > 0):
+            raise ValueError("A must be > 0")
         if not (abs(self.rho) < 1):
             raise ValueError("rho (ρ) must satisfy |ρ| < 1")
         if not (self.sigma >= 0):

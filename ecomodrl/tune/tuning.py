@@ -34,7 +34,7 @@ def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
     cs = CS.ConfigurationSpace(seed=seed)
     cs.add(
         [
-            CSH.UniformFloatHyperparameter("learning_rate", 5e-5, 1e-3, log=True),
+            CSH.UniformFloatHyperparameter("learning_rate", 1e-5, 3e-3, log=True),
             CSH.UniformFloatHyperparameter("clip_range", 0.05, 0.30),
             CSH.UniformFloatHyperparameter("gae_lambda", 0.90, 0.995),
             CSH.UniformFloatHyperparameter("ent_coef", 1e-6, 1e-2, log=True),
