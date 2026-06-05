@@ -28,9 +28,9 @@ class BaseTuneConfig(BaseRunConfig):
     # Tuning
     out_dir: Path = Path(os.environ.get("TUNERESULTS_PATH", "./tune_results")) 
     total_cost: int = 60 * 60
-    eta: int = 3
-    rungs: int = 2
-    min_fidelity_seconds: int = 30
+    eta: int = 2
+    rungs: int = 3
+    min_fidelity_seconds: int = 60
     crossover_prob: float = 0.5
     mutation_factor: float = 0.5
     

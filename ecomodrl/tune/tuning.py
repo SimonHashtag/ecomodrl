@@ -13,15 +13,15 @@ import ConfigSpace.hyperparameters as CSH
 import numpy as np
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
-from ecomodrl.algorithms.hyperparams import ALGO_REGISTRY
+from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY
 
-SearchSpaceFn = Callable[[Union[Mapping[str, Any], Any], int | None], CS.ConfigurationSpace]
+SearchSpaceFn = Callable[[Any, int | None], CS.ConfigurationSpace]
 
 
 def _to_dict(
     hp: Union[CS.Configuration, Mapping, Iterable, np.ndarray],
     cs: CS.ConfigurationSpace,
-    ) -> Dict:
+) -> Dict:
     """Normalize DEHB hyperparameter payload to a plain dict."""
     if isinstance(hp, CS.Configuration):
         return dict(hp)
@@ -30,51 +30,78 @@ def _to_dict(
     return {hpdef.name: val for hpdef, val in zip(list(cs.values()), hp)} 
 
 
-def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
+def _common_space(seed: int | None = None) -> CS.ConfigurationSpace:
+    """Shared search space for all algorithms.
+
+    Divisibility of (n_envs × max_episode_steps × n_episodes) by
+    num_minibatches is enforced at adapter time, not here, because
+    DEHB's DE operators are unaware of forbidden clauses.
+    """
     cs = CS.ConfigurationSpace(seed=seed)
-    cs.add(
-        [
-            CSH.UniformFloatHyperparameter("learning_rate", 1e-5, 3e-3, log=True),
-            CSH.UniformFloatHyperparameter("clip_range", 0.05, 0.30),
-            CSH.UniformFloatHyperparameter("gae_lambda", 0.90, 0.995),
-            CSH.UniformFloatHyperparameter("ent_coef", 1e-6, 1e-2, log=True),
-            CSH.UniformFloatHyperparameter("vf_coef", 0.5, 1.0),
-            CSH.UniformIntegerHyperparameter("n_epochs", 2, 10),
-            CSH.CategoricalHyperparameter("n_episodes", [1, 2, 4, 8]),
-            CSH.CategoricalHyperparameter("num_minibatches", [4, 5, 6, 8, 10]),
-        ]
-    )
+    cs.add([
+        CSH.UniformFloatHyperparameter("learning_rate", 1e-5, 3e-3, log=True),
+        CSH.CategoricalHyperparameter("n_episodes", choices=[1, 2, 4, 8]),
+        CSH.CategoricalHyperparameter("num_minibatches", choices=[4, 5, 6, 7, 8, 9, 10, 12, 16, 32, 64]),
+        CSH.UniformIntegerHyperparameter("sample_reuse", 1, 16),
+    ])
+
     return cs
 
 
-def _offpolicy_space(seed: int | None = None) -> CS.ConfigurationSpace:
-    """Shared space for TD3/SAC/DDPG (off-policy)."""
-    cs = CS.ConfigurationSpace(seed=seed)
-    cs.add(
-        [
-            CSH.UniformFloatHyperparameter("learning_rate", 1e-5, 3e-3, log=True),
-            CSH.CategoricalHyperparameter("batch_size", [32, 64, 128, 256, 512]),
-            CSH.UniformFloatHyperparameter("tau", 2e-3, 2e-2),  # soft-update
-            CSH.CategoricalHyperparameter("n_episodes", [1, 2, 4, 8]),
-            CSH.UniformFloatHyperparameter("utd_ratio", 1.0, 5.0),  # updates-to-data ratio
-            # Used by DDPG/TD3
-            CSH.UniformFloatHyperparameter("exploration_sigma", 0.05, 0.50),
-            CSH.UniformFloatHyperparameter("target_policy_noise", 0.05, 0.5),
-            CSH.UniformFloatHyperparameter("target_noise_clip", 0.1, 1.0),
-        ]
-    )
+def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
+    cs = _common_space(seed)
+    cs.add([
+        CSH.UniformFloatHyperparameter("clip_range", 0.05, 0.30),
+        CSH.UniformFloatHyperparameter("gae_lambda", 0.85, 0.995),
+        CSH.CategoricalHyperparameter("ent_coef", [0.0, 1e-5, 1e-4, 1e-3, 1e-2]),
+        CSH.UniformFloatHyperparameter("vf_coef", 0.25, 1.0),
+    ])
+    return cs
+
+
+def _offpolicy_common_space(seed: int | None = None) -> CS.ConfigurationSpace:
+    """Shared space for TD3 / SAC / DDPG."""
+    cs = _common_space(seed)
+    cs.add([
+        CSH.UniformFloatHyperparameter("tau", 1e-3, 2e-2, log=True),
+    ])
+    return cs
+
+
+def _sac_space(seed: int | None = None) -> CS.ConfigurationSpace:
+    cs = _offpolicy_common_space(seed)
+    # SAC has no extra tuned HPs beyond the off-policy common ones
+    # (ent_coef is fixed to "auto" in the adapter)
+    return cs
+
+
+def _td3_space(seed: int | None = None) -> CS.ConfigurationSpace:
+    cs = _offpolicy_common_space(seed)
+    cs.add([
+        CSH.UniformFloatHyperparameter("exploration_sigma", 0.02, 0.50),
+        CSH.UniformFloatHyperparameter("target_policy_noise", 0.05, 0.50),
+        CSH.UniformFloatHyperparameter("target_noise_clip", 0.1, 1.0),
+    ])
+    return cs
+
+
+def _ddpg_space(seed: int | None = None) -> CS.ConfigurationSpace:
+    cs = _offpolicy_common_space(seed)
+    cs.add([
+        CSH.UniformFloatHyperparameter("exploration_sigma", 0.02, 0.50),
+    ])
     return cs
 
 
 SEARCH_SPACE_REGISTRY: Dict[str, SearchSpaceFn] = {
     "ppo": _ppo_space,
-    "td3": _offpolicy_space,
-    "sac": _offpolicy_space,
-    "ddpg": _offpolicy_space,
+    "td3": _td3_space,
+    "sac": _sac_space,
+    "ddpg": _ddpg_space,
 }
 
 TUNE_REGISTRY: Dict[str, Tuple[SearchSpaceFn, Any]] = {
-    algo: (space_fn, ALGO_REGISTRY[algo])
+    algo: (space_fn, ADAPTER_REGISTRY[algo])
     for algo, space_fn in SEARCH_SPACE_REGISTRY.items()
 }
 
@@ -117,10 +144,10 @@ def target_function(
     trial_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        adapter_fn = ALGO_REGISTRY[algo_cfg.name.lower()]
+        adapter_fn = ADAPTER_REGISTRY[algo_cfg.name.lower()]
     except KeyError as exc:
         raise ValueError(
-            f"Unknown algorithm '{algo_cfg.name}'. Available: {list(ALGO_REGISTRY)}"
+            f"Unknown algorithm '{algo_cfg.name}'. Available: {list(ADAPTER_REGISTRY)}"
         ) from exc
 
     # Pass 'cfg' (Global) instead of 'trial_cfg' (Truncated) to the adapter.

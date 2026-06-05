@@ -14,7 +14,7 @@ class PlanningProblem():
         beta: float = 0.95,    # Discount factor
         delta: float = 0.02,   # Depreciation rate on capital
         alpha: float = 0.33,   # Return to capital per capita
-        A: int = 1,            # Technology level (trend/mean of z is 1)
+        A: float = 1.0,            # Technology level (trend/mean of z is 1)
         rho: float = 0.9,      # Persistence of log productivity
         sigma: float = 0.02,   # Std. dev. of log productivity shock
         gh_order: int = 5      # Gauss–Hermite quadrature order
