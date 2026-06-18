@@ -3,12 +3,12 @@ import multiprocessing as mp
 from dataclasses import replace
 
 from ecomodrl.experiments.configs import PortfolioChoiceRunConfig, parse_run_args
-from ecomodrl.algorithms.hyperparams import ALGO_REGISTRY, get_algo_fixedcfgs
+from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
 from ecomodrl.envs.portfoliochoice import PortfolioChoiceEnv
 from ecomodrl.envs.parameters import PortfolioChoiceParams
-#from ecomodrl.utils.analysis_PC import analyze_all_seeds
+from ecomodrl.utils.analysis_PC import analyze_all_seeds
 
 # E.g., run with: 
 # `python ecomodrl/experiments/portfoliochoice/portfoliochoice.py --algo_name ppo --hidden_nodes 64 --n_seeds 20`
@@ -28,7 +28,8 @@ if __name__ == "__main__":
     hp = load_tuned_hp(env_name=cfg.env_name, algo_name=cfg.algo_name)
 
     base_algo_cfg = get_algo_fixedcfgs(cfg.algo_name, params, hidden_nodes=cfg.hidden_nodes)
-    algo_cfg = ALGO_REGISTRY[cfg.algo_name](hp, cfg, base_algo_cfg)
+    algo_cfg = ADAPTER_REGISTRY[cfg.algo_name](hp, cfg, base_algo_cfg)
     
     train_multiple_seeds(cfg, algo_cfg, PortfolioChoiceEnv, params, verbose=1)
-    #analyze_all_seeds(cfg, algo_cfg, PortfolioChoiceEnv, params)
+    analyze_all_seeds(cfg, algo_cfg, PortfolioChoiceEnv, params)
+    

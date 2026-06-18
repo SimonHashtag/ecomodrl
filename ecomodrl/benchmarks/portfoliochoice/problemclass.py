@@ -1,6 +1,6 @@
 import itertools
 import logging
-from typing import Tuple, Union
+from typing import Tuple, Union, Sequence
 
 import numpy as np
 from numba import njit, prange
@@ -361,16 +361,16 @@ class PlanningProblem:
         gamma: float = 2.0,  # Coefficient of relative risk aversion
         beta: float = 0.95,  # Discount factor
         g: float = 0.01,  # Growth rate of permanent income
+        r: float = 0.02,  # Interest rate of risk-free asset
         sigma_tran: float = 0.1,  # Std. dev. of transitory shock (log)
         sigma_perm: float = 0.1,  # Std. dev. of permanent shock (log)
-        unemp_prob: float = 0.005,  # Probability of unemployment
+        unemployment_prob: float = 0.005,  # Probability of unemployment
         theta_low: float = 0.3,  # Earnings in unemployment
-        r: float = 0.02,  # Interest rate of risk-free asset
-        sigma_z: Union[float, list, np.ndarray] = 0.1,  # Std dev of predictor shocks
-        sigma_R: Union[float, list, np.ndarray] = 0.2,  # Std dev of return shocks
-        rho_z: Union[float, list, np.ndarray] = 0.85,  # Persistence of predictors
-        kappa_R: Union[float, list, np.ndarray] = 0.0,  # Intercept of asset return
-        xi_R: Union[float, list, np.ndarray] = 0.025,  # Loading on predictor
+        rho_z: Union[float, list, np.ndarray, Sequence[float]] = 0.85,  # Persistence of predictors
+        sigma_z: Union[float, list, np.ndarray, Sequence[float]] = 0.1,  # Std dev of predictor shocks
+        kappa_R: Union[float, list, np.ndarray, Sequence[float]] = 0.0,  # Intercept of asset return
+        xi_R: Union[float, list, np.ndarray, Sequence[float]] = 0.025,  # Loading on predictor
+        sigma_R: Union[float, list, np.ndarray, Sequence[float]] = 0.2,  # Std dev of return shocks
         M: int = 4096,  # Target number of RQMC nodes (before antithetics)
         seed: int = 1996,  # Seed for RQMC
     ) -> None:
@@ -387,7 +387,7 @@ class PlanningProblem:
         self.sigma_perm = float(sigma_perm)
 
         # Unemployment
-        self.unemp_prob = float(unemp_prob)
+        self.unemp_prob = float(unemployment_prob)
         self.theta_low = float(theta_low)
 
         # Mean adjustment so E[Theta] = 1

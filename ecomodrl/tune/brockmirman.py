@@ -35,7 +35,7 @@ if __name__ == "__main__":
     MIN_FIDELITY_SECONDS = cfg.min_fidelity_seconds
     min_fidelity = max(cfg.max_wallclock_seconds // (eta**(rungs-1)), MIN_FIDELITY_SECONDS)
     max_fidelity = cfg.max_wallclock_seconds
-    n_workers = min(max(1, (os.cpu_count() or 2) - 1), 20)
+    n_workers = max(1, (os.cpu_count() or 2) - 1)
 
     dehb = DEHB(
         f=target_function,

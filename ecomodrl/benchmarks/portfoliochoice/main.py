@@ -3,21 +3,22 @@ import matplotlib.pyplot as plt
 from time import time
 
 from ecomodrl.benchmarks.portfoliochoice.problemclass import PlanningProblem, PlanningSolvers
+from ecomodrl.envs.parameters import PortfolioChoiceParams
 
 if __name__ == "__main__":
+    
+    params = PortfolioChoiceParams()
+    params = params.__dict__
+    params.pop("n_risky")
 
     # Model and solvers
     model   = PlanningProblem(
-        sigma_R=[0.28, 0.18],   # idiosyncratic/short-run risk: growth riskier
-        sigma_z=[0.08, 0.10],   # slow-moving uncertainty: conservative a touch higher
-        rho_z=[0.90, 0.75],
-        kappa_R=[0.00, 0.00],
-        xi_R=[+0.045, -0.030],
+        **params,
         M=2**10
         )                     
     solvers = PlanningSolvers(
         m_points=200,         # m grid points (only used for interpolation to common rectangular grid)
-        rs_points=51,         # rs grid points
+        rs_points=61,         # rs grid points
         z_points=15,          # z grid points
         tol=1e-5,             # optimization tolerance (root finding for weights)
         conv=1e-4,            # convergence tolerance (policy)
@@ -34,7 +35,7 @@ if __name__ == "__main__":
     # Policies as bilinear interpolators
     a_policy_egm, w_policy_egm  = timed_solve('EGM',  solvers.EGM,  model) 
 
-    m_grid = model.make_m_grid(points=30, span=(0.1, 30.), dense_low=False) # TODO: m_points or rs_points
+    m_grid = model.make_m_grid(points=20, span=(0.2, 30.), dense_low=False) # TODO: m_points or rs_points
     z_grids = model.make_z_grids(points=solvers.z_points)
 
     # Euler equation errors & return comparison

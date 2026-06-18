@@ -33,16 +33,30 @@ def _to_dict(
 def _common_space(seed: int | None = None) -> CS.ConfigurationSpace:
     """Shared search space for all algorithms.
 
-    Divisibility of (n_envs × max_episode_steps × n_episodes) by
-    num_minibatches is enforced at adapter time, not here, because
-    DEHB's DE operators are unaware of forbidden clauses.
+    We tune batch_size explicitly and identically for PPO, TD3, DDPG and SAC.
+    This avoids algorithm-specific implicit batch-size ranges and prevents
+    tiny accidental minibatches.
+
+    With n_envs=10, the steps_per_env choices imply total rollout/update
+    blocks between 600 and 2400 transitions.
     """
     cs = CS.ConfigurationSpace(seed=seed)
     cs.add([
-        CSH.UniformFloatHyperparameter("learning_rate", 1e-5, 3e-3, log=True),
-        CSH.CategoricalHyperparameter("n_episodes", choices=[1, 2, 4, 8]),
-        CSH.CategoricalHyperparameter("num_minibatches", choices=[4, 5, 6, 7, 8, 9, 10, 12, 16, 32, 64]),
-        CSH.UniformIntegerHyperparameter("sample_reuse", 1, 16),
+        CSH.UniformFloatHyperparameter("learning_rate", lower=1e-5, upper=3e-3, log=True),
+        # Number of vector-env steps collected before an update.
+        # total_steps = n_envs * steps_per_env.
+        CSH.OrdinalHyperparameter(
+            "steps_per_env",
+            sequence=[60, 80, 96, 100, 120, 160, 192, 200, 240],
+        ),
+        CSH.OrdinalHyperparameter(
+            "batch_size", 
+            sequence=[32, 48, 64, 75, 96, 100, 128, 150, 192, 200, 256, 384, 512],
+        ),
+
+        # PPO: n_epochs.
+        # Off-policy: target replay-sample reuse per newly collected transition.
+        CSH.UniformIntegerHyperparameter("sample_reuse", lower=1, upper=16),
     ])
 
     return cs

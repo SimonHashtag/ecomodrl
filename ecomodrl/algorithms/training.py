@@ -104,7 +104,7 @@ def train_single_seed(
 
     out_dir = cfg.out_dir / f"seed_{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    best_model_path = out_dir / "best_model_ppo.zip"
+    best_model_path = out_dir / f"best_model_{algo_cfg.name.lower()}.zip"
     vecnorm_path = out_dir / "best_vecnormalize.pkl"
 
     train_env = eval_env = model = None

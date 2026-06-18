@@ -24,8 +24,8 @@ AdapterFn = Callable[[Dict[str, Any], Mapping[str, Any] | Any, AlgoConfig], Algo
 DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
     "ppo": {
         "learning_rate": 3e-4,
-        "n_episodes": 4,
-        "num_minibatches": 32,
+        "steps_per_env": 200,
+        "batch_size": 64,
         "sample_reuse": 10,          # = n_epochs
         "clip_range": 0.2,
         "gae_lambda": 0.95,
@@ -34,9 +34,9 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
     },
     "td3": {
         "learning_rate": 1e-3,
-        "n_episodes": 1,
-        "num_minibatches": 4,
-        "sample_reuse": 1,           # gradient_steps = sample_reuse * num_minibatches = 4
+        "steps_per_env": 60,
+        "batch_size": 100,
+        "sample_reuse": 1,
         "tau": 0.005,
         "exploration_sigma": 0.1,
         "target_policy_noise": 0.2,
@@ -44,54 +44,53 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
     },
     "ddpg": {
         "learning_rate": 1e-3,
-        "n_episodes": 1,
-        "num_minibatches": 4,
+        "steps_per_env": 60,
+        "batch_size": 100,
         "sample_reuse": 1,
         "tau": 0.005,
         "exploration_sigma": 0.1,
     },
     "sac": {
         "learning_rate": 3e-4,
-        "n_episodes": 1,
-        "num_minibatches": 4,
+        "steps_per_env": 120,
+        "batch_size": 256,
         "sample_reuse": 1,
         "tau": 0.005,
-        # ent_coef fixed to "auto" in adapter; no exploration_sigma for SAC
+        # ent_coef fixed to "auto" in adapter
     },
 }
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _snap_minibatches(total_steps: int, requested: int) -> int:
-    """Return the candidate closest to *requested* that divides *total_steps*.
-
-    If no candidate divides total_steps, fall back to 1 (single batch).
-    """
-    valid = [m for m in range(4, 64) if total_steps % m == 0]
-    if not valid:
-        return 1
-    return min(valid, key=lambda m: abs(m - requested))
-
-
 def _compute_steps(hp: Dict[str, Any], cfg: Any):
-    """Derive step / batch quantities from the unified search-space params.
+    """Derive rollout/update quantities from explicit common HPs.
 
-    Returns ``(steps_per_env, total_steps, batch_size, gradient_steps)``.
+    Returns:
+        steps_per_env:
+            Number of vector-env steps before one algorithm update phase.
 
-    ``num_minibatches`` is snapped to the nearest value that actually
-    divides ``total_steps`` so the caller never sees a remainder.
+        batch_size:
+            Minibatch size for PPO or replay batch size for off-policy methods.
+
+        gradient_steps:
+            Number of off-policy gradient steps chosen so that
+
+                gradient_steps * batch_size ≈ sample_reuse * total_steps.
+
+            For PPO this value is unused; PPO uses sample_reuse as n_epochs.
     """
-    steps_per_env = int(cfg.max_episode_steps) * int(hp["n_episodes"])
+    steps_per_env = int(hp["steps_per_env"])
+    batch_size = int(hp["batch_size"])
+    sample_reuse = int(hp["sample_reuse"])
+
     total_steps = int(cfg.n_envs) * steps_per_env
 
-    num_mb = _snap_minibatches(total_steps, int(hp["num_minibatches"]))
+    target_gradient_steps = sample_reuse * total_steps / batch_size
+    gradient_steps = max(1, int(math.floor(target_gradient_steps + 0.5)))
 
-    batch_size = total_steps // num_mb
-    gradient_steps = int(hp["sample_reuse"]) * num_mb
-    return steps_per_env, total_steps, batch_size, gradient_steps
+    return steps_per_env, batch_size, gradient_steps
 
 
 def _set_lr_schedule(
@@ -113,7 +112,7 @@ def _set_lr_schedule(
 # Per-algorithm adapters
 # ---------------------------------------------------------------------------
 def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
-    steps_per_env, total_steps, batch_size, _ = _compute_steps(hp, cfg)
+    steps_per_env, batch_size, _ = _compute_steps(hp, cfg)
     params = dict(base.algo_params or {})
 
     _set_lr_schedule(hp, cfg, params)
@@ -136,7 +135,7 @@ def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
 def _offpolicy_adapter_common(
     hp: Dict[str, Any], cfg: Any, base: AlgoConfig,
 ) -> Dict[str, Any]:
-    steps_per_env, total_steps, batch_size, gradient_steps = _compute_steps(hp, cfg)
+    steps_per_env, batch_size, gradient_steps = _compute_steps(hp, cfg)
     params = dict(base.algo_params or {})
 
     _set_lr_schedule(hp, cfg, params)
@@ -158,9 +157,7 @@ def _td3_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
         "policy_delay": 2,
         "action_noise_std": float(hp["exploration_sigma"]),
         "target_policy_noise": float(hp["target_policy_noise"]),
-        "target_noise_clip": float(
-            max(hp["target_noise_clip"], hp["target_policy_noise"])
-        ),
+        "target_noise_clip": float(hp["target_noise_clip"]),
     })
     return replace(base, algo_params=params)
 
@@ -177,7 +174,6 @@ def _sac_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
     return replace(base, algo_params=params)
 
 
-# Renamed to avoid collision with ecomodrl.algorithms.hyperparams.ALGO_REGISTRY
 ADAPTER_REGISTRY: Dict[str, AdapterFn] = {
     "ppo": _ppo_adapter,
     "td3": _td3_adapter,
@@ -197,12 +193,12 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
-                "max_grad_norm": 0.5,
+                "max_grad_norm": 1.0,
                 "normalize_advantage": True,
                 "clip_range_vf": None,
                 "target_kl": None,
                 "use_sde": False,
-                "final_lr_multiplier": 1.0,
+                "final_lr_multiplier": 0.1,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -219,10 +215,10 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
-                "max_grad_norm": 0.5,
-                "buffer_size": 100_000,
-                "learning_starts": 10_000,
-                "final_lr_multiplier": 1.0,
+                "max_grad_norm": 1.0,
+                "buffer_size": 10_000,
+                "learning_starts": 0,
+                "final_lr_multiplier": 0.1,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -235,12 +231,12 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
-                "max_grad_norm": 0.5,
+                "max_grad_norm": 1.0,
                 "target_update_interval": 1,
                 "use_sde": False,
-                "buffer_size": 100_000,
-                "learning_starts": 10_000,
-                "final_lr_multiplier": 1.0,
+                "buffer_size": 10_000,
+                "learning_starts": 0,
+                "final_lr_multiplier": 0.1,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,

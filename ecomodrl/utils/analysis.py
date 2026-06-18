@@ -202,8 +202,8 @@ def policy_value_on_grid(model, policy, tol=1e-8, max_iter=10_000):
     V = np.zeros_like(u)
     for _ in range(max_iter):
         V_next = _interpolate_value(V, interp_axes, next_states)
-        EV = model._integrate(V_next)
-        V_new = u + model.BETA * EV
+        EV = model._integrate(model.value_kernel() * V_next)
+        V_new = u + model.BETA_EFF * EV
         if np.max(np.abs(V_new - V)) < tol:
             V = V_new
             break
@@ -267,7 +267,7 @@ def eval_value_grid(model, policy, eval_pack):
     for t in range(T):
         c = np.asarray(policy(state), dtype=np.float64)
         V += disc * model.utility(c)
-        disc *= model.BETA
+        disc *= model.BETA_EFF
         shock_t = None if shocks is None else shocks[:, t]
         state = model.transition(state, c, shock_t)
     return float(np.mean(V))
@@ -283,5 +283,5 @@ def cev(model, V_rl, V_egm):
     gamma = model.GAMMA
     if gamma == 1.0:
         # log utility: lambda = exp((V_egm - V_rl) * (1 - beta)) - 1
-        return np.exp((V_egm - V_rl) * (1.0 - model.BETA)) - 1.0
+        return np.exp((V_egm - V_rl) * (1.0 - model.BETA_EFF)) - 1.0
     return (V_egm / V_rl) ** (1.0 / (1.0 - gamma)) - 1.0

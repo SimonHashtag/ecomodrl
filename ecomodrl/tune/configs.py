@@ -113,7 +113,7 @@ class PortfolioChoiceTuneConfig(BaseTuneConfig):
         Intention: don't explore outside of the economically relevant state space
         """
         mod = PCPP()
-        grid = mod.make_m_grid()
+        grid = mod.make_m_grid(span=(0.2, 30.0))
         self.state_min = grid[0]
         self.state_max = grid[-1]
 

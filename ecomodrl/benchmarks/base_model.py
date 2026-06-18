@@ -52,6 +52,9 @@ class EconomicModel:
         """Initialize the model with the supplied parameters."""
         self.params = params
         self.weights = None           # quadrature weights; set by stochastic subclasses
+        
+    @property
+    def BETA_EFF(self):     return self.params.beta     # Bufferstock model needs a tilted discount for RL path; default is the original β for EGM path. 
 
     # ------------------------------------------------------------------
     # Grid utilities
@@ -103,6 +106,10 @@ class EconomicModel:
         if self.weights is not None:
             return x @ self.weights
         return x
+    
+    def value_kernel(self):
+        """Multiplicative factor of V' inside the normalized Bellman; default 1."""
+        return 1.0
 
     # ------------------------------------------------------------------
     # Policy evaluation helpers
@@ -377,6 +384,15 @@ class BufferStock(EconomicModel):
     Under the Growth Impatience Condition there exists a target cash-on-hand
     m* satisfying E[m_{t+1} | m_t = m*] = m*. Since c(.) enters this fixed
     point, m* has no closed form; we solve in two passes (rough -> refined).
+    
+    RL training and MC welfare use the Esscher-tilted ψ sampler
+        (`sample_shocks`, `transition`) together with `BETA == β_eff`,
+        so the per-step reward u(c) and a constant discount recover the
+        correct normalized Bellman:
+            v(m) = u(c) + β · E_true[(Gψ')^{1-γ} v(m')]
+                 = u(c) + β_eff · E_tilted[v(m')]
+        with β_eff = β · G^{1-γ} · exp(½γ(γ-1)σ_ψ²),
+             ψ_tilted ~ LN(-½σ² + (1-γ)σ², σ²).
     """
     N_GH_NODES = 7
     M_MAX_PASS1 = 50.0
@@ -397,11 +413,21 @@ class BufferStock(EconomicModel):
         self.M_GRID_SIZE = m_grid_size
 
         self._build_shocks()
+        
+        # Esscher exponent θ = 1-γ on X = ln ψ
+        theta = 1.0 - self.params.gamma
+        self._mean_perm_tilt = self._mean_perm + theta * self.params.sigma_perm**2
+        M_psi = np.exp(0.5 * theta * (theta - 1.0) * self.params.sigma_perm**2)
+        self._beta_eff = self.params.beta * self.G**theta * M_psi
+        
         # First pass starts from a generous, model-agnostic upper bound
         self.m_grid = self._build_m_grid(self.M_MAX_PASS1, self.M_GRID_SIZE)
         # Placeholder m_ref so attribute exists before EGM solve() refines it.
         # solve() overwrites this with m_target after each pass.
         self.m_ref = 1.0
+    
+    @property
+    def BETA_EFF(self):     return self._beta_eff     # MC path uses tilted discount
 
     # ------------------------------------------------------------------
     # Model primitives
@@ -477,12 +503,13 @@ class BufferStock(EconomicModel):
             rng.normal(size=shape),
             (rng.random(size=shape) < self.params.unemp_prob).astype(float),
         ], axis=-1)
+        
+    def value_kernel(self):
+        return (self.G * self.perm_shocks) ** (1.0 - self.params.gamma)
 
     def transition(self, state, c, shocks):
-        """Batched single-step transition with pre-drawn innovations.
-        `shocks` has shape (..., 3); last axis is [eps_perm, eps_trans, unemployed]."""
-        a = state[..., 0] - c
-        psi = np.exp(self._mean_perm + self.params.sigma_perm * shocks[..., 0])
+        a   = state[..., 0] - c
+        psi = np.exp(self._mean_perm_tilt + self.params.sigma_perm * shocks[..., 0])
         theta_emp = np.exp(self._mean_tran + self.params.sigma_tran * shocks[..., 1])
         theta = np.where(shocks[..., 2].astype(bool), self.params.theta_low, theta_emp)
         m_next = (self.R / (self.G * psi)) * a + theta
