@@ -4,7 +4,7 @@ from typing import Tuple, Optional
 import gymnasium as gym
 from gymnasium.spaces import Box
 import numpy as np
-from ecomodrl.envs.parameters import PortfolioChoiceParams
+from ecomodrl.configs.parameters import PortfolioChoiceParams
 
 __all__ = ["PortfolioChoiceEnv"]
 

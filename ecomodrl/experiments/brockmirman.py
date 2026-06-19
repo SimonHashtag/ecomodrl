@@ -2,16 +2,16 @@ import logging
 import multiprocessing as mp
 from dataclasses import replace
 
-from ecomodrl.experiments.configs import CassKoopmansRunConfig, parse_run_args
+from ecomodrl.configs.runconfigs import BrockMirmanRunConfig, parse_run_args
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
-from ecomodrl.envs.casskoopmans import CassKoopmansEnv
-from ecomodrl.envs.parameters import CassKoopmansParams
-from ecomodrl.utils.analysis_CK import analyze_all_seeds
+from ecomodrl.envs.brockmirman import BrockMirmanEnv
+from ecomodrl.configs.parameters import BrockMirmanParams
+from ecomodrl.analysis.analysis_BM import analyze_all_seeds
 
 # E.g., run with: 
-# `python ecomodrl/experiments/casskoopmans/casskoopmans.py --algo_name ppo --hidden_nodes 64 --n_seeds 20`
+# `python ecomodrl/experiments/brockmirman.py --algo_name ppo --hidden_nodes 64 --n_seeds 20`
 
 if __name__ == "__main__":
     mp.freeze_support()
@@ -19,16 +19,16 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
-    cfg = parse_run_args(CassKoopmansRunConfig())
+    cfg = parse_run_args(BrockMirmanRunConfig())
     cfg = replace(cfg, out_dir=cfg.out_dir / cfg.env_name / cfg.algo_name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     
-    params = CassKoopmansParams()
+    params = BrockMirmanParams()
 
     hp = load_tuned_hp(env_name=cfg.env_name, algo_name=cfg.algo_name)
 
     base_algo_cfg = get_algo_fixedcfgs(cfg.algo_name, params, hidden_nodes=cfg.hidden_nodes)
     algo_cfg = ADAPTER_REGISTRY[cfg.algo_name](hp, cfg, base_algo_cfg)
     
-    train_multiple_seeds(cfg, algo_cfg, CassKoopmansEnv, params, verbose=1)
-    analyze_all_seeds(cfg, algo_cfg, CassKoopmansEnv, params)
+    train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params, verbose=1)
+    analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params)

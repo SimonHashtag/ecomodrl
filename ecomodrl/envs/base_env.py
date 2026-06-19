@@ -25,7 +25,7 @@ import numpy as np
 import gymnasium as gym
 from abc import abstractmethod
 from gymnasium import spaces
-from ecomodrl.benchmarks.base_model import CassKoopmans, BrockMirman, BufferStock
+from ecomodrl.models.base_model import CassKoopmans, BrockMirman, BufferStock
 
 # TODO: This is not very elegant.
 # Floor on m before taking log (BufferStock m_grid starts at 0).  Far enough

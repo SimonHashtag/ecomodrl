@@ -6,7 +6,7 @@ from typing import Optional, List, Tuple
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecNormalize
 
-from ecomodrl.utils.learning_schedule import LinearScheduleByWallClockTime
+from ecomodrl.algorithms.learning_schedule import LinearScheduleByWallClockTime
 
 
 # -----------------------

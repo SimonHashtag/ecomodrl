@@ -1,24 +1,24 @@
 #!/bin/bash
 
 # Run via:
-# > cd ecomodrl/ecomodrl/experiments/casskoopmans
-# > sed -i 's/\r$//' casskoopmans_training.sh
-# > chmod +x casskoopmans_training.sh
-# > sbatch casskoopmans_training.sh
+# > cd ecomodrl/ecomodrl/experiments/bufferstock/cluster
+# > sed -i 's/\r$//' bufferstock_training.sh
+# > chmod +x bufferstock_training.sh
+# > sbatch bufferstock_training.sh
 # logs will be in ecomodrl/ecomodrl/experiments/logs/
-# Plots in scratch in training_results/CassKoopmans/
+# Plots in scratch in training_results/BufferStock/
 
-#SBATCH --job-name=CK_TRAINING
+#SBATCH --job-name=BS_TRAINING
 #SBATCH --partition=d0ow
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --export=NONE
 
-#SBATCH --output=logs/CK_TRAINING_%j.out
-#SBATCH --error=logs/CK_TRAINING_%j.err
+#SBATCH --output=logs/BS_TRAINING_%j.out
+#SBATCH --error=logs/BS_TRAINING_%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ruven.micheel@uni-muenster.de
 
@@ -77,9 +77,9 @@ for algo in "${ALGOS[@]}"; do
     echo "Starting $algo..."
     echo "------------------------------------------------"
     
-    python ecomodrl/experiments/casskoopmans/casskoopmans.py \
+    python ecomodrl/experiments/bufferstock.py \
         --algo_name="$algo" \
-        --hidden_nodes=64
+        --hidden_nodes=128
 
     echo "Finished training for $algo"
 done
@@ -90,13 +90,13 @@ done
 
 echo "------------------------------------------------"
 echo "Generating unified comparison plots..."
-python ecomodrl/experiments/casskoopmans/casskoopmans_compare.py
+python ecomodrl/experiments/compare/bufferstock_compare.py
 
-################
-# Finish       #
-################
+############################
+#       Finalize           #
+############################
 
-echo "------------------------------------------------"
-echo "All jobs finished."
-echo "Final results are located in scratch at: $RUNRESULTS_PATH"
+echo
+echo "All training and analysis complete."
+echo "Results are located in: $RUNRESULTS_PATH"
 echo "Finished at: $(date)"

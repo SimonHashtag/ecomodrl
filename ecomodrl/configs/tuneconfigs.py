@@ -3,11 +3,11 @@ import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ecomodrl.experiments.configs import BaseRunConfig
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem as CKPP
-from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem as BMPP
-from ecomodrl.benchmarks.bufferstock.problemclass import PlanningProblem as BSPP
-from ecomodrl.benchmarks.portfoliochoice.problemclass import PlanningProblem as PCPP
+from ecomodrl.configs.runconfigs import BaseRunConfig
+from ecomodrl.models.casskoopmans.problemclass import PlanningProblem as CKPP
+from ecomodrl.models.brockmirman.problemclass import PlanningProblem as BMPP
+from ecomodrl.models.bufferstock.problemclass import PlanningProblem as BSPP
+from ecomodrl.models.portfoliochoice.problemclass import PlanningProblem as PCPP
 
 # ----------------------------
 # Tune configuration
@@ -16,8 +16,6 @@ from ecomodrl.benchmarks.portfoliochoice.problemclass import PlanningProblem as 
 #       on your Windows system via setx TUNERESULTS_PATH "my_custom_tune_results_path" (close & reopen terminal afterwards)
 #       on your mac/linux: export TUNERESULTS_PATH="my_custom_tune_results_path"
 #       otherwise defaults to relative path "./ecomodrl/tune_results"
-#
-# Run file with e.g.: python ecomodrl/tune/casskoopmans.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 
 @dataclass
 class BaseTuneConfig(BaseRunConfig):

@@ -20,10 +20,10 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 from scipy.stats import wasserstein_distance
 
-from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem, PlanningSolvers
+from ecomodrl.models.brockmirman.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.utils.metrics.accuracy import cev_crra
 from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
-from ecomodrl.envs.parameters import BrockMirmanParams
+from ecomodrl.configs.parameters import BrockMirmanParams
 from ecomodrl.utils.latex_formatting import generate_latex_table
 
 # ----------------------------------------------------------------------------

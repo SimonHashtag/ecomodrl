@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Mapping
 import torch as th
 
 from ecomodrl.algorithms.training import AlgoConfig
-from ecomodrl.utils.learning_schedule import LinearScheduleByWallClockTime
+from ecomodrl.algorithms.learning_schedule import LinearScheduleByWallClockTime
 
 AdapterFn = Callable[[Dict[str, Any], Mapping[str, Any] | Any, AlgoConfig], AlgoConfig]
 

@@ -1,24 +1,24 @@
 #!/bin/bash
 
 # Run via:
-# > cd ecomodrl/ecomodrl/tune
-# > sed -i 's/\r$//' casskoopmans_tuning.sh
-# > chmod +x casskoopmans_tuning.sh
-# > sbatch casskoopmans_tuning.sh
+# > cd ecomodrl/ecomodrl/tune/cluster
+# > sed -i 's/\r$//' bufferstock_tuning.sh
+# > chmod +x bufferstock_tuning.sh
+# > sbatch bufferstock_tuning.sh
 # logs will be in ecomodrl/ecomodrl/tuning/logs/
-# Incumbent in scratch in tuning_results/CassKoopmans/
+# Incumbent in scratch in tuning_results/BufferStock/
 
-#SBATCH --job-name=CK_TUNE
+#SBATCH --job-name=BS_TUNE
 #SBATCH --partition=d0ow
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=04:30:00
+#SBATCH --time=24:00:00
 #SBATCH --export=NONE
 
-#SBATCH --output=logs/CK_TUNE_%j.out
-#SBATCH --error=logs/CK_TUNE_%j.err
+#SBATCH --output=logs/BS_TUNE_%j.out
+#SBATCH --error=logs/BS_TUNE_%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ruven.micheel@uni-muenster.de
 
@@ -67,17 +67,17 @@ export TUNERESULTS_PATH="$WORKDIR/tune_results"
 mkdir -p "$TUNERESULTS_PATH"
 
 # 3. Budget per algorithm
-BUDGET_PER_ALGO=3600
+BUDGET_PER_ALGO=14400 # 4 hours
 
 for algo in "${ALGOS[@]}"; do
     echo "------------------------------------------------"
     echo "Starting tuning for: $algo"
     echo "------------------------------------------------"
     
-    python ecomodrl/tune/casskoopmans.py \
+    python ecomodrl/tune/bufferstock.py \
         --algo_name="$algo" \
         --total_cost=$BUDGET_PER_ALGO \
-        --hidden_nodes=64
+        --hidden_nodes=128
 
     echo "Finished tuning for $algo"
 done

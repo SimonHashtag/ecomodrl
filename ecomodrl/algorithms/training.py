@@ -12,9 +12,9 @@ from stable_baselines3 import PPO, TD3, DDPG, SAC
 from stable_baselines3.common.utils import set_random_seed
 
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.stopper import WallClockEarlyStoppingCallback
-from ecomodrl.utils.grad_norm_wrapper import add_grad_norm_rescaling
-from ecomodrl.utils.action_noise import make_action_noise
+from ecomodrl.algorithms.stopper import WallClockEarlyStoppingCallback
+from ecomodrl.algorithms.grad_norm_wrapper import add_grad_norm_rescaling
+from ecomodrl.algorithms.action_noise import make_action_noise
 
 # -------------------------------------------------------
 # Build deep RL algorithm

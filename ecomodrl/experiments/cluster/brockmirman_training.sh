@@ -1,24 +1,24 @@
 #!/bin/bash
 
 # Run via:
-# > cd ecomodrl/ecomodrl/tune
-# > sed -i 's/\r$//' brockmirman_tuning.sh
-# > chmod +x brockmirman_tuning.sh
-# > sbatch brockmirman_tuning.sh
-# logs will be in ecomodrl/ecomodrl/tuning/logs/
-# Incumbent in scratch in tuning_results/BrockMirman/
+# > cd ecomodrl/ecomodrl/experiments/brockmirman/cluster
+# > sed -i 's/\r$//' brockmirman_training.sh
+# > chmod +x brockmirman_training.sh
+# > sbatch brockmirman_training.sh
+# logs will be in ecomodrl/ecomodrl/experiments/logs/
+# Plots in scratch in training_results/BrockMirman/
 
-#SBATCH --job-name=BM_TUNE
+#SBATCH --job-name=BM_TRAINING
 #SBATCH --partition=d0ow
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=24:00:00
+#SBATCH --time=04:00:00
 #SBATCH --export=NONE
 
-#SBATCH --output=logs/BM_TUNE_%j.out
-#SBATCH --error=logs/BM_TUNE_%j.err
+#SBATCH --output=logs/BM_TRAINING_%j.out
+#SBATCH --error=logs/BM_TRAINING_%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ruven.micheel@uni-muenster.de
 
@@ -56,33 +56,47 @@ cd "$WORKDIR/ecomodrl"
 export PYTHONPATH=$(pwd):$PYTHONPATH
 
 ############################
-# Run Hyperparam Tuning    #
+#   Configuration Setup    #
 ############################
 
 # 1. Define list of algorithms
 ALGOS=("ppo" "ddpg" "sac" "td3")
 
-# 2. Define where Python should write results in scratch
-export TUNERESULTS_PATH="$WORKDIR/tune_results"
-mkdir -p "$TUNERESULTS_PATH"
+# Define one common place in scratch for the plots/results.
+export RUNRESULTS_PATH="$WORKDIR/training_results"
+mkdir -p "$RUNRESULTS_PATH"
 
-# 3. Budget per algorithm
-BUDGET_PER_ALGO=14400 # 4 hours
+echo "Results will be stored in: $RUNRESULTS_PATH"
+
+############################
+#   Run Training Scripts   #
+############################
 
 for algo in "${ALGOS[@]}"; do
     echo "------------------------------------------------"
-    echo "Starting tuning for: $algo"
+    echo "Starting $algo..."
     echo "------------------------------------------------"
     
-    python ecomodrl/tune/brockmirman.py \
+    python ecomodrl/experiments/brockmirman.py \
         --algo_name="$algo" \
-        --total_cost=$BUDGET_PER_ALGO \
         --hidden_nodes=128
 
-    echo "Finished tuning for $algo"
+    echo "Finished training for $algo"
 done
 
+############################
+#   Unified Analysis       #
+############################
+
+echo "------------------------------------------------"
+echo "Generating unified comparison plots..."
+python ecomodrl/experiments/compare/brockmirman_compare.py
+
+############################
+#       Finalize           #
+############################
+
 echo
-echo "All tuning jobs finished."
-echo "Results are located in: $TUNERESULTS_PATH" 
+echo "All training and analysis complete."
+echo "Results are located in: $RUNRESULTS_PATH"
 echo "Finished at: $(date)"

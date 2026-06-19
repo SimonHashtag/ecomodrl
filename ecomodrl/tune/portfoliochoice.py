@@ -9,9 +9,10 @@ from dehb import DEHB
 from ecomodrl.envs.portfoliochoice import PortfolioChoiceEnv
 from ecomodrl.tune.tuning import TUNE_REGISTRY, target_function
 from ecomodrl.algorithms.hyperparams import get_algo_fixedcfgs
-from ecomodrl.envs.parameters import PortfolioChoiceParams
-from ecomodrl.tune.configs import PortfolioChoiceTuneConfig, parse_tune_args
+from ecomodrl.configs.parameters import PortfolioChoiceParams
+from ecomodrl.configs.tuneconfigs import PortfolioChoiceTuneConfig, parse_tune_args
 
+# Run file with e.g.: python ecomodrl/tune/portfoliochoice.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 
 if __name__ == "__main__":
     logging.basicConfig(

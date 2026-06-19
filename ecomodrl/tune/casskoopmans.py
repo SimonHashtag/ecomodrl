@@ -9,9 +9,10 @@ from dehb import DEHB
 from ecomodrl.envs.casskoopmans import CassKoopmansEnv
 from ecomodrl.tune.tuning import TUNE_REGISTRY, target_function
 from ecomodrl.algorithms.hyperparams import get_algo_fixedcfgs
-from ecomodrl.envs.parameters import CassKoopmansParams
-from ecomodrl.tune.configs import CassKoopmansTuneConfig, parse_tune_args
+from ecomodrl.configs.parameters import CassKoopmansParams
+from ecomodrl.configs.tuneconfigs import CassKoopmansTuneConfig, parse_tune_args
 
+# Run file with e.g.: python ecomodrl/tune/casskoopmans.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 
 if __name__ == "__main__":
     logging.basicConfig(

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from time import time
 
 from ecomodrl.benchmarks.portfoliochoice.problemclass import PlanningProblem, PlanningSolvers
-from ecomodrl.envs.parameters import PortfolioChoiceParams
+from ecomodrl.configs.parameters import PortfolioChoiceParams
 
 if __name__ == "__main__":
     

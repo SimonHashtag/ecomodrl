@@ -18,8 +18,8 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-from ecomodrl.utils import analysis
-from ecomodrl.envs.parameters import CassKoopmansParams, BrockMirmanParams, BufferStockParams
+from ecomodrl.analysis import accuracy_metrics
+from ecomodrl.configs.parameters import CassKoopmansParams, BrockMirmanParams, BufferStockParams
 
 # =============================================================================
 # Gauss-Hermite helper (shared by stochastic models)
@@ -682,8 +682,6 @@ class BufferstockEGM(BaseEGM):
 
 if __name__ == "__main__":
 
-    from ecomodrl.utils import analysis
-
     models = [
         ("Cass-Koopmans (deterministic growth)",              CassKoopmans(CassKoopmansParams()), CassKoopmansEGM),
         ("Brock-Mirman (stochastic growth)",                  BrockMirman(BrockMirmanParams()), BrockMirmanEGM),
@@ -701,6 +699,6 @@ if __name__ == "__main__":
     print("=" * len(header))
     for label, model, solver in solved:
         model.policy = solver.policy
-        mean_err = np.mean(analysis.euler_errors(model, model))
+        mean_err = np.mean(accuracy_metrics.euler_errors(model, model))
         print(f"{label:<50} {mean_err:>22.4f} {solver.solve_time:>14.2f}")
     print("=" * len(header))

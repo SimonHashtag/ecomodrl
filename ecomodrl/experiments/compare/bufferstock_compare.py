@@ -1,5 +1,5 @@
 """
-Cass-Koopmans comparison analysis: computes all metrics and generates plots.
+Buffer Stock comparison analysis: computes all metrics and generates plots.
 
 This script:
 1. Loads raw per-seed data from each algorithm's `raw_metrics.json`
@@ -8,7 +8,7 @@ This script:
 4. Generates comparison plots and LaTeX table
 
 Run after training all algorithms:
-    python ecomodrl/experiments/casskoopmans/casskoopmans_compare.py
+    python ecomodrl/experiments/bufferstock/bufferstock_compare.py
 """
 import json
 import logging
@@ -23,22 +23,32 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.stats import wasserstein_distance
 
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem, PlanningSolvers
+from ecomodrl.models.bufferstock.problemclass import PlanningProblem, PlanningSolvers
 from ecomodrl.utils.metrics.accuracy import cev_crra
 from ecomodrl.utils.metrics.performance import get_bootstrapped_iqm_ci
-from ecomodrl.envs.parameters import CassKoopmansParams
+from ecomodrl.configs.parameters import BufferStockParams
 from ecomodrl.utils.latex_formatting import generate_latex_table
 
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
 ALGOS = ["PPO", "DDPG", "SAC", "TD3"]
-RUNRESULTS_PATH = Path(os.environ.get("RUNRESULTS_PATH", "./runs/CassKoopmans"), "CassKoopmans")
+RUNRESULTS_PATH = Path(os.environ.get("RUNRESULTS_PATH", "./runs"), "BufferStock")
 
 # Bootstrap settings
 N_BOOT = 1000
 ALPHA = 0.05
 BOOTSTRAP_SEED = 12345
+
+# Analysis seeds (distinct from training seeds 200-209)
+# Required because the Buffer Stock model is stochastic (income shocks)
+
+# Evaluation episodes (must match n_eval_episodes used in BS RunConfig during training)
+# TODO: Load N_EVAL_EPISODES & TRAINING_SEEDS from each algo's train_cfgs.json if available, to ensure consistency with training config
+N_EVAL_EPISODES = 5
+
+TRAINING_SEEDS = list(range(200, 210))
+ANALYSIS_SEED = 300  # For benchmark evaluation simulations
 
 # Plotting style
 plt.style.use("seaborn-v0_8-colorblind")
@@ -56,7 +66,7 @@ plt.rcParams.update({
 })
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("CKComparison")
+logger = logging.getLogger("BSComparison")
 
 
 # ----------------------------------------------------------------------------
@@ -72,7 +82,7 @@ class Benchmark:
     V: Callable
     euler_errors_log: np.ndarray
     utility: float
-    return_eval: float  # Return on evaluation grid
+    returns_eval: np.ndarray  # Return on evaluation grid (per training seed)
 
 
 @dataclass  
@@ -106,22 +116,35 @@ def compute_benchmark(params, state_min: float, state_max: float) -> Benchmark:
     model = PlanningProblem(
         gamma=params.gamma,
         beta=params.beta,
-        delta=params.delta,
-        alpha=params.alpha,
-        A=params.A
+        r=params.r,
+        g=params.g,
+        sigma_tran=params.sigma_tran,
+        sigma_perm=params.sigma_perm,
+        unemp_prob=params.unemp_prob,
+        theta_low=params.theta_low,
+        gh_order=params.gh_order,
     )
     solvers = PlanningSolvers(grid_points=1000, conv=1e-5)
     policy_bm = solvers.EGM(model)
     grid = model.make_grid(solvers.grid_points)
     V_bm = model.V_from_a(grid, policy_bm, conv=1e-5)
     
-    # Benchmark Euler errors and utility
+    # Benchmark Euler errors and utility (seed for reproducibility)
+    # Note: BS get_euler_errors already returns log10 absolute residuals (with NaN
+    # for binding-constraint periods). No further log10 transformation needed.
+    np.random.seed(ANALYSIS_SEED)
     euler_bm, _, U_bm = model.get_euler_errors(grid, policy_bm, episodes=100)
-    euler_bm_log = np.log10(np.abs(euler_bm))
+    euler_bm_log = euler_bm[~np.isnan(euler_bm)]
     
-    # Benchmark return on evaluation grid (same as used during training)
+    # Benchmark return on evaluation grid, matching RL eval structure:
+    # - Per-env independent seeding (DummyVecEnv.seed(s) gives env_i seed s+i)
     eval_grid = np.linspace(state_min, state_max, 20)
-    _, _, return_bm = model.get_euler_errors(eval_grid, policy_bm, episodes=100)
+    per_seed_returns = np.array([
+        model.get_return_on_eval_grid(
+            eval_grid, policy_bm, T=100, seed=s, n_episodes=N_EVAL_EPISODES
+        )
+        for s in TRAINING_SEEDS
+    ])
     
     return Benchmark(
         model=model,
@@ -130,7 +153,7 @@ def compute_benchmark(params, state_min: float, state_max: float) -> Benchmark:
         V=V_bm,
         euler_errors_log=euler_bm_log,
         utility=U_bm,
-        return_eval=return_bm,
+        returns_eval=per_seed_returns,
     )
 
 
@@ -178,7 +201,9 @@ def process_algo_results(raw: dict, benchmark: Benchmark, params) -> AlgoResults
         cev_relevant[i] = cev_crra(states[i], V_bm, V_rl_spline, gamma=params.gamma).mean()
         
         # Wasserstein distance of Euler error distributions
-        wasserstein_dists[i] = wasserstein_distance(euler_bm_log, euler_errors[i])
+        # Filter NaN (binding-constraint periods) before computing distance
+        euler_clean = euler_errors[i][~np.isnan(euler_errors[i])]
+        wasserstein_dists[i] = wasserstein_distance(euler_bm_log, euler_clean)
     
     return AlgoResults(
         seeds=raw.get("seeds", list(range(n_seeds))),
@@ -220,8 +245,8 @@ def compute_summary_stats(results: AlgoResults, benchmark: Benchmark) -> dict:
         results.cev_relevant.reshape(-1, 1), n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED
     )
     
-    # Max Euler error
-    max_euler = np.array([np.max(e) for e in results.euler_errors]).reshape(-1, 1)
+    # Max Euler error (use nanmax to ignore binding-constraint NaN periods)
+    max_euler = np.array([np.nanmax(e) for e in results.euler_errors]).reshape(-1, 1)
     iqm_euler, lo_euler, hi_euler = get_bootstrapped_iqm_ci(
         max_euler, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED
     )
@@ -238,7 +263,7 @@ def compute_summary_stats(results: AlgoResults, benchmark: Benchmark) -> dict:
     
     return {
         "U_bm": float(benchmark.utility),
-        "return_bm": float(benchmark.return_eval),
+        "returns_bm": benchmark.returns_eval.tolist(),
         "max_abs_euler_error_bm": float(np.max(benchmark.euler_errors_log)),
         **pack_ci("U_rl", iqm_U, lo_U, hi_U),
         **pack_ci("cev", iqm_cev, lo_cev, hi_cev),
@@ -273,10 +298,8 @@ def plot_learning_curves(
             continue
 
         # Compute regret: (benchmark - RL return)
-        iqm, ci_lower, ci_upper = get_bootstrapped_iqm_ci(curves, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED)
-        regret_iqm = benchmark.return_eval - iqm
-        regret_upper = benchmark.return_eval - ci_lower
-        regret_lower = benchmark.return_eval - ci_upper
+        regret_curves = benchmark.returns_eval.reshape(-1, 1) - curves
+        regret_iqm, regret_lower, regret_upper = get_bootstrapped_iqm_ci(regret_curves, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED)
 
         line = ax.plot(global_steps, regret_iqm, label=algo)
         ax.fill_between(global_steps, regret_lower, regret_upper, color=line[0].get_color(), alpha=0.2)
@@ -323,15 +346,15 @@ def plot_policy_functions(
         
         if algo not in algo_results:
             ax.set_title(f"{algo} (No Data)")
-            ax.set_xlabel("Capital k")
-            ax.set_ylabel("Consumption c")
+            ax.set_xlabel("Cash-on-hand m")
+            ax.set_ylabel("Consumption share a")
             continue
 
         policies = algo_results[algo].policies
         if len(policies) == 0:
             ax.set_title(f"{algo} (No Data)")
-            ax.set_xlabel("Capital k")
-            ax.set_ylabel("Consumption c")
+            ax.set_xlabel("Cash-on-hand m")
+            ax.set_ylabel("Consumption share a")
             continue
 
         iqm, lo, hi = get_bootstrapped_iqm_ci(policies, n_boot=N_BOOT, alpha=ALPHA, seed=BOOTSTRAP_SEED)
@@ -344,8 +367,8 @@ def plot_policy_functions(
             handles, labels = ax.get_legend_handles_labels()
 
         ax.set_title(algo)
-        ax.set_xlabel("Capital k")
-        ax.set_ylabel("Consumption c")
+        ax.set_xlabel("Cash-on-hand m")
+        ax.set_ylabel("Consumption share a")
 
     # Unified y-limits
     pad = (y_max - y_min) * 0.05
@@ -376,8 +399,9 @@ def plot_euler_errors(algo_results: dict[str, AlgoResults], out_dir: Path):
     
     if all_errors:
         all_errors = np.array(all_errors)
-        x_min = np.percentile(all_errors, 0.1)
-        x_max = all_errors.max()
+        all_errors = all_errors[np.isfinite(all_errors)]  # drop inf/nan for axis limits
+        x_min = np.percentile(all_errors, 0.1) if len(all_errors) else -5
+        x_max = all_errors.max() if len(all_errors) else 0
     else:
         x_min, x_max = -5, 0
 
@@ -386,6 +410,7 @@ def plot_euler_errors(algo_results: dict[str, AlgoResults], out_dir: Path):
         
         if algo in algo_results and algo_results[algo].euler_errors:
             euler_flat = np.concatenate(algo_results[algo].euler_errors)
+            euler_flat = euler_flat[np.isfinite(euler_flat)]  # drop inf/nan
             ax.hist(euler_flat, bins=50, density=True, alpha=0.8, edgecolor='white', linewidth=0.5)
             ax.set_ylabel("Density", fontsize=10)
             ax.set_title(algo, fontweight='bold')
@@ -436,7 +461,7 @@ def plot_cev(
 
         if algo not in plot_data:
             ax.set_title(f"{algo} (No Data)")
-            ax.set_xlabel("Capital k")
+            ax.set_xlabel("Cash-on-hand m")
             continue
 
         iqm, lo, hi = plot_data[algo]
@@ -445,7 +470,7 @@ def plot_cev(
         ax.fill_between(grid, lo, hi, alpha=0.3, label="95% CI", zorder=2)
 
         ax.set_title(algo)
-        ax.set_xlabel("Capital k")
+        ax.set_xlabel("Cash-on-hand m")
         ax.set_yscale("log")
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: f'{y:g}'))
         ax.set_ylim(y_min, y_max)
@@ -502,7 +527,7 @@ def save_full_metrics(
     """Save full metrics JSON with all computed data for reproducibility."""
     metrics = {
         "benchmark": {
-            "return_eval": float(benchmark.return_eval),
+            "returns_eval": benchmark.returns_eval.tolist(),
             "max_abs_euler_error_log": float(np.max(benchmark.euler_errors_log)),
             "grid": benchmark.grid.tolist(),
         },
@@ -544,22 +569,28 @@ def run_comparison():
     logger.info(f"Loading results from: {RUNRESULTS_PATH}")
 
     # 1. Load parameters
-    params = CassKoopmansParams()
+    params = BufferStockParams()
     
     # Compute state bounds from economic model
     model = PlanningProblem(
         gamma=params.gamma,
         beta=params.beta,
-        delta=params.delta,
-        alpha=params.alpha,
-        A=params.A
+        r=params.r,
+        g=params.g,
+        sigma_tran=params.sigma_tran,
+        sigma_perm=params.sigma_perm,
+        unemp_prob=params.unemp_prob,
+        theta_low=params.theta_low,
+        gh_order=params.gh_order,
     )
-    grid = model.make_grid()
-    state_min, state_max = grid[0], grid[-1]
+    grid = model.make_grid(100)
+    # Eval grid must match the training bounds (state_min=1.0) — the solver grid
+    # still covers [1e-6, 15] for benchmark accuracy, but the eval_grid used for
+    # regret comparison must match what the RL agent saw during training.
+    state_min, state_max = 1.0, grid[-1]
     
     # Compute benchmark
     benchmark = compute_benchmark(params, state_min, state_max)
-    logger.info(f"Benchmark computed: G_EGM = {benchmark.return_eval:.6f}")
 
     # 2 & 3. Load raw metrics and process for all algorithms
     algo_results: dict[str, AlgoResults] = {}

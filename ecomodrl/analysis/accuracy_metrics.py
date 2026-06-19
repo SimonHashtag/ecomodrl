@@ -1,3 +1,5 @@
+# ATTENTION: Formerly, analysis.py
+
 # -----------------------------------------------------------------------------
 # Model-agnostic analysis routines. Every function takes (model, policy, ...).
 # The shared `policy` interface (see policies.py) is the only contract.
@@ -117,7 +119,7 @@ def wasserstein_euler(ee_rl, ee_egm):
 
 
 # ---------------------------------------------------------------------------
-# Aggregation utilities (IQM + stratified bootstrap CI)
+# Aggregation utilities (IQM + two-way crossed bootstrap CI)
 # ---------------------------------------------------------------------------
 
 def iqm(x):
@@ -135,32 +137,42 @@ def iqm(x):
     return float(np.mean(a[mask]))
 
 
-def iqm_ci(x, B=2000, alpha=0.05, seed=42):
-    """Percentile bootstrap 95% CI for the IQM.
+def iqm_ci_crossed(matrix, B=2000, alpha=0.05, seed=42):
+    """Two-way crossed (pigeonhole) bootstrap 95% CI for the IQM.
 
-    Resamples the (already-flattened) input with replacement B times.
-    Callers that need stratification over a (train, test) grid should
-    pre-stack into a 2-D array and pass the flat view -- since our
-    grids are balanced (every train_seed sees every test_seed), a flat
-    resample at the cell level coincides with stratified resampling
-    over the joint distribution.
+    `matrix` is the (n_train, n_test) grid of a metric (NaNs allowed for
+    missing cells). Each replicate resamples train-seed rows AND test-seed
+    columns with replacement and recomputes the IQM over the induced
+    submatrix, so both the train-seed and test-seed variance components
+    enter the interval. A flat cell-level resample would instead treat the
+    n_train*n_test correlated cells as independent and badly understate the
+    width -- the cells come from a fully-crossed design with only n_train
+    independent train seeds and n_test independent test seeds, not
+    n_train*n_test independent draws.
+
+    For a deterministic single-column grid (n_test == 1) this degenerates
+    to a one-way train-seed bootstrap, which is exactly right for CK.
+
+    References: Owen (2007), "The pigeonhole bootstrap"; McCullagh (2000),
+    "Resampling and exchangeable arrays".
     """
-    a = np.asarray(x, dtype=np.float64).ravel()
-    a = a[np.isfinite(a)]
-    if a.size == 0:
+    M = np.atleast_2d(np.asarray(matrix, dtype=np.float64))
+    finite = M[np.isfinite(M)]
+    if finite.size == 0:
         return float("nan"), float("nan"), float("nan")
-    point = iqm(a)
+    point = iqm(finite)
+    R, C = M.shape
     rng = np.random.default_rng(int(seed))
-    idx = rng.integers(0, a.size, size=(int(B), a.size))
-    resamples = a[idx]
-    q1 = np.percentile(resamples, 25, axis=1)
-    q3 = np.percentile(resamples, 75, axis=1)
-    in_box = (resamples >= q1[:, None]) & (resamples <= q3[:, None])
-    sums = np.where(in_box, resamples, 0.0).sum(axis=1)
-    counts = in_box.sum(axis=1)
-    # Fallback to plain mean when the resampled IQR box is empty
-    iqms = np.where(counts > 0, sums / np.maximum(counts, 1),
-                    resamples.mean(axis=1))
+    iqms = np.empty(int(B), dtype=np.float64)
+    for b in range(int(B)):
+        ri = rng.integers(0, R, size=R)
+        ci = rng.integers(0, C, size=C)
+        # iqm() flattens, drops NaNs, and falls back to the plain mean when
+        # the resampled IQR box is empty.
+        iqms[b] = iqm(M[np.ix_(ri, ci)])
+    iqms = iqms[np.isfinite(iqms)]
+    if iqms.size == 0:
+        return float(point), float("nan"), float("nan")
     lo, hi = np.percentile(iqms, [100 * alpha / 2, 100 * (1 - alpha / 2)])
     return float(point), float(lo), float(hi)
 

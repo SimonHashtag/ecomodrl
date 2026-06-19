@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # Run via:
-# > cd ecomodrl/ecomodrl/tune
-# > sed -i 's/\r$//' bufferstock_tuning.sh
-# > chmod +x bufferstock_tuning.sh
-# > sbatch bufferstock_tuning.sh
+# > cd ecomodrl/ecomodrl/tune/cluster
+# > sed -i 's/\r$//' brockmirman_tuning.sh
+# > chmod +x brockmirman_tuning.sh
+# > sbatch brockmirman_tuning.sh
 # logs will be in ecomodrl/ecomodrl/tuning/logs/
-# Incumbent in scratch in tuning_results/BufferStock/
+# Incumbent in scratch in tuning_results/BrockMirman/
 
-#SBATCH --job-name=BS_TUNE
+#SBATCH --job-name=BM_TUNE
 #SBATCH --partition=d0ow
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -17,8 +17,8 @@
 #SBATCH --time=24:00:00
 #SBATCH --export=NONE
 
-#SBATCH --output=logs/BS_TUNE_%j.out
-#SBATCH --error=logs/BS_TUNE_%j.err
+#SBATCH --output=logs/BM_TUNE_%j.out
+#SBATCH --error=logs/BM_TUNE_%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ruven.micheel@uni-muenster.de
 
@@ -74,7 +74,7 @@ for algo in "${ALGOS[@]}"; do
     echo "Starting tuning for: $algo"
     echo "------------------------------------------------"
     
-    python ecomodrl/tune/bufferstock.py \
+    python ecomodrl/tune/brockmirman.py \
         --algo_name="$algo" \
         --total_cost=$BUDGET_PER_ALGO \
         --hidden_nodes=128
