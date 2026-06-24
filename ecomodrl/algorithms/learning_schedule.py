@@ -1,40 +1,50 @@
 from __future__ import annotations
 
+import math
+from typing import Optional
 from dataclasses import dataclass, field
 
-@dataclass
-class LinearScheduleByWallClockTime:
+import numpy as np
+
+from ecomodrl.algorithms.stopper import TrainingClock
+
+class WallClockCosineLR:
+    """Cosine learning-rate schedule based on training-only wall clock.
+
+    SB3 expects:
+
+        learning_rate(progress_remaining) -> float
+
+    but we ignore `progress_remaining` and use the shared TrainingClock.
+
+    Parameters
+    ----------
+    clock:
+        TrainingClock instance.
+
+    lr0:
+        Initial learning rate.
+
+    drop:
+        Log10 drop by the end of training. For example:
+            drop=1 -> lr_end = lr0 / 10
+            drop=2 -> lr_end = lr0 / 100
+            drop=0 -> constant lr0
+
+    wallclock_seconds:
+        Training-only wall-clock budget.
     """
-    Linear LR schedule from initial_lr to final_lr as a function of
-    elapsed_seconds / max_wallclock_seconds.
 
-    The argument `_progress_remaining` (SB3 interface) is ignored. The internal
-    counter is updated externally (e.g., by a wall-clock budget callback).
+    def __init__(self, clock: Optional[TrainingClock], lr0, drop, wallclock_seconds):
+        self.clock = clock
+        self.lr0 = float(lr0)
+        self.end = float(lr0) / (10.0 ** float(drop))
+        self.T = max(float(wallclock_seconds), 1e-12)
 
-    Notes:
-      - Uses seconds as the budget unit.
-      - If elapsed_seconds exceeds max_wallclock_seconds, the schedule is clamped at final_lr.
-    """
-    initial_lr: float
-    final_lr: float
-    max_wallclock_seconds: float
-    elapsed_seconds: float = 0.0
+    def __call__(self, _progress_remaining):
+        t = self.clock.now() if self.clock is not None else 0.0
+        frac = np.clip(t / self.T, 0.0, 1.0)
 
-    _slope: float = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.max_wallclock_seconds <= 0:
-            raise ValueError("max_wallclock_seconds must be positive.")
-        self._slope = float(self.final_lr) - float(self.initial_lr)
-
-    def update(self, elapsed_seconds: float) -> None:
-        es = float(elapsed_seconds)
-        if es < 0.0:
-            raise ValueError("elapsed_seconds must be non-negative.")
-        self.elapsed_seconds = es
-
-    def __call__(self, _progress_remaining: float) -> float:
-        frac = self.elapsed_seconds / float(self.max_wallclock_seconds)
-        if frac > 1.0:
-            frac = 1.0
-        return float(self.initial_lr + self._slope * frac)
+        return self.end + 0.5 * (self.lr0 - self.end) * (
+            1.0 + math.cos(math.pi * frac)
+        )

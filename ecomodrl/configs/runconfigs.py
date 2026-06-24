@@ -4,10 +4,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
-from ecomodrl.benchmarks.casskoopmans.problemclass import PlanningProblem as CKPP
-from ecomodrl.benchmarks.brockmirman.problemclass import PlanningProblem as BMPP
-from ecomodrl.benchmarks.bufferstock.problemclass import PlanningProblem as BSPP
-from ecomodrl.benchmarks.portfoliochoice.problemclass import PlanningProblem as PCPP
+from ecomodrl.models.casskoopmans.problemclass import PlanningProblem as CKPP
+from ecomodrl.models.brockmirman.problemclass import PlanningProblem as BMPP
+from ecomodrl.models.bufferstock.problemclass import PlanningProblem as BSPP
+from ecomodrl.models.portfoliochoice.problemclass import PlanningProblem as PCPP
 
 # ----------------------------
 # Run configuration
@@ -28,7 +28,6 @@ class BaseRunConfig:
     hidden_nodes: int = 64
     total_timesteps: int = 1_000_000_000
     max_wallclock_seconds: int = 600
-    patience: int = 2000    # Early stopping patience (#evaluations)
     base_seed: int = 200
     n_seeds: int = 10
     @property
@@ -44,8 +43,10 @@ class BaseRunConfig:
     state_max: float = field(init=False)
     
     # Evaluation
-    eval_every: int = 10_000    # eval every env steps
-    max_eval_episode_steps: int = 100
+    eval_interval_seconds: int = 5.0
+    eval_m_grid_size: int = 1_000
+    eval_time_period: int = 100
+    
         
         
 @dataclass

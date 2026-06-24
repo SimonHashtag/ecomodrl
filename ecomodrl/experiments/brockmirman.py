@@ -6,7 +6,7 @@ from ecomodrl.configs.runconfigs import BrockMirmanRunConfig, parse_run_args
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
-from ecomodrl.envs.brockmirman import BrockMirmanEnv
+from ecomodrl.envs.envs import BrockMirmanEnv
 from ecomodrl.configs.parameters import BrockMirmanParams
 from ecomodrl.analysis.analysis_BM import analyze_all_seeds
 

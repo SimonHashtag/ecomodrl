@@ -14,6 +14,7 @@ import numpy as np
 
 from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY
+from ecomodrl.algorithms.stopper import TrainingClock
 
 SearchSpaceFn = Callable[[Any, int | None], CS.ConfigurationSpace]
 
@@ -157,6 +158,8 @@ def target_function(
         )
     trial_dir.mkdir(parents=True, exist_ok=True)
 
+    clock = TrainingClock()
+
     try:
         adapter_fn = ADAPTER_REGISTRY[algo_cfg.name.lower()]
     except KeyError as exc:
@@ -172,7 +175,6 @@ def target_function(
     trial_algo.policy_kwargs = {**(algo_cfg.policy_kwargs or {})}
 
     # Run training
-    start = time.time()
     try:
         try:
             train_multiple_seeds(
@@ -180,9 +182,9 @@ def target_function(
                 seed_parallel=False, max_workers=1, verbose=train_verbose)
         except Exception as exc:
             # Fail-safe: return a bad fitness but with measured cost
-            cost = time.time() - start
+            cost = clock.now()
             return {"fitness": 1e9, "cost": cost, "info": {"error": repr(exc)}}
-        cost = time.time() - start
+        cost = clock.now()
 
         # Read results
         train_cfgs_path = trial_dir / "train_cfgs.json"

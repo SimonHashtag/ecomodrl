@@ -1,704 +1,936 @@
 # -----------------------------------------------------------------------------
-# EGM solver for canonical models in a common (m, ξ) state space.
+# Economic models and EGM solvers.
 #
-#   1. CassKoopmans  -- deterministic growth, ξ = ∅.
-#   2. BrockMirman   -- stochastic growth with AR(1) productivity, ξ = z.
-#   3. BufferStock   -- normalized buffer-stock with borrowing constraint.
+# State convention:
+#     state = (m, x1, ..., xd)
 #
-# Policy analysis (Euler errors, Bellman value, rollout value) lives in
-# analysis.py as free functions so the same code applies to EGM and RL.
+# Policy convention:
+#     policy.shape = (n_m, n_x1, ..., n_xd)
+#     policy_axes  = (m_grid, x1_grid, ..., xd_grid)
 # -----------------------------------------------------------------------------
 
+from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 import time
+from typing import Any
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
-from scipy.optimize import brentq
 from scipy.stats import norm
 
 from ecomodrl.analysis import accuracy_metrics
-from ecomodrl.configs.parameters import CassKoopmansParams, BrockMirmanParams, BufferStockParams
-
-# =============================================================================
-# Gauss-Hermite helper (shared by stochastic models)
-# =============================================================================
-
-def _gauss_hermite_nodes(n_nodes):
-    """Raw Gauss-Hermite nodes / weights, scaled for E[f(eps)] under N(0, 1)."""
-    x, w = np.polynomial.hermite.hermgauss(n_nodes)
-    return x * np.sqrt(2), w / np.sqrt(np.pi)
+from ecomodrl.configs.parameters import (
+    CassKoopmansParams,
+    BrockMirmanParams,
+    BufferStockParams,
+)
 
 
 # =============================================================================
-# Abstract base class
+# Quadrature helpers
 # =============================================================================
 
-class EconomicModel:
-    """Physics layer: CRRA primitives, shock integration, env-facing dynamics,
-    and the small set of primitives consumed by the EGM solver
-    (`models.EGMModel`) and the analysis drivers (`analysis.py`)."""
+def gauss_hermite_nodes(n_nodes: int) -> tuple[np.ndarray, np.ndarray]:
+    """Gauss-Hermite nodes and weights for eps ~ N(0, 1)."""
+    x, w = np.polynomial.hermite.hermgauss(int(n_nodes))
+    return x * np.sqrt(2.0), w / np.sqrt(np.pi)
 
-    # Defaults: subclasses can override as needed.
-    STATE_DIM = 1            # dimension of the raw economic state (e.g. m for CK, (m, z) for BM)
-    HAS_EXO = False
-    MIN_ACTION_SHARE = 1e-3  # Safe boundaries for the action (avoid -inf rewards from u(0))
-    MAX_ACTION_SHARE = 1.0 - MIN_ACTION_SHARE  # Corresponding upper bound
-    CONSTRAINED = False      # occasionally-binding constraint TODO: Ugly
-    
 
-    def __init__(self, params = None):
-        """Initialize the model with the supplied parameters."""
+def tensor_product_nodes(
+    nodes_1d: np.ndarray,
+    weights_1d: np.ndarray,
+    dim: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Tensor-product quadrature for independent standard normal shocks."""
+    dim = int(dim)
+
+    if dim == 0:
+        return np.empty((1, 0)), np.ones(1)
+
+    node_meshes = np.meshgrid(*([nodes_1d] * dim), indexing="ij")
+    weight_meshes = np.meshgrid(*([weights_1d] * dim), indexing="ij")
+
+    nodes = np.stack([x.ravel() for x in node_meshes], axis=-1)
+    weights = np.prod(np.stack(weight_meshes, axis=0), axis=0).ravel()
+
+    return nodes, weights
+
+
+# =============================================================================
+# Base economic model
+# =============================================================================
+
+class EconomicModel(ABC):
+    """Base class for models with state `(m, x1, ..., xd)`."""
+
+    PARAMS_CLS = None
+
+    min_action_share: float = 1e-3
+    max_action_share: float = 1.0 - 1e-3
+
+    def __init__(self, params: Any | None = None):
+        if params is None:
+            if self.PARAMS_CLS is None:
+                raise ValueError("Either pass params or set PARAMS_CLS.")
+            params = self.PARAMS_CLS()
+
         self.params = params
-        self.weights = None           # quadrature weights; set by stochastic subclasses
-        
-    @property
-    def BETA_EFF(self):     return self.params.beta     # Bufferstock model needs a tilted discount for RL path; default is the original β for EGM path. 
+
+        self.weights: np.ndarray | None = None
+        self.policy: np.ndarray | None = None
+
+        self.m_grid: np.ndarray | None = None
+        self.a_grid: np.ndarray | None = None
+
+        self.m_next: np.ndarray | None = None
+        self.x_next: np.ndarray | None = None
+
+        self.m_ref: float = 1.0
 
     # ------------------------------------------------------------------
-    # Grid utilities
+    # Grid metadata
     # ------------------------------------------------------------------
+
+    @property
+    def exogenous_grids(self) -> tuple[np.ndarray, ...]:
+        """Tuple of exogenous state grids. Empty for one-state models."""
+        return ()
+
+    @property
+    def exogenous_dim(self) -> int:
+        return len(self.exogenous_grids)
+
+    @property
+    def exogenous_shape(self) -> tuple[int, ...]:
+        return tuple(len(g) for g in self.exogenous_grids)
+
+    @property
+    def state_dim(self) -> int:
+        return 1 + self.exogenous_dim
+
+    @property
+    def policy_shape(self) -> tuple[int, ...]:
+        return (len(self.m_grid),) + self.exogenous_shape
+
+    @property
+    def policy_axes(self) -> tuple[np.ndarray, ...]:
+        """Interpolation axes in the same order as the economic state."""
+        return (self.m_grid,) + self.exogenous_grids
+
+    @property
+    def action_dim(self) -> int:
+        """Gym action dimension. Current non-portfolio models use one action."""
+        return 1
 
     @staticmethod
-    def _log_grid(lo, hi, n):
-        """*n* log-spaced points on [lo, hi] (lo > 0)."""
-        return np.exp(np.linspace(np.log(lo), np.log(hi), n))
+    def log_grid(lo: float, hi: float, n: int) -> np.ndarray:
+        """Log-spaced grid on [lo, hi]. Requires lo > 0."""
+        if lo <= 0:
+            raise ValueError("log_grid requires lo > 0.")
+        return np.exp(np.linspace(np.log(lo), np.log(hi), int(n)))
+
+    @staticmethod
+    def log_grid_from_zero(hi: float, n: int, shift: float = 1.0) -> np.ndarray:
+        """Curved grid on [0, hi], dense near zero."""
+        return EconomicModel.log_grid(shift, hi + shift, n) - shift
 
     # ------------------------------------------------------------------
-    # CRRA utility
+    # Utility
     # ------------------------------------------------------------------
 
     def utility(self, c):
-        """u(c) = c^{1-GAMMA}/(1-GAMMA)  (log if GAMMA == 1)."""
+        c = np.asarray(c)
         if self.params.gamma == 1.0:
             return np.log(c)
-        return c ** (1 - self.params.gamma) / (1 - self.params.gamma)
+        return c ** (1.0 - self.params.gamma) / (1.0 - self.params.gamma)
 
     def marginal_utility(self, c):
-        """u'(c) = c^{-GAMMA}"""
-        return c ** (-self.params.gamma)
+        return np.asarray(c) ** (-self.params.gamma)
 
     def inv_marginal_utility(self, mu):
-        """(u')^{-1}(mu) = mu^{-1/GAMMA}"""
-        return mu ** (-1 / self.params.gamma)
-    
-    @abstractmethod
-    def _euler_rhs(self, c_next, **trans):
-        """Return β·E[u'(c')·R'] (or its model-specific analogue) for the supplied next-period transition nodes.
-
-        `trans` is **-unpacked from either `_transition_grid` (EGM solver) or
-        `next_state_distribution` (Euler-error analysis); the same signature
-        serves both paths.
-        """
-        ...
+        return np.asarray(mu) ** (-1.0 / self.params.gamma)
 
     # ------------------------------------------------------------------
-    # Shock integration
+    # Integration and Bellman normalization
     # ------------------------------------------------------------------
 
-    def _integrate(self, x):
-        """Integrate *x* over shock nodes (last axis) with quadrature weights.
+    def integrate(self, x):
+        """Integrate over the last axis when quadrature weights are available."""
+        if self.weights is None:
+            return x
+        return np.asarray(x) @ self.weights
 
-        If ``self.weights`` exists (stochastic models), contracts the last
-        axis via dot product; otherwise returns *x* unchanged (deterministic).
-        """
-        if self.weights is not None:
-            return x @ self.weights
-        return x
-    
+    @property
+    def beta_eff(self) -> float:
+        return self.params.beta
+
     def value_kernel(self):
-        """Multiplicative factor of V' inside the normalized Bellman; default 1."""
         return 1.0
 
     # ------------------------------------------------------------------
-    # Policy evaluation helpers
+    # Policy evaluation
     # ------------------------------------------------------------------
 
-    def consumption(self, m, xi=None):
-        """Interpolate the solved policy at arbitrary (m, ξ) points."""
-        if self.STATE_DIM == 1:
+    def consumption(self, state):
+        """Evaluate the solved consumption policy at raw states.
+
+        State convention:
+            state = (m, x1, ..., xd)
+
+        Policy convention:
+            policy.shape = (n_m, n_x1, ..., n_xd)
+            policy_axes  = (m_grid, x1_grid, ..., xd_grid)
+        """
+        if self.policy is None:
+            raise RuntimeError("No policy attached. Solve first or set model.policy.")
+
+        state = np.asarray(state, dtype=float)
+
+        if self.exogenous_dim == 0:
+            m = state[..., 0]
             return np.interp(m, self.m_grid, self.policy)
+
+        scalar_input = state.ndim == 1
+
+        coords = state[None, :] if scalar_input else state
+        coords = self._clip_policy_coords(coords)
+
         interp = RegularGridInterpolator(
-            (self.xi_grid, self.m_grid), self.policy,
-            bounds_error=False, fill_value=None,
+            self.policy_axes,
+            self.policy,
+            bounds_error=False,
+            fill_value=None,
         )
-        return interp((xi, m))
 
-    def share(self, m, xi=None):
-        """Consumption share s = c/m at arbitrary (m, ξ) points."""
-        return self.consumption(m, xi) / m
-    
-    def __call__(self, state):
-        """Evaluate the solved consumption policy at flat states (..., STATE_DIM)."""
-        if self.STATE_DIM == 2:
-            return self.consumption(state[..., 0], state[..., 1])
-        return self.consumption(state[..., 0])
+        values = interp(coords)
+
+        return values[0] if scalar_input else values
+
+    def share(self, state):
+        state = np.asarray(state, dtype=float)
+        return self.consumption(state) / state[..., 0]
+
+    def _clip_policy_coords(self, coords: np.ndarray) -> np.ndarray:
+        coords = np.asarray(coords, dtype=float).copy()
+
+        for j, grid in enumerate(self.policy_axes):
+            coords[..., j] = np.clip(coords[..., j], grid[0], grid[-1])
+
+        return coords
 
     # ------------------------------------------------------------------
-    # Initial policy (consume everything)
+    # EGM hooks
     # ------------------------------------------------------------------
 
-    def _initial_policy(self):
-        """Initial guess c(m, ξ) = m (broadcast across ξ if applicable)."""
-        if self.STATE_DIM == 2:
-            return np.broadcast_to(
-                self.m_grid, (len(self.xi_grid), len(self.m_grid))
-            ).copy()
-        return self.m_grid.copy()
-    
-    # ------------------------------------------------------------------
-    # Subclass hooks: env-facing dynamics
-    # ------------------------------------------------------------------
+    def initial_policy(self):
+        """Initial policy c(m, x) = m."""
+        if self.exogenous_dim == 0:
+            return self.m_grid.copy()
+
+        m = self.m_grid.reshape((len(self.m_grid),) + (1,) * self.exogenous_dim)
+        return np.broadcast_to(m, self.policy_shape).copy()
+
+    def interpolation_kink(self) -> tuple[float, float] | None:
+        """Optional EGM map-back kink. BufferStock returns `(0, 0)`."""
+        return None
 
     @abstractmethod
-    def sample_shocks(self, rng, shape):
-        """Draw a batch of raw random innovations for use with `step`.
-
-        Distinct from the quadrature nodes used by `next_state_distribution`:
-        these are Monte Carlo draws consumed by the RL environment. Separating
-        shock generation from `step` lets callers pre-draw a full trajectory
-        of length T in one vectorised call and feed shocks one step at a time.
-        Returns None for deterministic models (CassKoopmans).
-        """
+    def euler_rhs(self, c_next, **transition_kwargs):
         ...
 
     @abstractmethod
-    def transition(self, state, c, shocks):
-        """Apply one period of model dynamics to a batched (state, c) pair.
-
-        Consumes the raw innovations from `sample_shocks` (or None for
-        deterministic models) and returns the next state with shape
-        (..., STATE_DIM), broadcasting over arbitrary leading dims.
-        """
+    def transition_grid_kwargs(self) -> dict[str, np.ndarray]:
         ...
-
-    @abstractmethod
-    def eval_start_states(self, M):
-        """Return (M, STATE_DIM) starting states for batched rollout evaluation."""
-        ...
-    
-    # ------------------------------------------------------------------
-    # Subclass hooks: analysis (off-grid transition + shock sampling)
-    # ------------------------------------------------------------------
 
     @abstractmethod
     def next_state_distribution(self, state, a):
-        """Compute the next-state distribution at arbitrary (state, a) points.
+        ...
 
-        The off-grid counterpart to `_transition_grid`: given any batch of
-        (state, a) pairs, fans out over all quadrature shock nodes and
-        returns (next_states, trans_kwargs). `trans_kwargs` is the same dict
-        that `_euler_rhs` expects, so Euler errors can be evaluated at
-        arbitrary simulated states rather than only at the solver's fixed grid.
-        Integration over the node axis is handled by `_integrate` via
-        `self.weights` (None for deterministic, quadrature weights otherwise).
+    # ------------------------------------------------------------------
+    # RL hooks
+    # ------------------------------------------------------------------
+
+    def controls_from_action(self, action, state=None) -> dict[str, np.ndarray]:
+        """Map Gym action in [-1, 1] to consumption.
+
+        Portfolio models should override this.
         """
+        action = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
+
+        share = self.min_action_share + 0.5 * (
+            self.max_action_share - self.min_action_share
+        ) * (action[..., 0] + 1.0)
+
+        out = {"share": share}
+
+        if state is not None:
+            m = np.asarray(state)[..., 0]
+            out["consumption"] = share * m
+
+        return out
+
+    @abstractmethod
+    def sample_shocks(self, rng, shape):
+        ...
+
+    @abstractmethod
+    def transition(self, state, controls: dict[str, Any], shocks):
+        ...
+
+    @abstractmethod
+    def sample_initial_state(self, rng):
+        ...
+
+    @abstractmethod
+    def eval_start_states(self, M: int) -> np.ndarray:
         ...
 
 
 # =============================================================================
-# 1. Cass-Koopmans (deterministic, single state k)
+# Cass-Koopmans
 # =============================================================================
 
 class CassKoopmans(EconomicModel):
-    """Deterministic Cass-Koopmans growth model. ξ = ∅."""
-    # Grid spans 0.2 to 5 times the deterministic steady-state capital
-    K_MIN_FACTOR, K_MAX_FACTOR = 0.2, 5.0
-    STATE_DIM = 1
-    HAS_EXO = False
+    """Deterministic Cass-Koopmans growth model."""
 
-    def __init__(
-            self, 
-            params=None,
-            grid_size=5000,):
+    PARAMS_CLS = CassKoopmansParams
+
+    k_min_factor = 0.2
+    k_max_factor = 5.0
+
+    def __init__(self, params=None, grid_size: int = 5000):
         super().__init__(params)
-        self.GRID_SIZE = grid_size
-        self.m_ref = self.cash_on_hand(self.k_steady, 1.0)
-        # Post-decision asset grid (a = next-period capital).
-        self.a_grid = self._build_a_grid(self.GRID_SIZE)
-        # Cash-on-hand state grid spans m of those asset levels.
-        self.m_grid = self._log_grid(
-            self.cash_on_hand(self.a_grid[0]),
-            self.cash_on_hand(self.a_grid[-1]), self.GRID_SIZE)
 
-        # Pre-computed transition (deterministic, no shock dim).
+        self.grid_size = int(grid_size)
+
+        self.m_ref = self.cash_on_hand(self.k_steady, 1.0)
+
+        self.a_grid = self._build_a_grid(self.grid_size)
+
+        self.m_grid = self.log_grid(
+            self.cash_on_hand(self.a_grid[0]),
+            self.cash_on_hand(self.a_grid[-1]),
+            self.grid_size,
+        )
+
         self.m_next = self.cash_on_hand(self.a_grid)
-        self.xi_next = None
+        self.x_next = None
         self.R_next = self.gross_interest_rate(self.a_grid)
 
     @property
     def k_steady(self):
-        """Deterministic-z steady-state capital: f'(k*) = 1/β - 1 + δ."""
-        return ((1 / self.params.beta - 1 + self.params.delta) / (self.params.A * self.params.alpha)) ** (1 / (self.params.alpha - 1))
+        p = self.params
+        return ((1.0 / p.beta - 1.0 + p.delta) / (p.A * p.alpha)) ** (
+            1.0 / (p.alpha - 1.0)
+        )
 
-    def _production(self, k, z=1.0):
-        return z * self.params.A * k ** self.params.alpha
+    def production(self, k, z=1.0):
+        return z * self.params.A * np.asarray(k) ** self.params.alpha
 
     def cash_on_hand(self, k, z=1.0):
-        """m = z·f(k) + (1-δ)k  (CK: z = 1)."""
-        return self._production(k, z) + (1 - self.params.delta) * k
+        return self.production(k, z) + (1.0 - self.params.delta) * np.asarray(k)
 
     def gross_interest_rate(self, a, z=1.0):
-        """R'(a, z') = z'·f'(a) + (1-δ)  (CK: z = 1)."""
-        return z * self.params.A * self.params.alpha * a ** (self.params.alpha - 1) + (1 - self.params.delta)
+        return (
+            z
+            * self.params.A
+            * self.params.alpha
+            * np.asarray(a) ** (self.params.alpha - 1.0)
+            + (1.0 - self.params.delta)
+        )
 
     def _build_a_grid(self, n):
-        """Log-spaced post-decision asset grid centered on k_steady."""
-        return self._log_grid(self.K_MIN_FACTOR * self.k_steady, self.K_MAX_FACTOR * self.k_steady, n)
+        return self.log_grid(
+            self.k_min_factor * self.k_steady,
+            self.k_max_factor * self.k_steady,
+            n,
+        )
+
+    def transition_grid_kwargs(self):
+        return {"R_next": self.R_next}
+
+    def euler_rhs(self, c_next, R_next):
+        return self.params.beta * self.integrate(self.marginal_utility(c_next) * R_next)
 
     def next_state_distribution(self, state, a):
         m_next = self.cash_on_hand(a)
-        return m_next[..., None], {'R_next': self.gross_interest_rate(a)}
-    
-    def _euler_rhs(self, c_next, R_next):
-        """β · E[u'(c') · R']; integration handled by ``_integrate``."""
-        return self.params.beta * self._integrate(self.marginal_utility(c_next) * R_next)
-    
+        return np.asarray(m_next)[..., None], {"R_next": self.gross_interest_rate(a)}
+
     def sample_shocks(self, rng, shape):
-        """Deterministic: no shocks."""
         return None
-    
-    def transition(self, state, c, shocks):
-        """Batched single-step transition. `shocks` is ignored (deterministic)."""
-        a = state[..., 0] - c
+
+    def transition(self, state, controls, shocks):
+        c = controls["consumption"]
+        a = np.asarray(state)[..., 0] - c
         return self.cash_on_hand(a)[..., None]
-    
+
+    def sample_initial_state(self, rng):
+        return np.array([rng.choice(self.m_grid)], dtype=float)
+
     def eval_start_states(self, M):
-        """M log-spaced m values across the grid."""
-        return self._log_grid(self.m_grid[0], self.m_grid[-1], M)[:, None]
+        return self.log_grid(self.m_grid[0], self.m_grid[-1], M)[:, None]
+
 
 # =============================================================================
-# 2. Brock-Mirman (stochastic, states (k, z))
+# Brock-Mirman with arbitrary positive AR(1) exogenous states
 # =============================================================================
 
 class BrockMirman(CassKoopmans):
-    """Stochastic Brock-Mirman growth model with AR(1) productivity. ξ = z."""
-    # Number of z-anchors used to build the (m x z) starting-state mesh.
-    # quantiles (0.05 / 0.15 / ... / 0.95) of the AR(1) stationary
-    # distribution of log z, log z ~ N(0, SIGMA^2 / (1 - RHO^2)).
-    EVAL_Z_QUANTILES = (0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95)
+    """Stochastic Brock-Mirman growth model with one AR(1) technology shock.
 
-    N_GH_NODES = 7
-    STATE_DIM = 2
-    HAS_EXO = True
+    State:
+        state = (m, z)
+
+    Production:
+        y = z A k^alpha
+    """
+
+    PARAMS_CLS = BrockMirmanParams
+
+    n_gh_nodes = 7
+
+    eval_z_quantiles = (
+        0.05, 0.15, 0.25, 0.35, 0.45,
+        0.55, 0.65, 0.75, 0.85, 0.95,
+    )
 
     def __init__(
-            self,
-            params=None,
-            m_grid_size=500,
-            a_grid_size=500,
-            z_grid_size=100,
-        ):
-        super().__init__(params, m_grid_size)
-        self.M_GRID_SIZE = m_grid_size
-        self.A_GRID_SIZE = a_grid_size
-        self.Z_GRID_SIZE = z_grid_size
-        # Gauss-Hermite shock grid (innovations to log z)
-        x, w = _gauss_hermite_nodes(self.N_GH_NODES)
+        self,
+        params=None,
+        m_grid_size: int = 500,
+        a_grid_size: int = 500,
+        z_grid_size: int = 100,
+    ):
+        EconomicModel.__init__(self, params)
+
+        self.m_grid_size = int(m_grid_size)
+        self.a_grid_size = int(a_grid_size)
+        self.z_grid_size = int(z_grid_size)
+
+        self.m_ref = self.cash_on_hand(self.k_steady, 1.0)
+
+        x, w = gauss_hermite_nodes(self.n_gh_nodes)
         self.shock_nodes = self.params.sigma * x
         self.weights = w
 
-        # Productivity grid (log-spaced symmetrically around z = 1).
-        sigma_z = self.params.sigma / np.sqrt(1 - self.params.rho ** 2) if self.params.rho != 0 else self.params.sigma
-        z_lo = np.exp(-3 * sigma_z)
-        z_hi = np.exp(3 * sigma_z)
-        self.xi_grid = self._log_grid(z_lo, z_hi, self.Z_GRID_SIZE)
+        self.z_grid = self._build_z_grid()
+        self.a_grid = self._build_a_grid(self.a_grid_size)
 
-        # Pre-computed transition: shape (n_z, n_a, n_shock).
-        z_today = self.xi_grid[:, None, None]
-        a_today = self.a_grid[None, :, None]
-        z_next = self._z_next(z_today, self.shock_nodes[None, None, :])
-        z_next, a_b = np.broadcast_arrays(z_next, a_today)
+        self._build_transition_arrays()
 
-        # Overwrite CassKoopmans' deterministic transition with the stochastic one: m' = z'·f(a) + (1-δ)·a.
-        # Cash-on-hand grid spans m across all (k, z) on the asset grid.
-        m_lo = self.cash_on_hand(self.a_grid[0], self.xi_grid[0])
-        m_hi = self.cash_on_hand(self.a_grid[-1], self.xi_grid[-1])
-        self.m_grid = self._log_grid(m_lo, m_hi, self.M_GRID_SIZE)
+    @property
+    def exogenous_grids(self):
+        return (self.z_grid,)
 
-        self.xi_next = z_next
-        self.m_next = self.cash_on_hand(a_b, z_next)
-        self.R_next = self.gross_interest_rate(a_b, z_next)
+    def _build_z_grid(self):
+        p = self.params
 
-    # ------------------------------------------------------------------
-    # AR(1) productivity transition (shared by all z-next sites)
-    # ------------------------------------------------------------------
+        if p.rho == 0.0:
+            sigma_z = p.sigma
+        else:
+            sigma_z = p.sigma / np.sqrt(1.0 - p.rho ** 2)
+
+        return self.log_grid(
+            np.exp(-3.0 * sigma_z),
+            np.exp(3.0 * sigma_z),
+            self.z_grid_size,
+        )
 
     def _z_next(self, z, eps):
-        """z' = exp(RHO·log(z) + eps); shape-preserving on any broadcast."""
         return np.exp(self.params.rho * np.log(z) + eps)
 
+    def _build_transition_arrays(self):
+        """Build transition arrays.
+
+        Shapes:
+            a_grid:     (n_a,)
+            z_grid:     (n_z,)
+            shock_nodes: (n_shock,)
+
+            m_next:     (n_a, n_z, n_shock)
+            x_next:     (n_a, n_z, n_shock, 1)
+            R_next:     (n_a, n_z, n_shock)
+
+        Policy shape:
+            policy:     (n_m, n_z)
+        """
+        a = self.a_grid[:, None, None]
+        z = self.z_grid[None, :, None]
+        eps = self.shock_nodes[None, None, :]
+
+        z_next = self._z_next(z, eps)
+
+        self.m_next = self.cash_on_hand(a, z_next)
+        self.R_next = self.gross_interest_rate(a, z_next)
+        self.x_next = np.broadcast_to(z_next, self.m_next.shape)[..., None]
+
+        m_lo = self.cash_on_hand(self.a_grid[0], self.z_grid[0])
+        m_hi = self.cash_on_hand(self.a_grid[-1], self.z_grid[-1])
+
+        self.m_grid = self.log_grid(m_lo, m_hi, self.m_grid_size)
+
+    def transition_grid_kwargs(self):
+        return {"R_next": self.R_next}
+
     def next_state_distribution(self, state, a):
+        state = np.asarray(state, dtype=float)
+
         z = state[..., 1]
-        z_b = np.asarray(z)[..., None]
-        a_b = np.asarray(a)[..., None]
-        z_next = self._z_next(z_b, self.shock_nodes[None, :])
-        z_next, a_bc = np.broadcast_arrays(z_next, a_b)
+        z_next = self._z_next(z[..., None], self.shock_nodes)
+
+        a_bc = np.asarray(a)[..., None]
         m_next = self.cash_on_hand(a_bc, z_next)
+
         next_state = np.stack([m_next, z_next], axis=-1)
-        return next_state, {'R_next': self.gross_interest_rate(a_bc, z_next)}
-    
+
+        return next_state, {
+            "R_next": self.gross_interest_rate(a_bc, z_next),
+        }
+
     def sample_shocks(self, rng, shape):
-        """Gaussian innovations to log z."""
         return rng.normal(0.0, self.params.sigma, size=shape)
 
-    def transition(self, state, c, shocks):
-        """Batched single-step transition with pre-drawn log-z innovations."""
+    def transition(self, state, controls, shocks):
+        state = np.asarray(state, dtype=float)
+
+        c = controls["consumption"]
         a = state[..., 0] - c
+
         z_next = self._z_next(state[..., 1], shocks)
         m_next = self.cash_on_hand(a, z_next)
+
         return np.stack([m_next, z_next], axis=-1)
 
     def _stationary_z_anchors(self):
-        sigma_z = self.params.sigma / np.sqrt(1.0 - self.params.rho ** 2) if self.params.rho != 0 else self.params.sigma
-        return np.exp(norm.ppf(np.asarray(self.EVAL_Z_QUANTILES)) * sigma_z)
+        p = self.params
+
+        if p.rho == 0.0:
+            sigma_z = p.sigma
+        else:
+            sigma_z = p.sigma / np.sqrt(1.0 - p.rho ** 2)
+
+        q = np.asarray(self.eval_z_quantiles)
+        return np.exp(norm.ppf(q) * sigma_z)
+
+    def sample_initial_state(self, rng):
+        m0 = rng.choice(self.m_grid)
+        z0 = rng.choice(self.z_grid)
+        return np.array([m0, z0], dtype=float)
 
     def eval_start_states(self, M):
-        """M_m x M_z meshgrid of (m, z) start states with M_m * M_z = M.
-        M_z = len(EVAL_Z_QUANTILES); M_m = M // M_z. Returns (M_eff, 2)."""
-        M_z = len(self.EVAL_Z_QUANTILES)
-        M_m = int(M) // M_z
         z_anchors = self._stationary_z_anchors()
-        m_anchors = self._log_grid(self.m_grid[0], self.m_grid[-1], M_m)
-        Mm, Mz = np.meshgrid(m_anchors, z_anchors, indexing='ij')
-        return np.stack([Mm.ravel(), Mz.ravel()], axis=-1)
+
+        M_z = len(z_anchors)
+        M_m = max(1, int(M) // M_z)
+
+        m_anchors = self.log_grid(self.m_grid[0], self.m_grid[-1], M_m)
+
+        m_mesh, z_mesh = np.meshgrid(m_anchors, z_anchors, indexing="ij")
+
+        return np.stack([m_mesh.ravel(), z_mesh.ravel()], axis=-1)
 
 
 # =============================================================================
-# 3. Buffer stock (normalized, single state m, occasionally binding constraint)
+# Buffer-stock model
 # =============================================================================
 
 class BufferStock(EconomicModel):
     """Normalized buffer-stock model with an occasionally binding constraint.
 
-    A subtle but important point: the endogenous m-grid does NOT extend down to
-    m = 0. The smallest endogenous m is a_grid[0] + c_endo[0] > 0. For lower m
-    the borrowing constraint binds and the optimal policy is c = m. We enforce
-    this by setting `HAS_CONSTRAINT = True`, so the base-class EGM step
-    prepends the kink (m = 0, c = 0) before interpolating; np.interp then
-    linearly connects (0, 0) to the first endogenous node and recovers c = m
-    on the constrained region.
+    State:
+        state = (m,)
 
-    Grid anchoring (analogue of the deterministic steady state):
-    Under the Growth Impatience Condition there exists a target cash-on-hand
-    m* satisfying E[m_{t+1} | m_t = m*] = m*. Since c(.) enters this fixed
-    point, m* has no closed form; we solve in two passes (rough -> refined).
-    
-    RL training and MC welfare use the Esscher-tilted ψ sampler
-        (`sample_shocks`, `transition`) together with `BETA == β_eff`,
-        so the per-step reward u(c) and a constant discount recover the
-        correct normalized Bellman:
-            v(m) = u(c) + β · E_true[(Gψ')^{1-γ} v(m')]
-                 = u(c) + β_eff · E_tilted[v(m')]
-        with β_eff = β · G^{1-γ} · exp(½γ(γ-1)σ_ψ²),
-             ψ_tilted ~ LN(-½σ² + (1-γ)σ², σ²).
+    Grid initialization:
+        Uses a policy-independent, theory-anchored scale based on the
+        growth-impatience gap and income-risk/prudence. This avoids a two-pass
+        EGM solve and keeps EGM/RL grids identical.
     """
-    N_GH_NODES = 7
-    M_MAX_PASS1 = 50.0
-    M_TARGET_FACTOR = 5.0
 
-    STATE_DIM = 1
-    HAS_EXO = False
-    MAX_ACTION_SHARE = 1.0      # No upper bound on the consumption share (can consume all cash-on-hand)
-    CONSTRAINED = True
+    PARAMS_CLS = BufferStockParams
 
-    def __init__(self,
-                 params=None,
-                m_grid_size=5000,
-                 ):
+    n_gh_nodes = 7
+
+    min_m_max = 20.0
+    grid_upper_factor = 5.0
+    impatience_gap_floor = 1e-3
+
+    max_action_share = 1.0
+
+    def __init__(
+        self,
+        params=None,
+        m_grid_size: int = 5000,
+        m_max: float | None = None,
+    ):
         super().__init__(params)
+
+        self.m_grid_size = int(m_grid_size)
+
         self.R = 1.0 + self.params.r
         self.G = 1.0 + self.params.g
-        self.M_GRID_SIZE = m_grid_size
 
         self._build_shocks()
-        
-        # Esscher exponent θ = 1-γ on X = ln ψ
-        theta = 1.0 - self.params.gamma
-        self._mean_perm_tilt = self._mean_perm + theta * self.params.sigma_perm**2
-        M_psi = np.exp(0.5 * theta * (theta - 1.0) * self.params.sigma_perm**2)
-        self._beta_eff = self.params.beta * self.G**theta * M_psi
-        
-        # First pass starts from a generous, model-agnostic upper bound
-        self.m_grid = self._build_m_grid(self.M_MAX_PASS1, self.M_GRID_SIZE)
-        # Placeholder m_ref so attribute exists before EGM solve() refines it.
-        # solve() overwrites this with m_target after each pass.
-        self.m_ref = 1.0
-    
+        self._build_tilted_discount()
+
+        if m_max is None:
+            self.m_ref, m_max = self._buffer_stock_grid_scale()
+        else:
+            m_max = float(m_max)
+            self.m_ref = max(1.0, m_max / self.grid_upper_factor)
+
+        self.m_grid = self.log_grid_from_zero(m_max, self.m_grid_size)
+        self.a_grid = self.m_grid.copy()
+
+        self.m_next, self.perm_next = self._transition_arrays(self.a_grid)
+        self.x_next = None
+
     @property
-    def BETA_EFF(self):     return self._beta_eff     # MC path uses tilted discount
-
-    # ------------------------------------------------------------------
-    # Model primitives
-    # ------------------------------------------------------------------
-
-    def _transition_arrays(self, a):
-        """a -> (m', perm') over (a, shock) nodes."""
-        a = np.asarray(a)[..., None]
-        m_next = (self.R / (self.G * self.perm_shocks)) * a + self.tran_shocks
-        perm_next = np.broadcast_to(self.perm_shocks, m_next.shape)
-        return m_next, perm_next
-
-    def _compute_target(self, policy, m_grid):
-        """Target m* satisfying E[m'|m*] = m* via Brent root-finding."""
-        def excess(m):
-            c = np.interp(m, m_grid, policy)
-            return ((self.R / self.G) * self.inv_perm_e * (m - c) + self.tran_e - m)
-        return brentq(excess, m_grid[0], m_grid[-1])
-
-    # ------------------------------------------------------------------
-    # State construction (shocks)
-    # ------------------------------------------------------------------
+    def beta_eff(self):
+        return self._beta_eff
 
     def _build_shocks(self):
-        x, w = _gauss_hermite_nodes(self.N_GH_NODES)
+        x, w = gauss_hermite_nodes(self.n_gh_nodes)
+        p = self.params
 
-        # Log-normal mean-one realizations
-        self._mean_perm = -0.5 * self.params.sigma_perm ** 2
-        self._mean_tran = (np.log((1 - self.params.unemp_prob * self.params.theta_low) / (1 - self.params.unemp_prob)) - 0.5 * self.params.sigma_tran ** 2)
-        perm_nodes = np.exp(self._mean_perm + self.params.sigma_perm * x)
-        tran_nodes = np.exp(self._mean_tran + self.params.sigma_tran * x)
+        self._mean_perm = -0.5 * p.sigma_perm ** 2
 
-        # Unemployment branch: degenerate transitory at replacement rate
+        self._mean_tran = (
+            np.log((1.0 - p.unemp_prob * p.theta_low) / (1.0 - p.unemp_prob))
+            - 0.5 * p.sigma_tran ** 2
+        )
+
+        perm_nodes = np.exp(self._mean_perm + p.sigma_perm * x)
+        tran_nodes = np.exp(self._mean_tran + p.sigma_tran * x)
+
         perm_unemp = perm_nodes
-        tran_unemp = np.full_like(perm_nodes, self.params.theta_low)
-        weights_unemp = self.params.unemp_prob * w
+        tran_unemp = np.full_like(perm_nodes, p.theta_low)
+        weights_unemp = p.unemp_prob * w
 
-        # Employment branch: tensor product of permanent and transitory shocks
-        perm_mesh, tran_mesh = np.meshgrid(perm_nodes, tran_nodes, indexing='ij')
-        perm_emp = perm_mesh.flatten()
-        tran_emp = tran_mesh.flatten()
-        weights_emp = (1 - self.params.unemp_prob) * np.outer(w, w).flatten()
+        perm_mesh, tran_mesh = np.meshgrid(perm_nodes, tran_nodes, indexing="ij")
 
-        # Stack both branches into flat arrays
+        perm_emp = perm_mesh.ravel()
+        tran_emp = tran_mesh.ravel()
+        weights_emp = (1.0 - p.unemp_prob) * np.outer(w, w).ravel()
+
         self.perm_shocks = np.concatenate([perm_unemp, perm_emp])
         self.tran_shocks = np.concatenate([tran_unemp, tran_emp])
         self.weights = np.concatenate([weights_unemp, weights_emp])
 
-        # Pre-computed moments for the target equation
         self.inv_perm_e = float(np.dot(1.0 / self.perm_shocks, self.weights))
         self.tran_e = float(np.dot(self.tran_shocks, self.weights))
 
+    def _build_tilted_discount(self):
+        theta = 1.0 - self.params.gamma
 
-    @staticmethod
-    def _build_m_grid(m_max, size):
-        """Log-spaced m-grid on [0, m_max]; denser near the borrowing constraint."""
-        return EconomicModel._log_grid(1.0, m_max + 1.0, size) - 1.0
+        self._mean_perm_tilt = (
+            self._mean_perm + theta * self.params.sigma_perm ** 2
+        )
 
+        M_psi = np.exp(
+            0.5 * theta * (theta - 1.0) * self.params.sigma_perm ** 2
+        )
+
+        self._beta_eff = self.params.beta * self.G ** theta * M_psi
+
+    def _buffer_stock_grid_scale(self) -> tuple[float, float]:
+        """Theory-anchored buffer-stock grid scale.
+
+        This function chooses a fixed m-grid before solving the model.
+
+        It does not compute the exact stochastic target m*. Instead it builds a
+        deterministic proxy with the correct buffer-stock comparative statics.
+
+        Main object (perfect-foresight consumption growth factor implied by the
+        Euler equation):
+            thorn = C_{t+1} / C_t = (beta * R) ** (1 / gamma)
+        The Growth Impatience Condition is: thorn / G < 1.
+
+        The precautionary motive is increasing in patience, prudence and income risk.
+        """
+        p = self.params
+
+        thorn = (p.beta * self.R) ** (1.0 / p.gamma)
+
+        growth_impatience_gap = max(1.0 - thorn / self.G, self.impatience_gap_floor)
+        unemployment_risk = p.unemp_prob * (1.0 - p.theta_low) ** 2
+        income_risk = p.sigma_perm ** 2 + p.sigma_tran ** 2 + unemployment_risk
+        prudence_risk_term = 0.5 * p.gamma * (p.gamma + 1.0) * income_risk
+
+        precautionary_assets = prudence_risk_term / growth_impatience_gap
+
+        m_ref = max(1.0, 1.0 + precautionary_assets)
+
+        m_max = max(
+            self.min_m_max,
+            self.grid_upper_factor * m_ref,
+        )
+
+        return float(m_ref), float(m_max)
+
+    def interpolation_kink(self):
+        return 0.0, 0.0
+
+    def _transition_arrays(self, a):
+        a = np.asarray(a)[..., None]
+
+        m_next = (self.R / (self.G * self.perm_shocks)) * a + self.tran_shocks
+        perm_next = np.broadcast_to(self.perm_shocks, m_next.shape)
+
+        return m_next, perm_next
+
+    def transition_grid_kwargs(self):
+        return {"perm_next": self.perm_next}
+
+    def euler_rhs(self, c_next, perm_next):
+        return (
+            self.R
+            * self.params.beta
+            * self.G ** (-self.params.gamma)
+            * self.integrate(self.marginal_utility(c_next * perm_next))
+        )
 
     def next_state_distribution(self, state, a):
         m_next, perm_next = self._transition_arrays(a)
-        return m_next[..., None], {'perm_next': perm_next}
-    
-    def _euler_rhs(self, c_next, perm_next):
-        # Normalized BS Euler: u'(c) = R·β·G^(-γ)·E[u'(c'·ψ')]
-        return (self.R * self.params.beta * self.G ** (-self.params.gamma) *
-                self._integrate(self.marginal_utility(c_next * perm_next)))
-    
+        return m_next[..., None], {"perm_next": perm_next}
+
     def sample_shocks(self, rng, shape):
-        """Raw innovations: (eps_perm, eps_trans) ~ N(0,1); unemployed ~ Bernoulli."""
-        return np.stack([
-            rng.normal(size=shape),
-            rng.normal(size=shape),
-            (rng.random(size=shape) < self.params.unemp_prob).astype(float),
-        ], axis=-1)
-        
+        p = self.params
+
+        return np.stack(
+            [
+                rng.normal(size=shape),
+                rng.normal(size=shape),
+                (rng.random(size=shape) < p.unemp_prob).astype(float),
+            ],
+            axis=-1,
+        )
+
     def value_kernel(self):
         return (self.G * self.perm_shocks) ** (1.0 - self.params.gamma)
 
-    def transition(self, state, c, shocks):
-        a   = state[..., 0] - c
-        psi = np.exp(self._mean_perm_tilt + self.params.sigma_perm * shocks[..., 0])
-        theta_emp = np.exp(self._mean_tran + self.params.sigma_tran * shocks[..., 1])
-        theta = np.where(shocks[..., 2].astype(bool), self.params.theta_low, theta_emp)
+    def transition(self, state, controls, shocks):
+        c = controls["consumption"]
+        a = np.asarray(state)[..., 0] - c
+
+        psi = np.exp(
+            self._mean_perm_tilt + self.params.sigma_perm * shocks[..., 0]
+        )
+
+        theta_emp = np.exp(
+            self._mean_tran + self.params.sigma_tran * shocks[..., 1]
+        )
+
+        theta = np.where(
+            shocks[..., 2].astype(bool),
+            self.params.theta_low,
+            theta_emp,
+        )
+
         m_next = (self.R / (self.G * psi)) * a + theta
+
         return m_next[..., None]
-    
+
+    def sample_initial_state(self, rng):
+        positive = self.m_grid[self.m_grid > 0.0]
+        return np.array([rng.choice(positive)], dtype=float)
+
     def eval_start_states(self, M):
-        """M log-spaced m starts across the (post-pass-2) m_grid range.
-        m_grid[0] == 0 here, so restrict to strictly positive nodes."""
-        m_grid_pos = self.m_grid[self.m_grid > 0]
-        return self._log_grid(m_grid_pos[0], m_grid_pos[-1], M)[:, None]
-    
+        positive = self.m_grid[self.m_grid > 0.0]
+        return self.log_grid(positive[0], positive[-1], M)[:, None]
+
 
 # =============================================================================
-# EGM solver 
+# Generic EGM solver
 # =============================================================================
 
 class BaseEGM:
-    """Endogenous-grid-method solver on top of `EconomicModel`."""
+    """Generic EGM solver for one continuous control: consumption."""
 
     def __init__(
-            self, 
-            econ_model,
-            max_iter=1000,
-            tol=1e-6,
-        ):
+        self,
+        econ_model: EconomicModel,
+        max_iter: int = 1000,
+        tol: float = 1e-6,
+    ):
         self.model = econ_model
-        self.policy = None
-        self.TOL = tol           # EGM convergence tolerance (sup-norm on policy)
-        self.MAX_ITER = max_iter # EGM max iterations
+        self.max_iter = int(max_iter)
+        self.tol = float(tol)
 
-    def solve(self, verbose=True):
+        self.policy: np.ndarray | None = None
+        self.solve_time: float | None = None
+
+    def solve(self, verbose: bool = True):
         start = time.time()
-        self.policy = self._egm_loop(self.model._initial_policy(), verbose)
+
+        policy_old = self.model.initial_policy()
+        self.policy = self._egm_loop(policy_old, verbose)
+
+        self.model.policy = self.policy
         self.solve_time = time.time() - start
+
         if verbose:
             print(f"EGM finished in {self.solve_time:.2f} seconds.")
+
         return self.policy
-    
+
     def _egm_loop(self, policy_old, verbose):
         diff = np.inf
-        for iteration in range(self.MAX_ITER):
-            policy_new = self._egm_step(policy_old)
-            diff = np.max(np.abs(policy_new - policy_old))
-            policy_old = policy_new
 
-            if diff < self.TOL:
+        for iteration in range(1, self.max_iter + 1):
+            policy_new = self._egm_step(policy_old)
+
+            diff = float(np.max(np.abs(policy_new - policy_old)))
+
+            if diff < self.tol:
                 if verbose:
-                    print(f"\nConverged after {iteration + 1} iterations (sup-norm diff = {diff:.2e})")
+                    print(
+                        f"\nConverged after {iteration} iterations "
+                        f"(sup-norm diff = {diff:.2e})"
+                    )
                 return policy_new
 
+            policy_old = policy_new
+
             if verbose:
-                print(f"Iteration {iteration}: sup-norm diff = {diff:.2e}", end='\r', flush=True)
+                print(
+                    f"Iteration {iteration}: sup-norm diff = {diff:.2e}",
+                    end="\r",
+                    flush=True,
+                )
+
         if verbose:
-            print(f"\nDid not converge after {self.MAX_ITER} iterations (sup-norm diff = {diff:.2e})")
-        return policy_new
+            print(
+                f"\nDid not converge after {self.max_iter} iterations "
+                f"(sup-norm diff = {diff:.2e})"
+            )
+
+        return policy_old
 
     def _egm_step(self, policy_old):
-        # Next-period c(m', ξ') at every (ξ, a, shock) node.
-        c_next = self._interp_policy(policy_old, self.model.m_next, self.model.xi_next)
-        # Solve the Euler FOC for c (model-specific integration).
-        c_endo = self.model.inv_marginal_utility(self.model._euler_rhs(c_next, **self._transition_grid()))
-        # Endogenous cash-on-hand from the budget constraint.
-        m_endo = self.model.a_grid + c_endo
-        # Map back onto the fixed m-grid (per ξ-slice if applicable).
+        c_next = self._interp_policy(
+            policy_old,
+            self.model.m_next,
+            self.model.x_next,
+        )
+
+        rhs = self.model.euler_rhs(
+            c_next,
+            **self.model.transition_grid_kwargs(),
+        )
+
+        c_endo = self.model.inv_marginal_utility(rhs)
+
+        a = self._a_grid_for_shape(c_endo.shape)
+        m_endo = a + c_endo
+
         return self._interp_back(m_endo, c_endo)
 
-    def _interp_policy(self, policy, m_next, xi_next):
-            """Evaluate policy on regular (xi_grid, m_grid) mesh at (m', ξ') nodes."""
-            if self.model.STATE_DIM == 1:
-                return np.interp(m_next.ravel(), self.model.m_grid, policy).reshape(m_next.shape)
-            
-            # 1. Clip coordinates to prevent negative extrapolation (which causes NaNs later)
-            xi_cl = np.clip(xi_next, self.model.xi_grid[0], self.model.xi_grid[-1])
-            m_cl = np.clip(m_next, self.model.m_grid[0], self.model.m_grid[-1])
-            
-            interp = RegularGridInterpolator(
-                (self.model.xi_grid, self.model.m_grid), policy,
-                bounds_error=False, fill_value=None,
+    def _a_grid_for_shape(self, target_shape):
+        if self.model.exogenous_dim == 0:
+            return self.model.a_grid
+
+        return self.model.a_grid.reshape(
+            (len(self.model.a_grid),) + (1,) * self.model.exogenous_dim
+        )
+
+    def _interp_policy(self, policy, m_next, x_next):
+        if self.model.exogenous_dim == 0:
+            out = np.interp(
+                np.ravel(m_next),
+                self.model.m_grid,
+                policy,
             )
-            
-            # 2. Stack coordinates safely (older SciPy crashes if passed a tuple)
-            pts = np.stack([xi_cl, m_cl], axis=-1)
-            return interp(pts)
+            return out.reshape(np.shape(m_next))
+
+        interp = RegularGridInterpolator(
+            self.model.policy_axes,
+            policy,
+            bounds_error=False,
+            fill_value=None,
+        )
+
+        m_next = np.asarray(m_next)
+        x_next = np.asarray(x_next)
+
+        lead_shape = np.broadcast_shapes(m_next.shape, x_next.shape[:-1])
+
+        m_coord = np.broadcast_to(m_next, lead_shape)[..., None]
+        x_coord = np.broadcast_to(x_next, lead_shape + (self.model.exogenous_dim,))
+
+        coords = np.concatenate([m_coord, x_coord], axis=-1)
+        coords = self.model._clip_policy_coords(coords)
+
+        return interp(coords)
 
     def _interp_back(self, m_endo, c_endo):
-        """Map endogenous (m, c) pairs back onto m_grid, per ξ-slice if applicable."""
-        if self.model.STATE_DIM == 1:
+        if self.model.exogenous_dim == 0:
             return self._interp_one(m_endo, c_endo)
-        policy = np.empty((len(self.model.xi_grid), len(self.model.m_grid)))
-        for i in range(len(self.model.xi_grid)):
-            policy[i] = self._interp_one(m_endo[i], c_endo[i])
+
+        policy = np.empty(self.model.policy_shape)
+
+        for x_idx in np.ndindex(self.model.exogenous_shape):
+            idx = (slice(None),) + x_idx
+            policy[idx] = self._interp_one(m_endo[idx], c_endo[idx])
+
         return policy
 
     def _interp_one(self, m_endo, c_endo):
-        """Single-slice map-back; prepends (0, 0) kink under a borrowing constraint."""
-        if self.model.CONSTRAINED:
-            m_endo = np.insert(m_endo, 0, 0.0)
-            c_endo = np.insert(c_endo, 0, 0.0)
-        return np.interp(self.model.m_grid, m_endo, c_endo)
+        m_endo = np.asarray(m_endo, dtype=float)
+        c_endo = np.asarray(c_endo, dtype=float)
 
-    @abstractmethod
-    def _transition_grid(self):
-        """Return pre-cached transition arrays as a dict for the EGM solver.
+        kink = self.model.interpolation_kink()
 
-        Called once per EGM iteration inside `_egm_step` and **-unpacked
-        directly into `_euler_rhs`. The arrays (e.g. R_next, perm_next) are
-        computed once in `_setup` on the fixed (a_grid, xi_grid, shock_nodes)
-        mesh and reused across all iterations, making this the fast,
-        grid-anchored path. For off-grid evaluation use
-        `next_state_distribution` instead.
-        """
-        ...
+        if kink is not None:
+            m_kink, c_kink = kink
+            m_endo = np.concatenate([[m_kink], m_endo])
+            c_endo = np.concatenate([[c_kink], c_endo])
 
+        order = np.argsort(m_endo)
+        m_sorted = m_endo[order]
+        c_sorted = c_endo[order]
 
-class CassKoopmansEGM(BaseEGM):
-    def _transition_grid(self):
-        return {'R_next': self.model.R_next}
-    
-class BrockMirmanEGM(CassKoopmansEGM):
-    """Same EGM structure as Cass-Koopmans, but with stochastic integration."""
+        m_unique, unique_idx = np.unique(m_sorted, return_index=True)
+        c_unique = c_sorted[unique_idx]
+
+        return np.interp(self.model.m_grid, m_unique, c_unique)
 
 
-class BufferstockEGM(BaseEGM):
-    def __init__(self, econ_model, max_iter=1000, tol=1e-6):
-        super().__init__(econ_model, max_iter, tol)
-        self._refresh_post_decision()
+CassKoopmansEGM = BaseEGM
+BrockMirmanEGM = BaseEGM
+BufferStockEGM = BaseEGM
 
-    def solve(self, verbose=True):
-        """Two-pass solve to refine the grid around the target m*"""
-        start = time.time()
-
-        # Pass 1: rough solve on the generous grid
-        if verbose:
-            print(f"Pass 1: m_max = {self.model.M_MAX_PASS1}")
-        self.policy = self._egm_loop(self.model._initial_policy(), verbose)
-        self.m_target = self.model._compute_target(self.policy, self.model.m_grid)
-        self.model.m_ref = self.m_target
-        if verbose:
-            print(f"  -> target m* = {self.m_target:.4f}")
-
-        # Pass 2: rebuild grid anchored on m* and re-solve
-        m_max_refined = self.model.M_TARGET_FACTOR * self.m_target
-        if verbose:
-            print(f"Pass 2: m_max = {self.model.M_TARGET_FACTOR} * m* = {m_max_refined:.4f}")
-            
-        self.model.m_grid = self.model._build_m_grid(m_max_refined, self.model.M_GRID_SIZE)
-        self._refresh_post_decision()
-        self.policy = self._egm_loop(self.model._initial_policy(), verbose)
-        self.m_target = self.model._compute_target(self.policy, self.model.m_grid)
-        self.model.m_ref = self.m_target
-        self.solve_time = time.time() - start
-        
-        if verbose:
-            print(f"  -> target m* = {self.m_target:.4f}")
-            print(f"EGM finished in {self.solve_time:.2f} seconds.")
-        return self.policy
-    
-    def _refresh_post_decision(self):
-        """Recompute (m_next, perm_next) for the current m-grid."""
-        self.model.a_grid = self.model.m_grid.copy()
-        self.model.m_next, self.perm_next = self.model._transition_arrays(self.model.a_grid)
-        self.model.xi_next = None
-
-    def _transition_grid(self):
-        return {'perm_next': self.perm_next}
 
 # =============================================================================
-# Entry point: solve all three models and report Euler error stats
+# Script entry point
 # =============================================================================
 
 if __name__ == "__main__":
+    from ecomodrl.analysis.policy_interface import EGMPolicy
 
-    models = [
-        ("Cass-Koopmans (deterministic growth)",              CassKoopmans(CassKoopmansParams()), CassKoopmansEGM),
-        ("Brock-Mirman (stochastic growth)",                  BrockMirman(BrockMirmanParams()), BrockMirmanEGM),
-        ("Buffer stock (occasionally binding constraint)",    BufferStock(BufferStockParams()), BufferstockEGM),
+    specs = [
+        ("Cass-Koopmans", CassKoopmans(CassKoopmansParams())),
+        ("Brock-Mirman", BrockMirman(BrockMirmanParams())),
+        ("Buffer stock", BufferStock(BufferStockParams())),
     ]
-    solved = []
-    for label, model, egm_class in models:
-        print(label)
-        solver = egm_class(model)
-        solver.solve()
-        solved.append((label, model, solver))
 
-    header = f"{'Model':<50} {'Mean log10|Euler error|':>22} {'Solve time (s)':>14}"
+    solved = []
+
+    for label, model in specs:
+        print(label)
+        solver = BaseEGM(model)
+        solver.solve(verbose=True)
+        egm_policy = EGMPolicy(model)
+        solved.append((label, model, solver, egm_policy))
+
+    header = f"{'Model':<35} {'Mean log10|Euler error|':>24} {'Solve time (s)':>16}"
     print(header)
     print("=" * len(header))
-    for label, model, solver in solved:
-        model.policy = solver.policy
-        mean_err = np.mean(accuracy_metrics.euler_errors(model, model))
-        print(f"{label:<50} {mean_err:>22.4f} {solver.solve_time:>14.2f}")
+
+    for label, model, solver, egm_policy in solved:
+        ee = accuracy_metrics.euler_errors(model, egm_policy)
+        mean_err = np.mean(ee) if ee.size else np.nan
+
+        print(f"{label:<35} {mean_err:>24.4f} {solver.solve_time:>16.2f}")
+
     print("=" * len(header))

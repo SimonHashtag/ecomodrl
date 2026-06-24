@@ -23,9 +23,9 @@ class CassKoopmansParams:
         Productivity / technology level A > 0 in y = A * k^α.
     """
     gamma: float = 2.0
-    beta: float = 0.95
-    delta: float = 0.02
-    alpha: float = 0.33
+    beta: float = 0.96
+    delta: float = 0.03
+    alpha: float = 0.36
     A: float = 1.0
 
     # -------- Validation --------
@@ -68,9 +68,9 @@ class BrockMirmanParams:
         Innovation std. dev. σ of log z. Must be ≥ 0.
     """
     gamma: float = 2.0
-    beta: float = 0.95
-    delta: float = 0.02
-    alpha: float = 0.33
+    beta: float = 0.96
+    delta: float = 0.03
+    alpha: float = 0.36
     A: float = 1.0
     rho: float = 0.95
     sigma: float = 0.03
@@ -123,13 +123,13 @@ class BufferStockParams:
         Order of Gauss-Hermite quadrature for approximating lognormal shocks.
     """
     gamma: float = 2.0
-    beta: float = 0.95
-    r: float = 0.02
-    g: float = 0.01
+    beta: float = 0.96
+    r: float = 0.04
+    g: float = 0.03
     sigma_tran: float = 0.1
     sigma_perm: float = 0.1
-    unemp_prob: float = 0.005
-    theta_low: float = 0.3
+    unemp_prob: float = 0.05
+    theta_low: float = 0.15
     gh_order: int = 7
 
     # -------- Validation --------
@@ -174,15 +174,16 @@ class PortfolioChoiceParams:
 
     # ---- preferences & growth ----
     gamma: float = 2.0
-    beta: float = 0.95
-    g: float = 0.01
-    r: float = 0.02  # risk-free net rate
+    beta: float = 0.96
+    r: float = 0.04  # risk-free net rate
+    g: float = 0.03
+
 
     # ---- income shocks ----
     sigma_tran: float = 0.10
     sigma_perm: float = 0.10
-    unemployment_prob: float = 0.005
-    theta_low: float = 0.30
+    unemployment_prob: float = 0.05
+    theta_low: float = 0.15
 
     # ---- assets & predictors ----
     rho_z: Union[Sequence[float], float] = (0.90,)         # AR(1) coefficient(s) |rho|<1

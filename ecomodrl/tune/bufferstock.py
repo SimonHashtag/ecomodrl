@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from dehb import DEHB
 
-from ecomodrl.envs.bufferstock import BufferStockSavingsEnv
+from ecomodrl.envs.envs import BufferStockSavingsEnv
 from ecomodrl.tune.tuning import TUNE_REGISTRY, target_function
 from ecomodrl.algorithms.hyperparams import get_algo_fixedcfgs
 from ecomodrl.configs.parameters import BufferStockParams

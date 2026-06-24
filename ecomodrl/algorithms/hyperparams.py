@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, Mapping
 import torch as th
 
 from ecomodrl.algorithms.training import AlgoConfig
-from ecomodrl.algorithms.learning_schedule import LinearScheduleByWallClockTime
 
 AdapterFn = Callable[[Dict[str, Any], Mapping[str, Any] | Any, AlgoConfig], AlgoConfig]
 
@@ -93,21 +92,6 @@ def _compute_steps(hp: Dict[str, Any], cfg: Any):
     return steps_per_env, batch_size, gradient_steps
 
 
-def _set_lr_schedule(
-    hp: Dict[str, Any],
-    cfg: Any,
-    params: Dict[str, Any],
-) -> None:
-    initial_lr = float(hp["learning_rate"])
-    final_lr_multiplier = float(params.pop("final_lr_multiplier", 1.0))
-
-    params["learning_rate"] = LinearScheduleByWallClockTime(
-        initial_lr=initial_lr,
-        final_lr=initial_lr * final_lr_multiplier,
-        max_wallclock_seconds=cfg.max_wallclock_seconds,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Per-algorithm adapters
 # ---------------------------------------------------------------------------
@@ -115,9 +99,8 @@ def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
     steps_per_env, batch_size, _ = _compute_steps(hp, cfg)
     params = dict(base.algo_params or {})
 
-    _set_lr_schedule(hp, cfg, params)
-
     params.update({
+        "learning_rate": float(hp["learning_rate"]),
         "n_steps": steps_per_env,
         "batch_size": batch_size,
         "n_epochs": int(hp["sample_reuse"]),
@@ -132,15 +115,12 @@ def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
     return replace(base, algo_params=params)
 
 
-def _offpolicy_adapter_common(
-    hp: Dict[str, Any], cfg: Any, base: AlgoConfig,
-) -> Dict[str, Any]:
+def _offpolicy_adapter_common(hp: Dict[str, Any], cfg: Any, base: AlgoConfig,) -> Dict[str, Any]:
     steps_per_env, batch_size, gradient_steps = _compute_steps(hp, cfg)
     params = dict(base.algo_params or {})
 
-    _set_lr_schedule(hp, cfg, params)
-
     params.update({
+        "learning_rate": float(hp["learning_rate"]),
         "train_freq": (int(steps_per_env), "step"),
         "batch_size": batch_size,
         "gradient_steps": gradient_steps,
@@ -198,7 +178,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "clip_range_vf": None,
                 "target_kl": None,
                 "use_sde": False,
-                "final_lr_multiplier": 0.1,
+                "drop": 1.,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -218,7 +198,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "max_grad_norm": 1.0,
                 "buffer_size": 10_000,
                 "learning_starts": 0,
-                "final_lr_multiplier": 0.1,
+                "drop": 1.,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -236,7 +216,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "use_sde": False,
                 "buffer_size": 10_000,
                 "learning_starts": 0,
-                "final_lr_multiplier": 0.1,
+                "drop": 1.,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,

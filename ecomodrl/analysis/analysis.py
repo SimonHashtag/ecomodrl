@@ -34,19 +34,14 @@ from ecomodrl.analysis.plotting import (
     make_combined_latex_table
 )
 from ecomodrl.analysis.policy_interface import EGMPolicy, RLPolicy
-# from train import MODEL_CLASSES, EVAL_SEED_OFFSET, M_GRID_EVAL, T_GRID_EVAL
-# from search_spaces import (
-#     TRAIN_SEEDS, TEST_SEEDS,
-# )
+from train import MODEL_CLASSES, EVAL_SEED_OFFSET, M_GRID_EVAL, T_GRID_EVAL
+from search_spaces import (
+    TRAIN_SEEDS, TEST_SEEDS,
+)
 
 # -----------------------------------------------------------------------------
 # CONFIG
 # -----------------------------------------------------------------------------
-
-RUN_HPO   = True
-RUN_TRAIN = True
-RUN_TEST  = True
-RUN_PLOTS = True
 
 MODELS = ["cass_koopmans", "brock_mirman", "buffer_stock"]
 ALGOS  = ["ppo", "ddpg", "td3", "sac"]
@@ -66,6 +61,9 @@ TEST_N_EULER = 100
 
 ARTIFACTS_DIR = "artifacts"
 PLOTS_DIR     = "plots"
+
+def _seed_dir(model, algo, train_seed):
+    return os.path.join(ARTIFACTS_DIR, model, algo, f"seed_{train_seed}")
 
 
 def _consolidated_test_paths(model, algo, train_seed):
@@ -177,7 +175,7 @@ def _build_test_packs(model_name):
         if ts not in egm_values:
             with open(pack_path, "rb") as f:
                 pack = pickle.load(f)
-            egm_values[ts] = float(analysis.eval_value_grid(eco, egm_policy, pack))
+            egm_values[ts] = float(analysis.eval_return_grid(eco, egm_policy, pack))
 
     with open(egm_v_path, "w") as f:
         json.dump({str(k): v for k, v in egm_values.items()}, f, indent=2)
@@ -223,7 +221,7 @@ def _cache_train_egm_values(model_name):
     for s in missing:
         pack = analysis.make_eval_pack(eco, s + EVAL_SEED_OFFSET,
                                        M_GRID_EVAL, T_GRID_EVAL)
-        existing[s] = float(analysis.eval_value_grid(eco, egm_policy, pack))
+        existing[s] = float(analysis.eval_return_grid(eco, egm_policy, pack))
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as f:
@@ -337,7 +335,7 @@ def _test_worker(args):
             ak = f"ts_{ts}"
 
             if k not in values:
-                v_rl = float(analysis.eval_value_grid(eco, policy, packs[ts]))
+                v_rl = float(analysis.eval_return_grid(eco, policy, packs[ts]))
                 v_egm = v_egm_by_seed[ts]
                 if np.isfinite(v_rl) and v_rl != 0.0:
                     cev_r = float(analysis.cev(eco, v_rl, v_egm))

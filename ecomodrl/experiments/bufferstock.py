@@ -6,7 +6,7 @@ from ecomodrl.configs.runconfigs import BufferStockRunConfig, parse_run_args
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
-from ecomodrl.envs.bufferstock import BufferStockSavingsEnv
+from ecomodrl.envs.envs import BufferStockEnv
 from ecomodrl.configs.parameters import BufferStockParams
 from ecomodrl.analysis.analysis_BS import analyze_all_seeds
 
@@ -30,5 +30,5 @@ if __name__ == "__main__":
     base_algo_cfg = get_algo_fixedcfgs(cfg.algo_name, params, hidden_nodes=cfg.hidden_nodes)
     algo_cfg = ADAPTER_REGISTRY[cfg.algo_name](hp, cfg, base_algo_cfg)
     
-    train_multiple_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params, verbose=1)
-    analyze_all_seeds(cfg, algo_cfg, BufferStockSavingsEnv, params)
+    train_multiple_seeds(cfg, algo_cfg, BufferStockEnv, params, verbose=1)
+    analyze_all_seeds(cfg, algo_cfg, BufferStockEnv, params)
