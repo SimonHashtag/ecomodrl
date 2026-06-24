@@ -3,7 +3,7 @@
 #
 # A Policy exposes:
 #   - policy.share(state)        -> consumption share s
-#   - policy.consumption(state)  -> consumption c = s * m
+#   - policy.consumption(state)  -> consumption c
 #   - policy(state)              -> alias for policy.consumption(state)
 #
 # State convention:
@@ -11,10 +11,6 @@
 #
 # Both single-state inputs with shape (state_dim,) and batched inputs with shape
 # (..., state_dim) are supported.
-#
-# For RL policies trained behind VecNormalize:
-#   - obs_from_state(state, model) creates the raw environment observation;
-#   - VecNormalize.normalize_obs is then applied before model.predict().
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -22,6 +18,45 @@ from __future__ import annotations
 import numpy as np
 
 from ecomodrl.envs.envs import obs_from_state
+
+def is_vecnormalize(obj) -> bool:
+    """Return True if `obj` looks like an SB3 VecNormalize wrapper."""
+    return (
+        obj is not None
+        and hasattr(obj, "normalize_obs")
+        and hasattr(obj, "obs_rms")
+    )
+
+
+def get_attached_vecnormalize(sb3_model):
+    """Return the top-level VecNormalize attached to an SB3 model, if present.
+
+    In this project, build_envs() returns VecNormalize as the top-level vectorized
+    environment, so no recursive wrapper search is needed.
+    """
+    try:
+        env = sb3_model.get_env()
+    except Exception:
+        return None
+
+    return env if is_vecnormalize(env) else None
+
+
+def as_state_batch(state):
+    """Convert a state array to batched form.
+
+    Returns
+    -------
+    state_batch: Array with shape (N, state_dim) or more generally (..., state_dim).
+    single: True if the input was a single state with shape (state_dim,).
+    """
+    state_arr = np.asarray(state, dtype=np.float64)
+    single = state_arr.ndim == 1
+
+    if single:
+        state_arr = state_arr[None, :]
+
+    return state_arr, single
 
 
 class EGMPolicy:
@@ -48,73 +83,32 @@ class RLPolicy:
 
     Parameters
     ----------
-    sb3_model:
-        Trained Stable-Baselines3 model.
+    sb3_model: Trained Stable-Baselines3 model.
+
+    model: Economic model instance.
 
     vecnormalize:
-        Optional VecNormalize object with saved normalization statistics.
-        If supplied, observations are normalized before calling
-        `sb3_model.predict`.
-
-    model:
-        Economic model instance. Required for `obs_from_state` and for mapping
-        actions to economic controls. If not supplied, this class tries to infer
-        it from the environment attached to the SB3 model.
-
-    Notes
-    -----
-    SB3 policies trained with VecNormalize see normalized observations.
-    Therefore, when evaluating outside the environment, you must normalize the
-    deterministic observation transform manually:
-
-        raw_obs = obs_from_state(state, model)
-        obs = vecnormalize.normalize_obs(raw_obs)
-
-    Passing unnormalized observations to a policy trained with VecNormalize can
-    produce completely wrong actions.
+        VecNormalize object containing observation-normalization statistics.
+        If None, this class tries to use `sb3_model.get_env()` if it is a
+        top-level VecNormalize.
     """
 
     def __init__(
         self,
         sb3_model,
+        model,
         vecnormalize=None,
-        model=None,
     ):
         self.sb3_model = sb3_model
-        self.vecnormalize = vecnormalize
-
-        if self.vecnormalize is None:
-            self.vecnormalize = self._infer_vecnormalize_from_sb3(sb3_model)
-
-        if model is None:
-            model = self._infer_model_from_sb3(sb3_model)
-
-        if model is None:
-            raise ValueError(
-                "RLPolicy needs an economic model. Pass model=..., or attach "
-                "an env with `.model` to the SB3 algorithm."
-            )
-
         self.model = model
 
-    # ------------------------------------------------------------------
-    # Public policy API
-    # ------------------------------------------------------------------
+        if vecnormalize is None:
+            vecnormalize = get_attached_vecnormalize(sb3_model)
+
+        self.vecnormalize = vecnormalize
 
     def share(self, state):
-        state_arr, single = self._prepare_state(state)
-
-        flat_shape = state_arr.shape[:-1]
-        state_flat = state_arr.reshape(-1, state_arr.shape[-1])
-
-        obs_flat = obs_from_state(state_flat, self.model)
-        obs_flat = self._normalize_obs_if_needed(obs_flat)
-
-        actions, _ = self.sb3_model.predict(obs_flat, deterministic=True)
-        actions = np.asarray(actions, dtype=np.float64)
-        actions = actions.reshape(flat_shape + (self.model.action_dim,))
-
-        controls = self.model.controls_from_action(actions, state=state_arr)
+        controls, single = self._controls(state)
 
         if "share" not in controls:
             raise KeyError(
@@ -122,137 +116,69 @@ class RLPolicy:
                 "for RLPolicy.share()."
             )
 
-        s = np.asarray(controls["share"], dtype=np.float64)
+        share = np.asarray(controls["share"], dtype=np.float64)
 
         if single:
-            return float(s.reshape(-1)[0])
+            return float(share.reshape(-1)[0])
 
-        return s
+        return share
 
     def consumption(self, state):
-        state_arr, single = self._prepare_state(state)
+        controls, single = self._controls(state)
 
-        s = self.share(state_arr)
-        m = state_arr[..., 0]
-        c = np.asarray(s) * m
+        if "consumption" in controls:
+            c = np.asarray(controls["consumption"], dtype=np.float64)
+        else:
+            if "share" not in controls:
+                raise KeyError(
+                    "model.controls_from_action(...) must return either "
+                    "'consumption' or 'share'."
+                )
+
+            state_arr, _ = as_state_batch(state)
+            c = np.asarray(controls["share"], dtype=np.float64) * state_arr[..., 0]
 
         if single:
-            return float(np.asarray(c).reshape(-1)[0])
+            return float(c.reshape(-1)[0])
 
         return c
 
     def __call__(self, state):
         return self.consumption(state)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    def _controls(self, state):
+        """Predict SB3 action and map it to economic controls."""
+        state_arr, single = as_state_batch(state)
+        actions = self._predict_actions(state_arr)
 
-    @staticmethod
-    def _prepare_state(state):
-        state_arr = np.asarray(state, dtype=np.float64)
-        single = state_arr.ndim == 1
+        controls = self.model.controls_from_action(
+            actions,
+            state=state_arr,
+        )
 
-        if single:
-            state_arr = state_arr[None, :]
+        return controls, single
 
-        return state_arr, single
+    def _predict_actions(self, state_arr):
+        """Predict actions from raw economic states."""
+        flat_shape = state_arr.shape[:-1]
+        state_flat = state_arr.reshape(-1, state_arr.shape[-1])
 
-    def _normalize_obs_if_needed(self, obs):
-        obs = np.asarray(obs, dtype=np.float32)
+        obs = obs_from_state(state_flat, self.model)
+        obs = self._normalize_obs(obs)
+
+        actions, _ = self.sb3_model.predict(obs, deterministic=True)
+        actions = np.asarray(actions, dtype=np.float64)
+
+        return actions.reshape(flat_shape + (self.model.action_dim,))
+
+    def _normalize_obs(self, obs):
+        """Apply VecNormalize observation statistics if available."""
+        obs = np.asarray(obs, dtype=np.float64)
 
         if self.vecnormalize is None:
             return obs
 
-        # VecNormalize.normalize_obs expects observations in env observation
-        # units and returns normalized observations in policy-network units.
-        obs_norm = self.vecnormalize.normalize_obs(obs.copy())
-        return np.asarray(obs_norm, dtype=np.float32)
-
-    @classmethod
-    def _infer_vecnormalize_from_sb3(cls, sb3_model):
-        """Try to find a VecNormalize wrapper attached to an SB3 model."""
-        try:
-            env = sb3_model.get_env()
-        except Exception:
-            return None
-
-        return cls._find_vecnormalize(env)
-
-    @classmethod
-    def _find_vecnormalize(cls, obj, seen=None):
-        """Duck-typed recursive VecNormalize search."""
-        if obj is None:
-            return None
-
-        if seen is None:
-            seen = set()
-
-        obj_id = id(obj)
-        if obj_id in seen:
-            return None
-        seen.add(obj_id)
-
-        # Duck typing instead of importing SB3 VecNormalize.
-        if hasattr(obj, "normalize_obs") and hasattr(obj, "obs_rms"):
-            return obj
-
-        # VecNormalize.venv, Monitor.env, wrappers, etc.
-        for attr in ("venv", "env"):
-            child = getattr(obj, attr, None)
-            found = cls._find_vecnormalize(child, seen)
-            if found is not None:
-                return found
-
-        # DummyVecEnv/SubprocVecEnv style.
-        envs = getattr(obj, "envs", None)
-        if envs is not None:
-            for child in envs:
-                found = cls._find_vecnormalize(child, seen)
-                if found is not None:
-                    return found
-
-        return None
-
-    @classmethod
-    def _infer_model_from_sb3(cls, sb3_model):
-        """Try to recover the economic model from an SB3 model's env."""
-        try:
-            env = sb3_model.get_env()
-        except Exception:
-            return None
-
-        return cls._find_model(env)
-
-    @classmethod
-    def _find_model(cls, obj, seen=None):
-        """Recursively search env/wrapper structure for `.model`."""
-        if obj is None:
-            return None
-
-        if seen is None:
-            seen = set()
-
-        obj_id = id(obj)
-        if obj_id in seen:
-            return None
-        seen.add(obj_id)
-
-        model = getattr(obj, "model", None)
-        if model is not None:
-            return model
-
-        for attr in ("venv", "env"):
-            child = getattr(obj, attr, None)
-            found = cls._find_model(child, seen)
-            if found is not None:
-                return found
-
-        envs = getattr(obj, "envs", None)
-        if envs is not None:
-            for child in envs:
-                found = cls._find_model(child, seen)
-                if found is not None:
-                    return found
-
-        return None
+        return np.asarray(
+            self.vecnormalize.normalize_obs(obs.copy()),
+            dtype=np.float64,
+        )

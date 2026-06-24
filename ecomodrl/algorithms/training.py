@@ -141,9 +141,9 @@ def train_single_seed(
         eco_model = envs.get_attr("model")[0]
         evaluation_sample = make_evaluation_sample(
             eco_model,
-            seed + 100,     # TODO: Eval seeds are hard-coded
+            seed + cfg.eval_seed_offset,
             cfg.eval_m_grid_size,
-            cfg.eval_time_period,
+            cfg.eval_horizon,
         )
 
         _set_lr_schedule(algo_cfg.algo_params, cfg, clock)
@@ -172,7 +172,7 @@ def train_single_seed(
         return {
             "seed": seed,
             "best_eval_return": float(eval_cb.best_U),
-            "last_eval_return": float(eval_cb.history_U[-1]) if eval_cb.history_U[-1] is not None else None,
+            "last_eval_return": float(eval_cb.eval_returns[-1]) if eval_cb.eval_returns[-1] is not None else None,
             "best_model_path": str(best_model_path),
             "vecnorm_path": str(vecnorm_path),
             "cfg": asdict(cfg),

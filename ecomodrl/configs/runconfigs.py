@@ -44,8 +44,9 @@ class BaseRunConfig:
     
     # Evaluation
     eval_interval_seconds: int = 5.0
+    eval_seed_offset: int = 1_000
     eval_m_grid_size: int = 1_000
-    eval_time_period: int = 100
+    eval_horizon: int = 100
     
         
         
@@ -55,16 +56,6 @@ class CassKoopmansRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "CassKoopmans"
     max_wallclock_seconds: int = 600
-    
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = CKPP()
-        grid = mod.make_grid()
-        self.state_min = grid[0]
-        self.state_max = grid[-1]
 
  
 @dataclass
@@ -73,17 +64,6 @@ class BrockMirmanRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "BrockMirman"
     max_wallclock_seconds: int = 1200
-    n_eval_episodes: int = 5  # average over multiple shock sequences per eval (stochastic env)
-    
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = BMPP()
-        grid = mod.make_k_grid()
-        self.state_min = grid[0]
-        self.state_max = grid[-1]
 
 
 @dataclass
@@ -92,18 +72,6 @@ class BufferStockRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "BufferStock"
     max_wallclock_seconds: int = 1200
-    n_eval_episodes: int = 5  # average over multiple shock sequences per eval (stochastic env)
-
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = BSPP()
-        grid = mod.make_grid(100)
-        self.state_min = 1.0
-        self.state_max = grid[-1]
-
 
 @dataclass
 class PortfolioChoiceRunConfig(BaseRunConfig):
@@ -111,17 +79,6 @@ class PortfolioChoiceRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "PortfolioChoice"
     max_wallclock_seconds: int = 1200
-    n_eval_episodes: int = 5  # average over multiple shock sequences per eval (stochastic env)
-
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = PCPP()
-        grid = mod.make_m_grid(span=(0.2, 30.0))
-        self.state_min = grid[0]
-        self.state_max = grid[-1]
 
 
 def parse_run_args(RunConfig: BaseRunConfig) -> argparse.Namespace:

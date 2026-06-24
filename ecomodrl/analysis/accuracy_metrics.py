@@ -122,9 +122,18 @@ def _test_states_deterministic(model, n_sim):
     # Fallback for future deterministic models with exogenous states.
     return model.eval_start_states(int(n_sim))
 
-
+# TODO: Vectorize?
 def _test_states_simulated(model, policy, n_sim, burn_in, seed):
-    """Forward-simulate states under `policy` and discard burn-in."""
+    """Forward-simulate states under `policy` and discard burn-in.
+    
+    Arguments:
+    ----
+    model: EconomicModel    The economic model instance.
+    policy: callable        The policy to evaluate.
+    n_sim: int              Number of post-burn-in states to return.
+    burn_in: int            Number of initial states to discard.
+    seed: int               Random seed for reproducibility.
+    """
     rng = np.random.default_rng(int(seed))
 
     total = int(n_sim) + int(burn_in)

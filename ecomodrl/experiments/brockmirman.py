@@ -8,7 +8,7 @@ from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
 from ecomodrl.envs.envs import BrockMirmanEnv
 from ecomodrl.configs.parameters import BrockMirmanParams
-from ecomodrl.analysis.analysis_BM import analyze_all_seeds
+#from ecomodrl.analysis.analysis_BM import analyze_all_seeds
 
 # E.g., run with: 
 # `python ecomodrl/experiments/brockmirman.py --algo_name ppo --hidden_nodes 64 --n_seeds 20`
@@ -31,4 +31,4 @@ if __name__ == "__main__":
     algo_cfg = ADAPTER_REGISTRY[cfg.algo_name](hp, cfg, base_algo_cfg)
     
     train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params, verbose=1)
-    analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params)
+    #analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params)

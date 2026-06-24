@@ -49,12 +49,12 @@ def obs_from_state(state, model):
     m_obs = np.log(m / m_ref)
 
     if model.exogenous_dim == 0:
-        return m_obs[..., None].astype(np.float32)
+        return m_obs[..., None].astype(np.float64)
 
     x = np.maximum(state[..., 1:], EPS)
     x_obs = np.log(x)
 
-    return np.concatenate([m_obs[..., None], x_obs], axis=-1).astype(np.float32)
+    return np.concatenate([m_obs[..., None], x_obs], axis=-1).astype(np.float64)
 
 
 class BaseEconEnv(gym.Env, ABC):
@@ -72,12 +72,12 @@ class BaseEconEnv(gym.Env, ABC):
 
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, 
-            shape=(self.model.state_dim,), dtype=np.float32,
+            shape=(self.model.state_dim,), dtype=np.float64,
         )
 
         self.action_space = spaces.Box(
             low=-1.0, high=1.0,
-            shape=(self.model.action_dim,), dtype=np.float32,
+            shape=(self.model.action_dim,), dtype=np.float64,
         )
 
         self.state = None

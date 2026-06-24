@@ -88,10 +88,6 @@ class EconomicModel(ABC):
 
         self.m_ref: float = 1.0
 
-    # ------------------------------------------------------------------
-    # Grid metadata
-    # ------------------------------------------------------------------
-
     @property
     def exogenous_grids(self) -> tuple[np.ndarray, ...]:
         """Tuple of exogenous state grids. Empty for one-state models."""
@@ -120,7 +116,7 @@ class EconomicModel(ABC):
 
     @property
     def action_dim(self) -> int:
-        """Gym action dimension. Current non-portfolio models use one action."""
+        """Gym action dimension. Non-portfolio models use one action."""
         return 1
 
     @staticmethod
@@ -241,10 +237,12 @@ class EconomicModel(ABC):
 
     @abstractmethod
     def transition_grid_kwargs(self) -> dict[str, np.ndarray]:
+        """Return transition arrays for EGM grid evaluation. Used in `egm_step`."""
         ...
 
     @abstractmethod
     def next_state_distribution(self, state, a):
+        """Return next-state distribution given current state and action."""
         ...
 
     # ------------------------------------------------------------------
@@ -253,8 +251,6 @@ class EconomicModel(ABC):
 
     def controls_from_action(self, action, state=None) -> dict[str, np.ndarray]:
         """Map Gym action in [-1, 1] to consumption.
-
-        Portfolio models should override this.
         """
         action = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
 
@@ -373,7 +369,7 @@ class CassKoopmans(EconomicModel):
 
 
 # =============================================================================
-# Brock-Mirman with arbitrary positive AR(1) exogenous states
+# Brock-Mirman with AR(1) technology innovation
 # =============================================================================
 
 class BrockMirman(CassKoopmans):
@@ -441,20 +437,7 @@ class BrockMirman(CassKoopmans):
         return np.exp(self.params.rho * np.log(z) + eps)
 
     def _build_transition_arrays(self):
-        """Build transition arrays.
-
-        Shapes:
-            a_grid:     (n_a,)
-            z_grid:     (n_z,)
-            shock_nodes: (n_shock,)
-
-            m_next:     (n_a, n_z, n_shock)
-            x_next:     (n_a, n_z, n_shock, 1)
-            R_next:     (n_a, n_z, n_shock)
-
-        Policy shape:
-            policy:     (n_m, n_z)
-        """
+        """Build transition arrays."""
         a = self.a_grid[:, None, None]
         z = self.z_grid[None, :, None]
         eps = self.shock_nodes[None, None, :]
@@ -543,8 +526,7 @@ class BufferStock(EconomicModel):
 
     Grid initialization:
         Uses a policy-independent, theory-anchored scale based on the
-        growth-impatience gap and income-risk/prudence. This avoids a two-pass
-        EGM solve and keeps EGM/RL grids identical.
+        growth-impatience gap and income-risk/prudence.
     """
 
     PARAMS_CLS = BufferStockParams

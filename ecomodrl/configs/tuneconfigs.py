@@ -3,7 +3,12 @@ import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ecomodrl.configs.runconfigs import BaseRunConfig
+from ecomodrl.configs.runconfigs import (
+    CassKoopmansRunConfig, 
+    BrockMirmanRunConfig, 
+    BufferStockRunConfig, 
+    PortfolioChoiceRunConfig
+)
 from ecomodrl.models.casskoopmans.problemclass import PlanningProblem as CKPP
 from ecomodrl.models.brockmirman.problemclass import PlanningProblem as BMPP
 from ecomodrl.models.bufferstock.problemclass import PlanningProblem as BSPP
@@ -18,7 +23,7 @@ from ecomodrl.models.portfoliochoice.problemclass import PlanningProblem as PCPP
 #       otherwise defaults to relative path "./ecomodrl/tune_results"
 
 @dataclass
-class BaseTuneConfig(BaseRunConfig):
+class BaseTuneConfig:
     """
     Static tuning configuration for a sweep.
     Inherits from BaseRunConfig to allow shared parameters and parsing logic between tuning and final runs.
@@ -42,79 +47,20 @@ class BaseTuneConfig(BaseRunConfig):
         
         
 @dataclass
-class CassKoopmansTuneConfig(BaseTuneConfig):
-    """Static CassKoopmans tuning configuration for a sweep."""
-    # Environment
-    env_name: str = "CassKoopmans"
-    max_wallclock_seconds: int = 600
-    
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = CKPP()
-        grid = mod.make_grid()
-        self.state_min = grid[0]
-        self.state_max = grid[-1]
-
- 
-@dataclass
-class BrockMirmanTuneConfig(BaseTuneConfig):
-    """Static BrockMirman tuning configuration for a sweep."""
-    # Environment
-    env_name: str = "BrockMirman"
-    max_wallclock_seconds: int = 1200
-    n_eval_episodes: int = 5  # average over multiple shock sequences per eval (stochastic env)
-    
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = BMPP()
-        grid = mod.make_k_grid()
-        self.state_min = grid[0]
-        self.state_max = grid[-1]
-
+class CassKoopmansTuneConfig(BaseTuneConfig, CassKoopmansRunConfig):
+    pass
 
 @dataclass
-class BufferStockTuneConfig(BaseTuneConfig):
-    """Static BufferStock tuning configuration for a sweep."""
-    # Environment
-    env_name: str = "BufferStock"
-    max_wallclock_seconds: int = 1200
-    n_eval_episodes: int = 5  # average over multiple shock sequences per eval (stochastic env)
-
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = BSPP()
-        grid = mod.make_grid(100)
-        self.state_min = 1.0
-        self.state_max = grid[-1]
-
+class BrockMirmanTuneConfig(BaseTuneConfig, BrockMirmanRunConfig):
+    pass
 
 @dataclass
-class PortfolioChoiceTuneConfig(BaseTuneConfig):
-    """Static PortfolioChoice tuning configuration for a sweep."""
-    # Environment
-    env_name: str = "PortfolioChoice"
-    max_wallclock_seconds: int = 1200
-    n_eval_episodes: int = 5  # average over multiple shock sequences per eval (stochastic env)
-    
-    def __post_init__(self):
-        """ 
-        Use steady-state aware starting boundaries for RL algorithm
-        Intention: don't explore outside of the economically relevant state space
-        """
-        mod = PCPP()
-        grid = mod.make_m_grid(span=(0.2, 30.0))
-        self.state_min = grid[0]
-        self.state_max = grid[-1]
+class BufferStockTuneConfig(BaseTuneConfig, BufferStockRunConfig):
+    pass
 
+@dataclass
+class PortfolioChoiceTuneConfig(BaseTuneConfig, PortfolioChoiceRunConfig):
+    pass
 
 def parse_tune_args(TuneConfig: BaseTuneConfig) -> argparse.Namespace:
     p = argparse.ArgumentParser()
