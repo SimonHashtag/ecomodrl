@@ -136,7 +136,8 @@ def train_single_seed(
     envs = model = None
     clock = TrainingClock()
     try:
-        envs = build_envs(env, params=params, cfg=cfg, seed=seed)
+        envs, beta_eff = build_envs(env, params=params, cfg=cfg, seed=seed)
+        algo_cfg["algo_params"].update({"gamma": beta_eff}) # pass effective RL discount factor for Buffer Stock with normalization by prices
 
         eco_model = envs.get_attr("model")[0]
         evaluation_sample = make_evaluation_sample(
@@ -147,6 +148,8 @@ def train_single_seed(
         )
 
         _set_lr_schedule(algo_cfg.algo_params, cfg, clock)
+        
+        
         model = build_model(algo_cfg, envs, seed, tensorboard_log=out_dir, verbose=0)
         
         max_grad_norm = algo_cfg.algo_params.get('max_grad_norm', None) if algo_cfg.algo_params else None

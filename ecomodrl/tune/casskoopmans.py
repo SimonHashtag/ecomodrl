@@ -6,10 +6,8 @@ from dataclasses import replace
 
 from dehb import DEHB
 
-from ecomodrl.envs.envs import CassKoopmansEnv
 from ecomodrl.tune.tuning import TUNE_REGISTRY, target_function
 from ecomodrl.algorithms.hyperparams import get_algo_fixedcfgs
-from ecomodrl.configs.parameters import CassKoopmansParams
 from ecomodrl.configs.tuneconfigs import CassKoopmansTuneConfig, parse_tune_args
 
 # Run file with e.g.: python ecomodrl/tune/casskoopmans.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
@@ -20,8 +18,9 @@ if __name__ == "__main__":
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
     
-    params = CassKoopmansParams()
     base_cfg = CassKoopmansTuneConfig()
+    params = base_cfg.make_params()
+    env = base_cfg.env_class()
     cfg = parse_tune_args(base_cfg)
     algo_cfg = get_algo_fixedcfgs(cfg.algo_name, params, hidden_nodes=cfg.hidden_nodes)
     
@@ -57,7 +56,7 @@ if __name__ == "__main__":
         cfg=cfg,
         algo_cfg=algo_cfg,
         params=params,
-        env=CassKoopmansEnv,
+        env=env,
         cs=cs,
         min_fidelity=min_fidelity,   
         max_fidelity=max_fidelity, 

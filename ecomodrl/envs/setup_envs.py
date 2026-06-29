@@ -22,6 +22,12 @@ def make_env(
     """
     def _thunk():
         env = env_class(params=params,)
+        
+        # Economic-model-implied RL discount.
+        # For CK/BM this equals beta. For BufferStock this is beta_eff.
+        rl_discount = float(env.model.beta_eff)
+        setattr(env, "beta_eff", rl_discount)
+        
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
         # stabilize: avoid large negative rewards during training
         if reward_floor is not None:
@@ -45,6 +51,8 @@ def build_envs(
     cfg: Run configs
     seed: seed
     reward_floor: In training mode, reward is clipped from below (at -reward_floor) to stabilize training
+    
+    Returns: vectorized training env, effective RL discount (beta_eff)
     """
     # Avoid SubProcVecEnv when parallelizing across multiple seeds.
     vec_cls = DummyVecEnv if os.getenv("ECOMODRL_SEED_PARALLEL") == "1" else None
@@ -60,9 +68,10 @@ def build_envs(
         seed=seed,
         vec_env_cls=vec_cls,
         ) # Seeding: VecEnv seeds each sub-env with seed + env_number
+    beta_eff = float(getattr(envs, "beta_eff", params.beta))
     envs = VecNormalize(
         envs, norm_obs=True, norm_reward=False, 
-        clip_obs=10.0, clip_reward=1000.0, gamma=params.beta,
+        clip_obs=10.0, clip_reward=1000.0, gamma=beta_eff,
     )
 
-    return envs
+    return envs, beta_eff

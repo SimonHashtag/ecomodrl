@@ -89,8 +89,8 @@ done
 ############################
 
 echo "------------------------------------------------"
-echo "Generating unified comparison plots..."
-python ecomodrl/experiments/compare/brockmirman_compare.py
+echo "Generating unified comparison plots and tables..."
+python ecomodrl/analysis/brockmirman.py
 
 ############################
 #       Finalize           #

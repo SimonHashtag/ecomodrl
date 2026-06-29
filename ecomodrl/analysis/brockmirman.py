@@ -1,6 +1,4 @@
 # -----------------------------------------------------------------------------
-# analyze_brockmirman.py
-#
 # Entry point for Brock-Mirman post-training analysis.
 #
 # Examples
@@ -17,7 +15,7 @@
 
 from __future__ import annotations
 
-from ecomodrl.configs.analysisconfig import (
+from configs.analysisconfigs import (
     BrockMirmanAnalysisConfig,
     parse_analysis_args,
 )

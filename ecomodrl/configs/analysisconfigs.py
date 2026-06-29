@@ -19,13 +19,23 @@ from pathlib import Path
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
+from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.envs.setup_envs import make_env
-from ecomodrl.configs.runconfigs import BrockMirmanRunConfig
-from ecomodrl.configs.parameters import BrockMirmanParams
-from ecomodrl.models.base_model import BrockMirman, BaseEGM
-from ecomodrl.envs.envs import BrockMirmanEnv
+from ecomodrl.configs.runconfigs import (
+    CassKoopmansRunConfig,
+    BrockMirmanRunConfig,
+    BufferStockRunConfig,
+    #PortfolioChoiceRunConfig,
+)
+    
+from ecomodrl.models.base_model import (
+    CassKoopmans, 
+    BrockMirman, 
+    BufferStock,
+    BaseEGM
+)
 
-ALL_ALGORITHMS: tuple[str, ...] = ("ppo", "ddpg", "td3", "sac")
+ALL_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
 
 @dataclass
 class BaseAnalysisConfig:
@@ -50,6 +60,10 @@ class BaseAnalysisConfig:
 
     # Whether to recompute if files already exist.
     overwrite: bool = False
+    
+    # Analysis stages
+    run_testing: bool = True
+    make_plots_and_tables: bool = True
 
     @property
     def test_seeds(self) -> list[int]:
@@ -60,16 +74,10 @@ class BaseAnalysisConfig:
         """Directory name used for this economic model."""
         return self.env_name
 
-    def make_params(self):
-        raise NotImplementedError
-
     def make_economic_model(self):
         raise NotImplementedError
 
     def make_egm_solver(self, model):
-        raise NotImplementedError
-
-    def env_class(self):
         raise NotImplementedError
 
     def make_unnormalized_vecenv(self, seed: int):
@@ -101,13 +109,20 @@ class BaseAnalysisConfig:
         vecnorm.norm_reward = False
         return vecnorm
 
+@dataclass
+class CassKoopmansAnalysisConfig(CassKoopmansRunConfig, BaseAnalysisConfig):
+    """Post-training analysis configuration for Cass-Koopmans."""
+
+    def make_economic_model(self):
+        return CassKoopmans(self.make_params())
+
+    def make_egm_solver(self, model):
+        return BaseEGM(model)
+
 
 @dataclass
 class BrockMirmanAnalysisConfig(BrockMirmanRunConfig, BaseAnalysisConfig):
     """Post-training analysis configuration for Brock-Mirman."""
-
-    def make_params(self):
-        return BrockMirmanParams()
 
     def make_economic_model(self):
         return BrockMirman(self.make_params())
@@ -115,12 +130,32 @@ class BrockMirmanAnalysisConfig(BrockMirmanRunConfig, BaseAnalysisConfig):
     def make_egm_solver(self, model):
         return BaseEGM(model)
 
-    def env_class(self):
-        return BrockMirmanEnv
+
+@dataclass
+class BufferAnalysisConfig(BufferStockRunConfig, BaseAnalysisConfig):
+    """Post-training analysis configuration for Buffer Stock."""
+
+    def make_economic_model(self):
+        return BufferStock(self.make_params())
+
+    def make_egm_solver(self, model):
+        return BaseEGM(model)
 
 
-def parse_analysis_args(default_config: BaseAnalysisConfig) -> BaseAnalysisConfig:
-    """Parse common analysis command-line arguments.
+def _parse_algorithm_selection(algo_names: list[str]) -> tuple[str, ...]:
+    """Convert CLI algorithm selection to a tuple of algorithm names."""
+    if "all" in algo_names:
+        if len(algo_names) > 1:
+            raise argparse.ArgumentTypeError(
+                "Use either '--algo_name all' or a list of algorithms, not both."
+            )
+        return ALL_ALGORITHMS
+
+    return tuple(algo_names)
+
+
+def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig) -> argparse.Namespace:
+    """Parse post-training analysis arguments.
 
     Examples
     --------
@@ -128,64 +163,68 @@ def parse_analysis_args(default_config: BaseAnalysisConfig) -> BaseAnalysisConfi
         python analyze_brockmirman.py
 
     Run one algorithm:
-        python analyze_brockmirman.py --algo ppo
+        python analyze_brockmirman.py --algo_name ppo
 
     Run two algorithms:
-        python analyze_brockmirman.py --algo ppo sac
+        python analyze_brockmirman.py --algo_name ppo sac
 
     Only make plots from existing results:
         python analyze_brockmirman.py --skip_testing
+
+    Only run numerical analysis without plotting:
+        python analyze_brockmirman.py --skip_plots
     """
-    parser = argparse.ArgumentParser()
+    p = argparse.ArgumentParser()
 
-    parser.add_argument(
+    p.add_argument(
         "--algo_name",
+        "--algo",
         nargs="+",
-        default=["all"],
         choices=["all", *ALL_ALGORITHMS],
-        help="Algorithms to analyze. Default: all.",
+        default=argparse.SUPPRESS,
+        help="Algorithms to analyze. Default: config value, usually all.",
     )
-    parser.add_argument("--out_dir", type=Path, default=None)
-    parser.add_argument("--figures_dir", type=Path, default=None)
-    parser.add_argument("--n_test_seeds", type=int, default=None)
-    parser.add_argument("--test_base_seed", type=int, default=None)
-    parser.add_argument("--euler_n_states", type=int, default=None)
-    parser.add_argument("--eval_n_states", type=int, default=None)
-    parser.add_argument("--eval_horizon", type=int, default=None)
-    parser.add_argument("--max_workers", type=int, default=None)
-    parser.add_argument("--overwrite", action="store_true")
 
-    parser.add_argument("--skip_testing", action="store_true")
-    parser.add_argument("--skip_plots", action="store_true")
+    p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)
+    p.add_argument("--figures_dir", type=Path, default=argparse.SUPPRESS)
 
-    args = parser.parse_args()
+    p.add_argument("--n_test_seeds", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--test_base_seed", type=int, default=argparse.SUPPRESS)
 
-    updates = {}
+    p.add_argument("--euler_n_states", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--eval_n_states", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--eval_horizon", type=int, default=argparse.SUPPRESS)
 
-    if args.algo_name == ["all"]:
-        updates["algorithms"] = ALL_ALGORITHMS
-    else:
-        updates["algorithms"] = tuple(args.algo_name)
+    p.add_argument("--max_workers", type=int, default=argparse.SUPPRESS)
 
-    for name in (
-        "out_dir",
-        "figures_dir",
-        "n_test_seeds",
-        "test_base_seed",
-        "euler_n_states",
-        "eval_n_states",
-        "eval_horizon",
-        "max_workers",
-    ):
-        value = getattr(args, name)
-        if value is not None:
-            updates[name] = value
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Recompute and overwrite existing analysis outputs.",
+    )
 
-    if args.overwrite:
-        updates["overwrite"] = True
+    p.add_argument(
+        "--skip_testing",
+        dest="run_testing",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help="Skip numerical analysis and only make plots from existing results.",
+    )
 
-    cfg = replace(default_config, **updates)
-    cfg.skip_testing = bool(args.skip_testing)
-    cfg.skip_plots = bool(args.skip_plots)
+    p.add_argument(
+        "--skip_plots",
+        dest="make_plots_and_tables",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help="Run numerical analysis but skip figures and tables.",
+    )
 
-    return cfg
+    updates = vars(p.parse_args())
+
+    if "algo_name" in updates:
+        updates["algorithms"] = _parse_algorithm_selection(
+            updates.pop("algo_name")
+        )
+
+    return replace(AnalysisConfig, **updates)

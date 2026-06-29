@@ -6,8 +6,6 @@ from ecomodrl.configs.runconfigs import BrockMirmanRunConfig, parse_run_args
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
-from ecomodrl.envs.envs import BrockMirmanEnv
-from ecomodrl.configs.parameters import BrockMirmanParams
 #from ecomodrl.analysis.analysis_BM import analyze_all_seeds
 
 # E.g., run with: 
@@ -23,12 +21,13 @@ if __name__ == "__main__":
     cfg = replace(cfg, out_dir=cfg.out_dir / cfg.env_name / cfg.algo_name.upper())
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     
-    params = BrockMirmanParams()
+    params = cfg.make_params()
+    env = cfg.env_class()
 
     hp = load_tuned_hp(env_name=cfg.env_name, algo_name=cfg.algo_name)
 
     base_algo_cfg = get_algo_fixedcfgs(cfg.algo_name, params, hidden_nodes=cfg.hidden_nodes)
     algo_cfg = ADAPTER_REGISTRY[cfg.algo_name](hp, cfg, base_algo_cfg)
     
-    train_multiple_seeds(cfg, algo_cfg, BrockMirmanEnv, params, verbose=1)
+    train_multiple_seeds(cfg, algo_cfg, env, params, verbose=1)
     #analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params)

@@ -15,14 +15,14 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
 
-from stable_baselines3 import PPO, DDPG, TD3, SAC
-
+from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.analysis.policy_interface import EGMPolicy, RLPolicy
 from ecomodrl.analysis import accuracy_metrics as metrics
 from ecomodrl.analysis.plotting import (
@@ -30,63 +30,53 @@ from ecomodrl.analysis.plotting import (
     plot_cev_distribution,
     plot_euler_error_distribution,
     plot_training_convergence,
-    make_latex_table,
-    make_combined_latex_table,
 )
-
-ALGO_CLASSES = {
-    "ppo": PPO,
-    "ddpg": DDPG,
-    "td3": TD3,
-    "sac": SAC,
-}
+from ecomodrl.analysis.latex_tables import make_latex_table, make_combined_latex_table
 
 # =============================================================================
 # Paths
 # =============================================================================
 
-def model_results_dir(cfg) -> Path:
-    return Path(cfg.out_dir) / cfg.model_name
-
-
-def checkpoint_dir(cfg, algo: str, train_seed: int) -> Path:
-    return model_results_dir(cfg) / algo / f"seed_{int(train_seed)}"
-
-
-def analysis_dir(cfg) -> Path:
-    return model_results_dir(cfg) / "analysis"
-
-
-def egm_dir(cfg) -> Path:
-    return analysis_dir(cfg) / "egm"
-
-
-def evaluation_sample_dir(cfg) -> Path:
-    return analysis_dir(cfg) / "evaluation_samples"
-
-
-def test_result_dir(cfg, algo: str, train_seed: int) -> Path:
-    return checkpoint_dir(cfg, algo, train_seed) / "analysis"
-
-
 def figure_dir(cfg) -> Path:
     return Path(cfg.figures_dir) / cfg.model_name
 
 
+def model_results_dir(cfg) -> Path:
+    return Path(cfg.out_dir) / cfg.model_name
+
+
+# EGM
+def egm_analysis_dir(cfg) -> Path:
+    return model_results_dir(cfg) / "egm_analysis"
+
+
+def evaluation_sample_path(cfg, test_seed: int) -> Path:
+    return egm_analysis_dir(cfg) / f"eval_sample_analysis_seed_{int(test_seed)}.pkl"
+
+
+# RL
+def checkpoint_dir(cfg, algo: str, train_seed: int) -> Path:
+    return model_results_dir(cfg) / algo / f"seed_{int(train_seed)}"
+
+
+def analysis_result_dir(cfg, algo: str, train_seed: int) -> Path:
+    return checkpoint_dir(cfg, algo, train_seed) / "analysis"
+
+
 def value_grid_path(cfg, algo: str, train_seed: int) -> Path:
-    return test_result_dir(cfg, algo, train_seed) / "value_grid.npz"
+    return analysis_result_dir(cfg, algo, train_seed) / "value_grid.npz"
 
 
 def test_values_path(cfg, algo: str, train_seed: int) -> Path:
-    return test_result_dir(cfg, algo, train_seed) / "test_values.json"
+    return analysis_result_dir(cfg, algo, train_seed) / "test_values.json"
 
 
 def euler_errors_path(cfg, algo: str, train_seed: int) -> Path:
-    return test_result_dir(cfg, algo, train_seed) / "euler_errors.npz"
+    return analysis_result_dir(cfg, algo, train_seed) / "euler_errors.npz"
 
 
 def visited_states_path(cfg, algo: str, train_seed: int) -> Path:
-    return test_result_dir(cfg, algo, train_seed) / "visited_m.npz"
+    return analysis_result_dir(cfg, algo, train_seed) / "visited_m.npz"
 
 
 # =============================================================================
@@ -165,6 +155,22 @@ def load_value_grid(path: Path):
     return tuple(axes), V
 
 
+def check_required_checkpoints(cfg):
+    missing = []
+
+    for algo in cfg.algorithms:
+        for seed in cfg.seeds:
+            if not (checkpoint_dir(cfg, algo, seed) / "model.zip").exists():
+                missing.append(str(checkpoint_dir(cfg, algo, seed) / "model.zip"))
+
+    if missing:
+        raise RuntimeError(
+            f"Analysis aborted: {len(missing)} trained checkpoints are missing. "
+            "First few missing files:\n  "
+            + "\n  ".join(missing[:10])
+        )
+
+
 # =============================================================================
 # Model and policies
 # =============================================================================
@@ -200,7 +206,7 @@ def load_rl_policy(cfg, algo: str, train_seed: int, economic_model):
         )
 
     vecnormalize = cfg.load_vecnormalize(vecnorm_path, seed=train_seed)
-    sb3_model = ALGO_CLASSES[algo].load(str(model_path), env=vecnormalize)
+    sb3_model = ALGO_REGISTRY[algo].load(str(model_path), env=vecnormalize)
 
     return RLPolicy(
         sb3_model=sb3_model,
@@ -213,16 +219,15 @@ def load_rl_policy(cfg, algo: str, train_seed: int, economic_model):
 # Evaluation samples and EGM references
 # =============================================================================
 
-def evaluation_sample_path(cfg, test_seed: int) -> Path:
-    return evaluation_sample_dir(cfg) / f"test_seed_{int(test_seed)}.pkl"
-
-
+# TODO: For is_deterministic_one_state models, we could just use the single state 
+# as the evaluation sample and skip the random sampling. 
+# This would make the evaluation deterministic and faster.
 def prepare_evaluation_samples(cfg, economic_model, egm_policy):
     """Create fixed evaluation samples and EGM reference returns."""
-    out_dir = evaluation_sample_dir(cfg)
+    out_dir = egm_analysis_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    egm_returns_path = out_dir / "egm_returns.json"
+    egm_returns_path = out_dir / "analysis_egm_returns.json"
     egm_returns = {
         int(k): float(v)
         for k, v in read_json(egm_returns_path, {}).items()
@@ -256,7 +261,7 @@ def prepare_evaluation_samples(cfg, economic_model, egm_policy):
 
 
 def cache_egm_value_grid(cfg, economic_model, egm_policy):
-    path = egm_dir(cfg) / "value_grid.npz"
+    path = egm_analysis_dir(cfg) / "value_grid.npz"
 
     if path.exists() and not cfg.overwrite:
         return
@@ -267,7 +272,7 @@ def cache_egm_value_grid(cfg, economic_model, egm_policy):
 
 def cache_egm_euler_errors(cfg, economic_model, egm_policy):
     """Cache EGM Euler-error reference distributions."""
-    out_dir = egm_dir(cfg)
+    out_dir = egm_analysis_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if is_deterministic_one_state(economic_model):
@@ -284,7 +289,7 @@ def cache_egm_euler_errors(cfg, economic_model, egm_policy):
         return
 
     for test_seed in cfg.test_seeds:
-        path = evaluation_sample_dir(cfg) / f"egm_euler_errors_{test_seed}.npy"
+        path = egm_analysis_dir(cfg) / f"egm_euler_errors_{test_seed}.npy"
 
         if path.exists() and not cfg.overwrite:
             continue
@@ -304,7 +309,7 @@ def cache_train_egm_returns(cfg, economic_model, egm_policy):
     These are used for convergence plots that show RL regret relative to EGM
     on the same common-random-number sample used during training evaluation.
     """
-    path = analysis_dir(cfg) / "train_egm_returns.json"
+    path = egm_analysis_dir(cfg) / "train_egm_returns.json"
     existing = {
         int(k): float(v)
         for k, v in read_json(path, {}).items()
@@ -344,7 +349,7 @@ def analyze_train_seed(cfg, train_seed: int):
 
     egm_returns = {
         int(k): float(v)
-        for k, v in read_json(evaluation_sample_dir(cfg) / "egm_returns.json", {}).items()
+        for k, v in read_json(egm_analysis_dir(cfg) / "analysis_egm_returns.json", {}).items()
     }
 
     statuses = []
@@ -382,7 +387,7 @@ def analyze_policy_checkpoint(
     """Analyze one RL checkpoint."""
     policy = load_rl_policy(cfg, algo, train_seed, economic_model)
 
-    out_dir = test_result_dir(cfg, algo, train_seed)
+    out_dir = analysis_result_dir(cfg, algo, train_seed)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Bellman value grid for CEV maps.
@@ -467,10 +472,10 @@ def analyze_policy_checkpoint(
 
 def load_egm_euler_reference(cfg, economic_model, test_seed: int | None):
     if is_deterministic_one_state(economic_model):
-        path = egm_dir(cfg) / "euler_errors.npy"
+        path = egm_analysis_dir(cfg) / "euler_errors.npy"
         return np.load(path) if path.exists() else None
 
-    path = evaluation_sample_dir(cfg) / f"egm_euler_errors_{int(test_seed)}.npy"
+    path = egm_analysis_dir(cfg) / f"egm_euler_errors_{int(test_seed)}.npy"
     return np.load(path) if path.exists() else None
 
 
@@ -532,7 +537,7 @@ def summarize_algorithm(cfg, economic_model, algo: str):
     for name, matrix in matrices.items():
         summary[name] = summarize_matrix(matrix)
 
-    path = model_results_dir(cfg) / algo / "analysis" / "summary.json"
+    path = model_results_dir(cfg) / algo / "analysis_summary.json"
     write_json(path, summary)
 
 
@@ -562,22 +567,6 @@ def summarize_matrix(matrix: np.ndarray) -> dict:
 # Main analysis routines
 # =============================================================================
 
-def check_required_checkpoints(cfg):
-    missing = []
-
-    for algo in cfg.algorithms:
-        for seed in cfg.seeds:
-            if not (checkpoint_dir(cfg, algo, seed) / "model.zip").exists():
-                missing.append(str(checkpoint_dir(cfg, algo, seed) / "model.zip"))
-
-    if missing:
-        raise RuntimeError(
-            f"Analysis aborted: {len(missing)} trained checkpoints are missing. "
-            "First few missing files:\n  "
-            + "\n  ".join(missing[:10])
-        )
-
-
 def run_testing(cfg):
     print(f"\n========== Analysis: {cfg.model_name} ==========")
     print(f"Algorithms: {', '.join(cfg.algorithms)}")
@@ -594,7 +583,7 @@ def run_testing(cfg):
 
     worker_count = cfg.max_workers
     if worker_count is None:
-        worker_count = max(1, (os_cpu_count() or 1) - 1)
+        worker_count = max(1, (os.cpu_count() or 1) - 1)
 
     units = list(cfg.seeds)
 
@@ -628,11 +617,6 @@ def run_testing(cfg):
     for algo in cfg.algorithms:
         summarize_algorithm(cfg, economic_model, algo)
         print(f"[analysis] wrote summary for {cfg.model_name}/{algo}")
-
-
-def os_cpu_count():
-    import os
-    return os.cpu_count()
 
 
 def print_status(train_seed, statuses, done=None, total=None):
@@ -678,13 +662,13 @@ def load_training_history(seed_dir: Path):
     return None
 
 
-def run_plots(cfg):
+def run_plots_and_tables(cfg):
     print(f"\n========== Figures: {cfg.model_name} ==========")
 
     economic_model, _ = solve_egm_model(cfg)
     egm_policy = EGMPolicy(economic_model)
 
-    axes_egm, V_egm = load_value_grid(egm_dir(cfg) / "value_grid.npz")
+    axes_egm, V_egm = load_value_grid(egm_analysis_dir(cfg) / "value_grid.npz")
 
     deterministic = is_deterministic_one_state(economic_model)
 
@@ -737,7 +721,7 @@ def run_plots(cfg):
 
     train_egm_returns = {
         int(k): float(v)
-        for k, v in read_json(analysis_dir(cfg) / "train_egm_returns.json", {}).items()
+        for k, v in read_json(egm_analysis_dir(cfg) / "train_egm_returns.json", {}).items()
     }
 
     egm_returns_by_algo = {
@@ -791,7 +775,7 @@ def run_plots(cfg):
 
     summaries = {}
     for algo in cfg.algorithms:
-        path = model_results_dir(cfg) / algo / "analysis" / "summary.json"
+        path = model_results_dir(cfg) / algo / "analysis_summary.json"
         if path.exists():
             summaries[algo] = read_json(path, {})
 
@@ -812,8 +796,8 @@ def run_plots(cfg):
 
 
 def run_analysis(cfg):
-    if not getattr(cfg, "skip_testing", False):
+    if cfg.run_testing:
         run_testing(cfg)
 
-    if not getattr(cfg, "skip_plots", False):
-        run_plots(cfg)
+    if cfg.make_plots_and_tables:
+        run_plots_and_tables(cfg)

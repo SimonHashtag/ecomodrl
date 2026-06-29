@@ -89,8 +89,8 @@ done
 ############################
 
 echo "------------------------------------------------"
-echo "Generating unified comparison plots..."
-python ecomodrl/experiments/compare/bufferstock_compare.py
+echo "Generating unified comparison plots and tables..."
+python ecomodrl/analysis/bufferstock.py
 
 ############################
 #       Finalize           #

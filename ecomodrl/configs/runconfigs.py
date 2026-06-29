@@ -3,11 +3,19 @@ import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from ecomodrl.configs.parameters import (
+    CassKoopmansParams,
+    BrockMirmanParams,
+    BufferStockParams,
+    PortfolioChoiceParams,
+)
+from ecomodrl.envs.envs import (
+    CassKoopmansEnv,
+    BrockMirmanEnv,
+    BufferStockEnv,
+)
 
-from ecomodrl.models.casskoopmans.problemclass import PlanningProblem as CKPP
-from ecomodrl.models.brockmirman.problemclass import PlanningProblem as BMPP
-from ecomodrl.models.bufferstock.problemclass import PlanningProblem as BSPP
-from ecomodrl.models.portfoliochoice.problemclass import PlanningProblem as PCPP
+from ecomodrl.envs.portfoliochoice import PortfolioChoiceEnv
 
 # ----------------------------
 # Run configuration
@@ -48,6 +56,12 @@ class BaseRunConfig:
     eval_m_grid_size: int = 1_000
     eval_horizon: int = 100
     
+    def make_params(self):
+        raise NotImplementedError
+
+    def env_class(self):
+        raise NotImplementedError
+    
         
         
 @dataclass
@@ -56,6 +70,12 @@ class CassKoopmansRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "CassKoopmans"
     max_wallclock_seconds: int = 600
+    
+    def make_params(self):
+        return CassKoopmansParams()
+
+    def env_class(self):
+        return CassKoopmansEnv
 
  
 @dataclass
@@ -64,6 +84,12 @@ class BrockMirmanRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "BrockMirman"
     max_wallclock_seconds: int = 1200
+    
+    def make_params(self):
+        return BrockMirmanParams()
+
+    def env_class(self):
+        return BrockMirmanEnv
 
 
 @dataclass
@@ -72,6 +98,12 @@ class BufferStockRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "BufferStock"
     max_wallclock_seconds: int = 1200
+    
+    def make_params(self):
+        return BufferStockParams()
+
+    def env_class(self):
+        return BufferStockEnv
 
 @dataclass
 class PortfolioChoiceRunConfig(BaseRunConfig):
@@ -79,6 +111,12 @@ class PortfolioChoiceRunConfig(BaseRunConfig):
     # Environment
     env_name: str = "PortfolioChoice"
     max_wallclock_seconds: int = 1200
+    
+    def make_params(self):
+        return PortfolioChoiceParams()
+
+    def env_class(self):
+        return PortfolioChoiceEnv
 
 
 def parse_run_args(RunConfig: BaseRunConfig) -> argparse.Namespace:
@@ -91,7 +129,7 @@ def parse_run_args(RunConfig: BaseRunConfig) -> argparse.Namespace:
     p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)
     p.add_argument("--n_envs", type=int, default=argparse.SUPPRESS)
     p.add_argument("--max_wallclock_seconds", type=int, default=argparse.SUPPRESS)
-    p.add_argument("--eval_every", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--eval_interval_seconds", type=int, default=argparse.SUPPRESS)
     p.add_argument("--n_seeds", type=int, default=argparse.SUPPRESS)
     
     args = p.parse_args()

@@ -89,8 +89,8 @@ done
 ############################
 
 echo "------------------------------------------------"
-echo "Generating unified comparison plots..."
-python ecomodrl/experiments/compare/casskoopmans_compare.py
+echo "Generating unified comparison plots and tables..."
+python ecomodrl/analysis/casskoopmans.py
 
 ################
 # Finish       #
