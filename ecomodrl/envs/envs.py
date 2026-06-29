@@ -23,7 +23,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from ecomodrl.models.base_model import CassKoopmans, BrockMirman, BufferStock
+from ecomodrl.models import CassKoopmans, BrockMirman, BufferStock, PortfolioChoice
 
 
 EPS = 1e-8
@@ -41,6 +41,8 @@ def obs_from_state(state, model):
     -------
     obs: Gym observation with final dimension `model.state_dim`.
     """
+    if hasattr(model, "obs_from_state"):
+        return model.obs_from_state(state)
     state = np.asarray(state, dtype=np.float64)
 
     m = np.maximum(state[..., 0], EPS)
@@ -115,6 +117,12 @@ class BaseEconEnv(gym.Env, ABC):
 
         if "share" in controls:
             info["share"] = float(np.asarray(controls["share"]))
+            
+        if "portfolio_weights" in controls:
+            info["portfolio_weights"] = np.asarray(
+                controls["portfolio_weights"],
+                dtype=np.float64,
+            ).copy()
 
         return (
             obs_from_state(self.state, self.model),
@@ -135,3 +143,6 @@ class BrockMirmanEnv(BaseEconEnv):
 
 class BufferStockEnv(BaseEconEnv):
     MODEL_CLS = BufferStock
+    
+class PortfolioChoiceEnv(BaseEconEnv):
+    MODEL_CLS = PortfolioChoice

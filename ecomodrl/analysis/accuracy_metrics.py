@@ -31,21 +31,37 @@ def _consumption(policy, state):
     if callable(policy):
         return policy(state)
 
-    raise TypeError(
-        "policy must expose `.consumption(state)` or be callable."
-    )
+    raise TypeError("policy must expose `.consumption(state)` or be callable.")
 
 
-def _transition(model, state, c, shocks):
-    """Transition using consumption as the current control.
+def _policy_controls(policy, state):
+    """Evaluate full policy controls.
 
-    The rewritten models expect:
-        model.transition(state, controls, shocks)
+    Preferred interface:
+        policy.controls(state)
 
-    where:
-        controls = {'consumption': c}
+    Fallback:
+        consumption-only policy.
     """
-    return model.transition(state, {"consumption": c}, shocks)
+    if hasattr(policy, "controls"):
+        controls = dict(policy.controls(state))
+    else:
+        controls = {"consumption": _consumption(policy, state)}
+
+    if "consumption" not in controls:
+        if "share" not in controls:
+            raise KeyError(
+                "Policy controls must contain either 'consumption' or 'share'."
+            )
+        state_arr = np.asarray(state, dtype=np.float64)
+        controls["consumption"] = np.asarray(controls["share"]) * state_arr[..., 0]
+
+    return controls
+
+
+def _transition(model, state, controls, shocks):
+    """Transition using the model's full control dictionary."""
+    return model.transition(state, controls, shocks)
 
 
 def _is_constrained(model):
@@ -53,32 +69,75 @@ def _is_constrained(model):
     return model.interpolation_kink() is not None
 
 
+def _is_portfolio_choice(model) -> bool:
+    """Detect portfolio-choice models by their economic interface."""
+    return (
+        hasattr(model, "n_assets")
+        and hasattr(model, "n_risky")
+        and hasattr(model, "portfolio_weights")
+        and hasattr(model, "_eps_nodes")
+        and hasattr(model, "_eta_nodes")
+    )
+
+
 # =============================================================================
 # Euler errors
 # =============================================================================
 
-def euler_errors(model, policy, n_sim=None, burn_in=1_000, seed=0):
-    """Evaluate log10 absolute Euler errors.
+def euler_errors(
+    model,
+    policy,
+    n_sim,
+    burn_in=1_000,
+    seed=0,
+    *,
+    max_shock_nodes=None,
+):
+    """Evaluate log10 Euler errors.
 
-    Computes:
+    For standard one-control models this computes
 
-        log10 |1 - c_implied / c_policy|
+        log10 |1 - c_implied / c_policy|.
 
-    where `c_implied` is obtained from the Euler equation.
+    For portfolio-choice models this computes a joint Euler/KKT diagnostic:
 
-    Deterministic models:
-        use a dense deterministic m-grid.
+        log10 max(consumption Euler error, portfolio KKT residual).
 
-    Stochastic models:
-        simulate test states under the supplied policy after burn-in.
+    Parameters
+    ----------
+    model:
+        Economic model.
+
+    policy:
+        Policy object exposing the common policy interface.
+
+    n_sim:
+        Number of states at which to evaluate errors.
+
+    burn_in:
+        Burn-in for simulated stochastic test states.
+
+    seed:
+        Simulation seed.
+
+    max_shock_nodes:
+        Optional cap on RQMC nodes for portfolio diagnostics. This is useful
+        because evaluating RL policies at every RQMC node for every simulated
+        state can be expensive.
     """
+    if _is_portfolio_choice(model):
+        return _portfolio_euler_errors(
+            model=model,
+            policy=policy,
+            n_sim=int(n_sim),
+            burn_in=int(burn_in),
+            seed=int(seed),
+            max_shock_nodes=max_shock_nodes,
+        )
+
     if model.weights is None:
-        if n_sim is None:
-            n_sim = 10_000
         states = _test_states_deterministic(model, int(n_sim))
     else:
-        if n_sim is None:
-            n_sim = 100_000
         states = _test_states_simulated(
             model=model,
             policy=policy,
@@ -100,8 +159,6 @@ def euler_errors(model, policy, n_sim=None, burn_in=1_000, seed=0):
     err = np.abs(1.0 - c_implied / c_today)
 
     if _is_constrained(model):
-        # Euler equation does not hold at constrained states. In the current
-        # buffer-stock model, this region is characterized by c approximately m.
         constrained = c_today / np.maximum(m_today, 1e-300) > 0.999
         err = np.where(constrained, 0.0, err)
 
@@ -124,16 +181,7 @@ def _test_states_deterministic(model, n_sim):
 
 # TODO: Vectorize?
 def _test_states_simulated(model, policy, n_sim, burn_in, seed):
-    """Forward-simulate states under `policy` and discard burn-in.
-    
-    Arguments:
-    ----
-    model: EconomicModel    The economic model instance.
-    policy: callable        The policy to evaluate.
-    n_sim: int              Number of post-burn-in states to return.
-    burn_in: int            Number of initial states to discard.
-    seed: int               Random seed for reproducibility.
-    """
+    """Forward-simulate states under `policy` and discard burn-in."""
     rng = np.random.default_rng(int(seed))
 
     total = int(n_sim) + int(burn_in)
@@ -143,9 +191,9 @@ def _test_states_simulated(model, policy, n_sim, burn_in, seed):
     states[0] = model.sample_initial_state(rng)
 
     for t in range(total):
-        c_t = _consumption(policy, states[t])
+        controls_t = _policy_controls(policy, states[t])
         shock_t = None if shocks is None else shocks[t]
-        states[t + 1] = _transition(model, states[t], c_t, shock_t)
+        states[t + 1] = _transition(model, states[t], controls_t, shock_t)
 
     return states[burn_in:-1]
 
@@ -232,22 +280,44 @@ def iqm_ci_crossed(matrix, B=2000, alpha=0.05, seed=42):
 # Bellman policy evaluation on the grid
 # =============================================================================
 
-def policy_value_on_grid(model, policy, tol=1e-8, max_iter=10_000):
+def policy_value_on_grid(
+    model,
+    policy,
+    tol=1e-8,
+    max_iter=10_000,
+    *,
+    max_shock_nodes=None,
+):
     """Iterate the Bellman equation under a fixed policy.
 
-    Computes:
+    Standard models
+    ---------------
+    Computes
 
-        V(s) = u(c(s)) + beta * E[ value_kernel(s') * V(s') ]
+        V(s) = u(c(s)) + beta E[value_kernel(s') V(s')]
 
-    using the model's quadrature distribution.
+    using the model's true quadrature distribution.
 
-    Important for BufferStock:
-        This grid-based evaluation uses the true shock distribution and
-        `model.value_kernel()`, so the discount factor is `model.params.beta`.
+    PortfolioChoice
+    ---------------
+    Uses the same true normalized Bellman equation, but transitions depend on
+    both consumption and portfolio weights. Therefore the portfolio-specific
+    branch evaluates the full policy controls.
 
-        The tilted simulation transition uses `model.beta_eff`, but that is for
-        Monte Carlo rollout evaluation, not this quadrature Bellman operator.
+    Important
+    ---------
+    This function uses the true shock distribution and structural beta. It does
+    not use the tilted simulation transition or beta_eff.
     """
+    if _is_portfolio_choice(model):
+        return _portfolio_policy_value_on_grid(
+            model=model,
+            policy=policy,
+            tol=tol,
+            max_iter=max_iter,
+            max_shock_nodes=max_shock_nodes,
+        )
+
     axes = _value_grid_axes(model)
     states = _state_mesh_from_axes(axes)
 
@@ -396,9 +466,9 @@ def make_evaluation_sample(model, seed, n_states, horizon) -> EvaluationSample:
 def eval_return_grid(model, policy, evaluation_sample):
     """Mean discounted rollout return across fixed starting states.
 
-    This uses the model's simulation transition. For BufferStock, the model's
-    simulation transition uses the tilted permanent-shock distribution, so
-    discounting by `model.beta_eff` is correct here.
+    This uses the model's simulation transition. For BufferStock and
+    PortfolioChoice, the transition uses the tilted permanent-shock
+    distribution, so discounting by `model.beta_eff` is correct here.
     """
     M = int(evaluation_sample.n_states)
     T = int(evaluation_sample.horizon)
@@ -416,13 +486,14 @@ def eval_return_grid(model, policy, evaluation_sample):
     disc = 1.0
 
     for t in range(T):
-        c = np.asarray(_consumption(policy, state), dtype=np.float64)
+        controls = _policy_controls(policy, state)
+        c = np.asarray(controls["consumption"], dtype=np.float64)
 
-        U += disc * model.utility(c)
+        U += disc * model.utility(np.maximum(c, 1e-12))
         disc *= model.beta_eff
 
         shock_t = None if shocks is None else shocks[:, t]
-        state = _transition(model, state, c, shock_t)
+        state = model.transition(state, controls, shock_t)
 
     return float(np.mean(U))
 
@@ -450,3 +521,376 @@ def cev(model, V_rl, V_egm, discount=None):
         return np.exp((V_egm - V_rl) * (1.0 - discount)) - 1.0
 
     return (V_egm / V_rl) ** (1.0 / (1.0 - gamma)) - 1.0
+
+
+# =============================================================================
+# Portfolio-choice Euler/KKT diagnostics
+# =============================================================================
+
+def _portfolio_euler_errors(
+    model,
+    policy,
+    n_sim,
+    burn_in,
+    seed,
+    *,
+    max_shock_nodes=None,
+):
+    """Euler/KKT residuals for portfolio-choice models.
+
+    The diagnostic combines:
+
+    1. consumption Euler residual,
+
+        |1 - c_implied / c_policy|,
+
+       where
+
+        u'(c_implied) = beta * w' g,
+
+       and
+
+        g_j = E[ u'(c') / Gamma'^gamma * R'_j ];
+
+    2. portfolio KKT residual for no-shorting simplex weights,
+
+        w_j >= 0,
+        xi - g_j >= 0,
+        w_j (xi - g_j) = 0,
+
+       evaluated with a Fisher-Burmeister residual and xi = max_j g_j.
+
+    Returns
+    -------
+    ndarray
+        log10 joint residuals.
+    """
+    states = _test_states_simulated(
+        model=model,
+        policy=policy,
+        n_sim=int(n_sim),
+        burn_in=int(burn_in),
+        seed=int(seed),
+    )
+
+    shock_idx = _portfolio_shock_indices(model, max_shock_nodes)
+
+    errors = np.empty(states.shape[0], dtype=np.float64)
+
+    for i, state in enumerate(states):
+        controls = _policy_controls(policy, state)
+
+        c = float(np.asarray(controls["consumption"]))
+        m = float(state[0])
+        rs = max(m - c, 0.0)
+
+        if c <= 0.0 or m <= 0.0:
+            errors[i] = np.nan
+            continue
+
+        # Euler/KKT equations do not bind in the consume-all region.
+        if c / max(m, 1e-300) > 0.999:
+            errors[i] = np.nan
+            continue
+
+        if "portfolio_weights" not in controls:
+            raise KeyError(
+                "Portfolio-choice Euler diagnostics require "
+                "controls['portfolio_weights']."
+            )
+
+        w = np.asarray(controls["portfolio_weights"], dtype=np.float64)
+        w = np.clip(w, 0.0, None)
+        w = w / np.maximum(w.sum(), 1e-14)
+
+        g = _portfolio_sdf_moments(
+            model=model,
+            policy=policy,
+            state=state,
+            rs=rs,
+            w=w,
+            shock_idx=shock_idx,
+        )
+
+        gbar = float(np.dot(w, g))
+
+        if not np.isfinite(gbar) or gbar <= 0.0:
+            errors[i] = np.nan
+            continue
+
+        c_implied = float(model.inv_marginal_utility(model.params.beta * gbar))
+        consumption_error = abs(1.0 - c_implied / c)
+
+        portfolio_error = _portfolio_kkt_error(g, w)
+
+        errors[i] = max(consumption_error, portfolio_error)
+
+    errors = errors[np.isfinite(errors) & (errors > 0.0)]
+
+    if errors.size == 0:
+        return np.array([], dtype=np.float64)
+
+    return np.log10(errors)
+
+
+def _portfolio_sdf_moments(model, policy, state, rs, w, shock_idx):
+    """Compute SDF-weighted expected asset returns for one state.
+
+    g_j = E[ u'(c') / Gamma'^gamma * R'_j ]
+
+    Employment and unemployment are integrated analytically as a two-point
+    transitory-income mixture.
+    """
+    state = np.asarray(state, dtype=np.float64)
+    z = state[1:]
+
+    z_next, R_all, Gamma, theta_emp, sdf_factor = _portfolio_next_shock_arrays(
+        model=model,
+        z=z,
+        shock_idx=shock_idx,
+    )
+
+    Rp = R_all @ w
+    base = (Rp / Gamma) * float(rs)
+
+    m_emp = base + theta_emp
+    m_unemp = base + model.theta_low
+
+    next_emp = np.column_stack([m_emp, z_next])
+    next_unemp = np.column_stack([m_unemp, z_next])
+
+    c_emp = np.asarray(_consumption(policy, next_emp), dtype=np.float64)
+    c_unemp = np.asarray(_consumption(policy, next_unemp), dtype=np.float64)
+
+    c_emp = np.maximum(c_emp, 1e-12)
+    c_unemp = np.maximum(c_unemp, 1e-12)
+
+    mu_emp = model.marginal_utility(c_emp)
+    mu_unemp = model.marginal_utility(c_unemp)
+
+    p_unemp = float(model.unemp_prob)
+    mu_mix = (1.0 - p_unemp) * mu_emp + p_unemp * mu_unemp
+
+    sdf_mu = sdf_factor * mu_mix
+
+    return np.mean(sdf_mu[:, None] * R_all, axis=0)
+
+
+def _portfolio_kkt_error(g, w):
+    """No-shorting simplex KKT residual for portfolio choice.
+
+    KKT conditions:
+        w_j >= 0,
+        xi - g_j >= 0,
+        w_j (xi - g_j) = 0.
+
+    We choose xi = max_j g_j for diagnostics. The residual is normalized by
+    the scale of xi.
+    """
+    g = np.asarray(g, dtype=np.float64)
+    w = np.asarray(w, dtype=np.float64)
+
+    xi = float(np.max(g))
+    b = xi - g
+
+    fb = np.sqrt(w**2 + b**2) - (w + b)
+
+    scale = max(abs(xi), 1e-12)
+
+    return float(np.max(np.abs(fb)) / scale)
+
+
+def _portfolio_shock_indices(model, max_shock_nodes=None):
+    """Select RQMC nodes for portfolio diagnostics.
+
+    Full RQMC integration can be expensive for RL policies. By default, use at
+    most `model.analysis_rqmc_nodes` if present, otherwise 1024.
+    """
+    M = int(model._M_rqmc)
+
+    if max_shock_nodes is None:
+        max_shock_nodes = int(getattr(model, "analysis_rqmc_nodes", min(M, 1024)))
+
+    max_shock_nodes = int(max_shock_nodes)
+
+    if max_shock_nodes >= M:
+        return np.arange(M)
+
+    return np.linspace(0, M - 1, max_shock_nodes, dtype=np.int64)
+
+
+def _portfolio_next_shock_arrays(model, z, shock_idx):
+    """Return true-distribution next predictors, returns, and income shocks.
+
+    Uses the model's RQMC nodes under the true distribution, not the tilted RL
+    simulation distribution.
+    """
+    idx = np.asarray(shock_idx, dtype=np.int64)
+
+    eps = model._eps_nodes[idx]
+    eta = model._eta_nodes[idx]
+
+    z = np.asarray(z, dtype=np.float64)
+
+    z_next = model.rho_z[None, :] * z[None, :] + model.sigma_z[None, :] * eps
+
+    R_risky = np.exp(
+        (model.kappa_R + model.xi_R * z)[None, :]
+        + model.sigma_R[None, :] * eta
+    )
+
+    R_safe = np.full((len(idx), 1), model.R, dtype=np.float64)
+    R_all = np.concatenate([R_safe, R_risky], axis=1)
+
+    Gamma = model.Gamma_next[idx]
+    theta_emp = model._theta_vals[idx]
+    sdf_factor = model.SDF_factor[idx]
+
+    return z_next, R_all, Gamma, theta_emp, sdf_factor
+
+# =============================================================================
+# Portfolio-choice Bellman evaluation
+# =============================================================================
+
+def _make_value_interpolator(axes, V):
+    """Create a value interpolator object."""
+    if len(axes) == 1:
+        return None
+
+    return RegularGridInterpolator(
+        axes,
+        V,
+        bounds_error=False,
+        fill_value=None,
+    )
+
+
+def _eval_value_interpolator(interp, axes, next_states):
+    """Evaluate V at next states using a prebuilt interpolator."""
+    next_states = np.asarray(next_states, dtype=np.float64)
+
+    if len(axes) == 1:
+        values = np.interp(
+            next_states[..., 0].ravel(),
+            axes[0],
+            interp,
+        )
+        return values.reshape(next_states.shape[:-1])
+
+    coords = _clip_to_axes(next_states, axes)
+    return interp(coords)
+
+
+def _portfolio_policy_value_on_grid(
+    model,
+    policy,
+    tol=1e-8,
+    max_iter=10_000,
+    *,
+    max_shock_nodes=None,
+):
+    """Bellman policy evaluation for PortfolioChoice.
+
+    This is memory-conscious: it loops over grid points and uses the selected
+    RQMC nodes locally, rather than constructing a huge global transition array.
+
+    Bellman equation
+    ----------------
+    V(m,z) =
+        u(c)
+        + beta E[
+            (G psi')^(1-gamma)
+            ((1-p) V(m'_emp,z') + p V(m'_unemp,z'))
+          ].
+
+    The expectation is under the true shock distribution.
+    """
+    axes = _value_grid_axes(model)
+    states = _state_mesh_from_axes(axes)
+
+    grid_shape = states.shape[:-1]
+    states_flat = states.reshape(-1, model.state_dim)
+
+    controls = _policy_controls(policy, states)
+
+    c = np.asarray(controls["consumption"], dtype=np.float64)
+    u = model.utility(np.maximum(c, 1e-12))
+
+    c_flat = c.reshape(-1)
+    u_flat = u.reshape(-1)
+
+    if "portfolio_weights" not in controls:
+        raise KeyError(
+            "PortfolioChoice value evaluation requires "
+            "controls['portfolio_weights']."
+        )
+
+    w = np.asarray(controls["portfolio_weights"], dtype=np.float64)
+    w = np.clip(w, 0.0, None)
+    w = w / np.maximum(w.sum(axis=-1, keepdims=True), 1e-14)
+    w_flat = w.reshape(-1, model.n_assets)
+
+    shock_idx = _portfolio_shock_indices(model, max_shock_nodes)
+    kernel = model.value_kernel()[shock_idx]
+
+    p_unemp = float(model.unemp_prob)
+    beta = float(model.params.beta)
+
+    V = np.zeros(grid_shape, dtype=np.float64)
+    V_new_flat = np.empty(states_flat.shape[0], dtype=np.float64)
+
+    for _ in range(int(max_iter)):
+        value_interp = _make_value_interpolator(axes, V)
+
+        for i, state in enumerate(states_flat):
+            m = float(state[0])
+            rs = max(m - float(c_flat[i]), 0.0)
+
+            next_emp, next_unemp = _portfolio_next_states_for_value(
+                model=model,
+                state=state,
+                rs=rs,
+                w=w_flat[i],
+                shock_idx=shock_idx,
+            )
+
+            V_emp = _eval_value_interpolator(value_interp, axes, next_emp)
+            V_unemp = _eval_value_interpolator(value_interp, axes, next_unemp)
+
+            continuation = kernel * ((1.0 - p_unemp) * V_emp + p_unemp * V_unemp)
+            EV = float(np.mean(continuation))
+
+            V_new_flat[i] = u_flat[i] + beta * EV
+
+        V_new = V_new_flat.reshape(grid_shape)
+
+        if np.max(np.abs(V_new - V)) < tol:
+            V = V_new
+            break
+
+        V = V_new
+
+    display_grid = axes[0] if len(axes) == 1 else axes
+    return display_grid, V
+
+
+def _portfolio_next_states_for_value(model, state, rs, w, shock_idx):
+    """Next states for portfolio Bellman evaluation at one current state."""
+    z = np.asarray(state[1:], dtype=np.float64)
+
+    z_next, R_all, Gamma, theta_emp, _ = _portfolio_next_shock_arrays(
+        model=model,
+        z=z,
+        shock_idx=shock_idx,
+    )
+
+    Rp = R_all @ w
+    base = (Rp / Gamma) * float(rs)
+
+    m_emp = base + theta_emp
+    m_unemp = base + model.theta_low
+
+    next_emp = np.column_stack([m_emp, z_next])
+    next_unemp = np.column_stack([m_unemp, z_next])
+
+    return next_emp, next_unemp

@@ -8,7 +8,7 @@ from dehb import DEHB
 
 from ecomodrl.tune.tuning import TUNE_REGISTRY, target_function
 from ecomodrl.algorithms.hyperparams import get_algo_fixedcfgs
-from ecomodrl.configs.tuneconfigs import BufferStockTuneConfig, parse_tune_args
+from ecomodrl.configs import BufferStockTuneConfig, parse_tune_args
 
 # Run file with e.g.: python ecomodrl/tune/bufferstock.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 

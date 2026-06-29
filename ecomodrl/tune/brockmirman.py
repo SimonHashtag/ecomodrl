@@ -8,7 +8,7 @@ from dehb import DEHB
 
 from ecomodrl.tune.tuning import TUNE_REGISTRY, target_function
 from ecomodrl.algorithms.hyperparams import get_algo_fixedcfgs
-from ecomodrl.configs.tuneconfigs import BrockMirmanTuneConfig, parse_tune_args
+from ecomodrl.configs import BrockMirmanTuneConfig, parse_tune_args
 
 # Run file with e.g.: python ecomodrl/tune/brockmirman.py --algo_name="ddpg" --total_cost=3600 --hidden_nodes=64
 

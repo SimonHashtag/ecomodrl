@@ -2,11 +2,13 @@ import logging
 import multiprocessing as mp
 from dataclasses import replace
 
-from ecomodrl.configs.runconfigs import BrockMirmanRunConfig, parse_run_args
+from ecomodrl.configs import (
+    BrockMirmanRunConfig,
+    parse_run_args,
+)
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
-#from ecomodrl.analysis.analysis_BM import analyze_all_seeds
 
 # E.g., run with: 
 # `python ecomodrl/experiments/brockmirman.py --algo_name ppo --hidden_nodes 64 --n_seeds 20`
@@ -30,4 +32,3 @@ if __name__ == "__main__":
     algo_cfg = ADAPTER_REGISTRY[cfg.algo_name](hp, cfg, base_algo_cfg)
     
     train_multiple_seeds(cfg, algo_cfg, env, params, verbose=1)
-    #analyze_all_seeds(cfg, algo_cfg, BrockMirmanEnv, params)

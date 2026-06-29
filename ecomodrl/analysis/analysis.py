@@ -37,12 +37,12 @@ from ecomodrl.analysis.latex_tables import make_latex_table, make_combined_latex
 # Paths
 # =============================================================================
 
-def figure_dir(cfg) -> Path:
-    return Path(cfg.figures_dir) / cfg.model_name
-
-
 def model_results_dir(cfg) -> Path:
     return Path(cfg.out_dir) / cfg.model_name
+
+
+def figure_dir(cfg) -> Path:
+    return model_results_dir(cfg) / "figures"
 
 
 # EGM

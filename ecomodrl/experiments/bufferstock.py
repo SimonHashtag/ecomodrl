@@ -2,7 +2,10 @@ import logging
 import multiprocessing as mp
 from dataclasses import replace
 
-from ecomodrl.configs.runconfigs import BufferStockRunConfig, parse_run_args
+from ecomodrl.configs import (
+    BufferStockRunConfig, 
+    parse_run_args, 
+)
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
 from ecomodrl.utils.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds

@@ -9,10 +9,6 @@ from ecomodrl.configs.runconfigs import (
     BufferStockRunConfig, 
     PortfolioChoiceRunConfig
 )
-from ecomodrl.models.casskoopmans.problemclass import PlanningProblem as CKPP
-from ecomodrl.models.brockmirman.problemclass import PlanningProblem as BMPP
-from ecomodrl.models.bufferstock.problemclass import PlanningProblem as BSPP
-from ecomodrl.models.portfoliochoice.problemclass import PlanningProblem as PCPP
 
 # ----------------------------
 # Tune configuration

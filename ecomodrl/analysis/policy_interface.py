@@ -73,6 +73,19 @@ class EGMPolicy:
         c = self.consumption(state)
         m = state[..., 0]
         return c / m
+    
+    def controls(self, state):
+        state = np.asarray(state, dtype=np.float64)
+
+        out = {
+            "share": self.share(state),
+            "consumption": self.consumption(state),
+        }
+
+        if hasattr(self.model, "portfolio_weights"):
+            out["portfolio_weights"] = self.model.portfolio_weights(state)
+
+        return out
 
     def __call__(self, state):
         return self.consumption(state)
@@ -122,21 +135,32 @@ class RLPolicy:
             return float(share.reshape(-1)[0])
 
         return share
-
-    def consumption(self, state):
+    
+    def controls(self, state):
         controls, single = self._controls(state)
 
-        if "consumption" in controls:
-            c = np.asarray(controls["consumption"], dtype=np.float64)
-        else:
-            if "share" not in controls:
-                raise KeyError(
-                    "model.controls_from_action(...) must return either "
-                    "'consumption' or 'share'."
-                )
+        if single:
+            out = {}
+            for k, v in controls.items():
+                arr = np.asarray(v)
+                if arr.ndim == 0:
+                    out[k] = float(arr)
+                elif arr.shape[0] == 1:
+                    out[k] = arr[0]
+                else:
+                    out[k] = arr
+            return out
 
-            state_arr, _ = as_state_batch(state)
-            c = np.asarray(controls["share"], dtype=np.float64) * state_arr[..., 0]
+        return controls
+
+    def consumption(self, state):
+        controls = self.controls(state)
+
+        if "consumption" in controls:
+            return controls["consumption"]
+
+        state_arr, single = as_state_batch(state)
+        c = np.asarray(controls["share"], dtype=np.float64) * state_arr[..., 0]
 
         if single:
             return float(c.reshape(-1)[0])

@@ -13,9 +13,8 @@ from ecomodrl.envs.envs import (
     CassKoopmansEnv,
     BrockMirmanEnv,
     BufferStockEnv,
+    PortfolioChoiceEnv,
 )
-
-from ecomodrl.envs.portfoliochoice import PortfolioChoiceEnv
 
 # ----------------------------
 # Run configuration
@@ -46,9 +45,6 @@ class BaseRunConfig:
     # Environment
     n_envs: int = 10
     max_episode_steps: int = 30
-    min_delta: float = 1e-3
-    state_min: float = field(init=False)
-    state_max: float = field(init=False)
     
     # Evaluation
     eval_interval_seconds: int = 5.0

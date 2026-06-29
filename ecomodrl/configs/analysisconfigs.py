@@ -25,14 +25,16 @@ from ecomodrl.configs.runconfigs import (
     CassKoopmansRunConfig,
     BrockMirmanRunConfig,
     BufferStockRunConfig,
-    #PortfolioChoiceRunConfig,
+    PortfolioChoiceRunConfig,
 )
     
-from ecomodrl.models.base_model import (
+from ecomodrl.models import (
     CassKoopmans, 
     BrockMirman, 
     BufferStock,
-    BaseEGM
+    PortfolioChoice,
+    BaseEGM,
+    PortfolioChoiceSolver,
 )
 
 ALL_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
@@ -43,7 +45,6 @@ class BaseAnalysisConfig:
 
     # Paths
     out_dir: Path = Path(os.environ.get("RUNRESULTS_PATH", "./runs"))
-    figures_dir: Path = Path("./figures")
 
     # Algorithm selection
     algorithms: tuple[str, ...] = ALL_ALGORITHMS
@@ -54,6 +55,7 @@ class BaseAnalysisConfig:
     
     # Evaluation
     euler_n_states: int = 10_000
+    eval_n_states: int = 10_000 # for return and value function evaluation
 
     # Parallelism
     max_workers: int | None = None
@@ -132,7 +134,7 @@ class BrockMirmanAnalysisConfig(BrockMirmanRunConfig, BaseAnalysisConfig):
 
 
 @dataclass
-class BufferAnalysisConfig(BufferStockRunConfig, BaseAnalysisConfig):
+class BufferStockAnalysisConfig(BufferStockRunConfig, BaseAnalysisConfig):
     """Post-training analysis configuration for Buffer Stock."""
 
     def make_economic_model(self):
@@ -140,6 +142,18 @@ class BufferAnalysisConfig(BufferStockRunConfig, BaseAnalysisConfig):
 
     def make_egm_solver(self, model):
         return BaseEGM(model)
+    
+@dataclass
+class PortfolioChoiceAnalysisConfig(PortfolioChoiceRunConfig, BaseAnalysisConfig):
+    """Post-training analysis configuration for Portfolio Choice."""
+    
+    #max_workers: int | None = 1  # Limit parallelism for Portfolio Choice due to numba
+
+    def make_economic_model(self):
+        return PortfolioChoice(self.make_params())
+
+    def make_egm_solver(self, model):
+        return PortfolioChoiceSolver(model)
 
 
 def _parse_algorithm_selection(algo_names: list[str]) -> tuple[str, ...]:
@@ -154,7 +168,7 @@ def _parse_algorithm_selection(algo_names: list[str]) -> tuple[str, ...]:
     return tuple(algo_names)
 
 
-def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig) -> argparse.Namespace:
+def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig, argv=None) -> argparse.Namespace:
     """Parse post-training analysis arguments.
 
     Examples
@@ -220,7 +234,7 @@ def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig) -> argparse.Namespac
         help="Run numerical analysis but skip figures and tables.",
     )
 
-    updates = vars(p.parse_args())
+    updates = vars(p.parse_args(argv))
 
     if "algo_name" in updates:
         updates["algorithms"] = _parse_algorithm_selection(

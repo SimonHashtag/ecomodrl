@@ -137,7 +137,7 @@ def train_single_seed(
     clock = TrainingClock()
     try:
         envs, beta_eff = build_envs(env, params=params, cfg=cfg, seed=seed)
-        algo_cfg["algo_params"].update({"gamma": beta_eff}) # pass effective RL discount factor for Buffer Stock with normalization by prices
+        algo_cfg.algo_params.update({"gamma": beta_eff}) # pass effective RL discount factor for Buffer Stock with normalization by prices
 
         eco_model = envs.get_attr("model")[0]
         evaluation_sample = make_evaluation_sample(
