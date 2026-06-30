@@ -1,6 +1,6 @@
 import argparse
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ecomodrl.configs.parameters import (
@@ -32,7 +32,7 @@ class BaseRunConfig:
     
     # Algorithm
     algo_name: str = "ppo"
-    hidden_nodes: int = 64
+    hidden_nodes: int = 128
     total_timesteps: int = 1_000_000_000
     max_wallclock_seconds: int = 600
     base_seed: int = 200
@@ -65,7 +65,7 @@ class CassKoopmansRunConfig(BaseRunConfig):
     """Static CassKoopmans tuning configuration for a sweep."""
     # Environment
     env_name: str = "CassKoopmans"
-    max_wallclock_seconds: int = 600
+    max_wallclock_seconds: int = 300
     
     def make_params(self):
         return CassKoopmansParams()
@@ -79,7 +79,7 @@ class BrockMirmanRunConfig(BaseRunConfig):
     """Static BrockMirman run configuration for a sweep."""
     # Environment
     env_name: str = "BrockMirman"
-    max_wallclock_seconds: int = 1200
+    max_wallclock_seconds: int = 600
     
     def make_params(self):
         return BrockMirmanParams()
@@ -93,7 +93,7 @@ class BufferStockRunConfig(BaseRunConfig):
     """Static BufferStock run configuration for a sweep."""
     # Environment
     env_name: str = "BufferStock"
-    max_wallclock_seconds: int = 1200
+    max_wallclock_seconds: int = 600
     
     def make_params(self):
         return BufferStockParams()

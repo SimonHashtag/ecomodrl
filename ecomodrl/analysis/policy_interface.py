@@ -4,6 +4,7 @@
 # A Policy exposes:
 #   - policy.share(state)        -> consumption share s
 #   - policy.consumption(state)  -> consumption c
+#   - policy.controls(state)     -> dict of controls (share, consumption, portfolio_weights)
 #   - policy(state)              -> alias for policy.consumption(state)
 #
 # State convention:
@@ -18,6 +19,10 @@ from __future__ import annotations
 import numpy as np
 
 from ecomodrl.envs.envs import obs_from_state
+
+# ==============================================================================
+# Vecnormalize utilities
+# ==============================================================================
 
 def is_vecnormalize(obj) -> bool:
     """Return True if `obj` looks like an SB3 VecNormalize wrapper."""
@@ -41,6 +46,9 @@ def get_attached_vecnormalize(sb3_model):
 
     return env if is_vecnormalize(env) else None
 
+# ==============================================================================
+# Batch state helper
+# ==============================================================================
 
 def as_state_batch(state):
     """Convert a state array to batched form.
@@ -58,6 +66,9 @@ def as_state_batch(state):
 
     return state_arr, single
 
+# ==============================================================================
+# Policy interface classes
+# ==============================================================================
 
 class EGMPolicy:
     """Wrap a solved EGM model in the common policy interface."""
@@ -170,18 +181,6 @@ class RLPolicy:
     def __call__(self, state):
         return self.consumption(state)
 
-    def _controls(self, state):
-        """Predict SB3 action and map it to economic controls."""
-        state_arr, single = as_state_batch(state)
-        actions = self._predict_actions(state_arr)
-
-        controls = self.model.controls_from_action(
-            actions,
-            state=state_arr,
-        )
-
-        return controls, single
-
     def _predict_actions(self, state_arr):
         """Predict actions from raw economic states."""
         flat_shape = state_arr.shape[:-1]
@@ -194,6 +193,18 @@ class RLPolicy:
         actions = np.asarray(actions, dtype=np.float64)
 
         return actions.reshape(flat_shape + (self.model.action_dim,))
+    
+    def _controls(self, state):
+        """Predict SB3 action and map it to economic controls."""
+        state_arr, single = as_state_batch(state)
+        actions = self._predict_actions(state_arr)
+
+        controls = self.model.controls_from_action(
+            actions,
+            state=state_arr,
+        )
+
+        return controls, single
 
     def _normalize_obs(self, obs):
         """Apply VecNormalize observation statistics if available."""

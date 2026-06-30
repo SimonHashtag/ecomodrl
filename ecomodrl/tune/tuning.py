@@ -1,214 +1,90 @@
-# DEHB hyperparameter optimization for PPO, TD3, SAC, DDPG
-from __future__ import annotations
-
-import gc
-import json
+import logging
+import os
+import pickle
 import time
-import uuid
 from dataclasses import replace
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple, Union
+from typing import Type
 
-import ConfigSpace as CS
-import ConfigSpace.hyperparameters as CSH
-import numpy as np
+from dehb import DEHB
 
-from ecomodrl.algorithms.training import AlgoConfig, train_multiple_seeds
-from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY
-from ecomodrl.algorithms.stopper import TrainingClock
-
-SearchSpaceFn = Callable[[Any, int | None], CS.ConfigurationSpace]
+from ecomodrl.configs.tuneconfigs import parse_tune_args
+from ecomodrl.algorithms.hyperparams import get_algo_fixedcfgs
+from ecomodrl.tune.tuning_target import target_function
+from ecomodrl.tune.search_spaces import TUNE_REGISTRY
 
 
-def _to_dict(
-    hp: Union[CS.Configuration, Mapping, Iterable, np.ndarray],
-    cs: CS.ConfigurationSpace,
-) -> Dict:
-    """Normalize DEHB hyperparameter payload to a plain dict."""
-    if isinstance(hp, CS.Configuration):
-        return dict(hp)
-    if isinstance(hp, Mapping):
-        return dict(hp)
-    return {hpdef.name: val for hpdef, val in zip(list(cs.values()), hp)} 
-
-
-def _common_space(seed: int | None = None) -> CS.ConfigurationSpace:
-    """Shared search space for all algorithms.
-
-    We tune batch_size explicitly and identically for PPO, TD3, DDPG and SAC.
-    This avoids algorithm-specific implicit batch-size ranges and prevents
-    tiny accidental minibatches.
-
-    With n_envs=10, the steps_per_env choices imply total rollout/update
-    blocks between 600 and 2400 transitions.
+def run_tuning(tune_config_cls: Type, train_verbose: int = 0):
     """
-    cs = CS.ConfigurationSpace(seed=seed)
-    cs.add([
-        CSH.UniformFloatHyperparameter("learning_rate", lower=1e-5, upper=3e-3, log=True),
-        # Number of vector-env steps collected before an update.
-        # total_steps = n_envs * steps_per_env.
-        CSH.OrdinalHyperparameter(
-            "steps_per_env",
-            sequence=[60, 80, 96, 100, 120, 160, 192, 200, 240],
-        ),
-        CSH.OrdinalHyperparameter(
-            "batch_size", 
-            sequence=[32, 48, 64, 75, 96, 100, 128, 150, 192, 200, 256, 384, 512],
-        ),
+    Shared DEHB tuning runner.
 
-        # PPO: n_epochs.
-        # Off-policy: target replay-sample reuse per newly collected transition.
-        CSH.UniformIntegerHyperparameter("sample_reuse", lower=1, upper=16),
-    ])
-
-    return cs
-
-
-def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
-    cs = _common_space(seed)
-    cs.add([
-        CSH.UniformFloatHyperparameter("clip_range", 0.05, 0.30),
-        CSH.UniformFloatHyperparameter("gae_lambda", 0.85, 0.995),
-        CSH.CategoricalHyperparameter("ent_coef", [0.0, 1e-5, 1e-4, 1e-3, 1e-2]),
-        CSH.UniformFloatHyperparameter("vf_coef", 0.25, 1.0),
-    ])
-    return cs
-
-
-def _offpolicy_common_space(seed: int | None = None) -> CS.ConfigurationSpace:
-    """Shared space for TD3 / SAC / DDPG."""
-    cs = _common_space(seed)
-    cs.add([
-        CSH.UniformFloatHyperparameter("tau", 1e-3, 2e-2, log=True),
-    ])
-    return cs
-
-
-def _sac_space(seed: int | None = None) -> CS.ConfigurationSpace:
-    cs = _offpolicy_common_space(seed)
-    # SAC has no extra tuned HPs beyond the off-policy common ones
-    # (ent_coef is fixed to "auto" in the adapter)
-    return cs
-
-
-def _td3_space(seed: int | None = None) -> CS.ConfigurationSpace:
-    cs = _offpolicy_common_space(seed)
-    cs.add([
-        CSH.UniformFloatHyperparameter("exploration_sigma", 0.02, 0.50),
-        CSH.UniformFloatHyperparameter("target_policy_noise", 0.05, 0.50),
-        CSH.UniformFloatHyperparameter("target_noise_clip", 0.1, 1.0),
-    ])
-    return cs
-
-
-def _ddpg_space(seed: int | None = None) -> CS.ConfigurationSpace:
-    cs = _offpolicy_common_space(seed)
-    cs.add([
-        CSH.UniformFloatHyperparameter("exploration_sigma", 0.02, 0.50),
-    ])
-    return cs
-
-
-SEARCH_SPACE_REGISTRY: Dict[str, SearchSpaceFn] = {
-    "ppo": _ppo_space,
-    "td3": _td3_space,
-    "sac": _sac_space,
-    "ddpg": _ddpg_space,
-}
-
-TUNE_REGISTRY: Dict[str, Tuple[SearchSpaceFn, Any]] = {
-    algo: (space_fn, ADAPTER_REGISTRY[algo])
-    for algo, space_fn in SEARCH_SPACE_REGISTRY.items()
-}
-
-# ----------------------------
-# Target function for DEHB
-# ----------------------------
-def target_function(
-    hp: Union[CS.Configuration, Dict, List, np.ndarray],
-    fidelity: Union[int, float] = None,
-    *,
-    cfg: Union[Mapping[str, Any], Any],
-    algo_cfg: AlgoConfig,
-    params: Any,
-    env,
-    cs: CS.ConfigurationSpace,
-    min_fidelity: int,
-    max_fidelity: int,
-    train_verbose: int = 0
-) -> Dict:
+    Parameters
+    ----------
+    tune_config_cls:
+        A TuneConfig class, e.g. BrockMirmanTuneConfig.
+    train_verbose:
+        Verbosity passed to the training function.
     """
-    Train N seeded runs for given hyperparameters and return a scalar objective.
 
-    Returns dict with:
-      - 'fitness': (float) lower is better (negative avg last eval return)
-      - 'cost':    (float) elapsed wall-time seconds
-      - 'info':    (dict)  small diagnostics and paths
-    """
-    hp = _to_dict(hp, cs)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
-    # Build a per-trial run config (unique output dir)
-    trial_dir = cfg.out_dir / f"trial_{int(np.round(max_fidelity/fidelity))}_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
-    trial_cfg = replace(cfg, out_dir=trial_dir)
+    base_cfg = tune_config_cls()
+    params = base_cfg.make_params()
+    env = base_cfg.env_class()
 
-    if fidelity is not None:
-        trial_cfg = replace(
-            trial_cfg,
-            max_wallclock_seconds=int(fidelity),
-            n_seeds= cfg.n_seeds,
-        )
-    trial_dir.mkdir(parents=True, exist_ok=True)
+    cfg = parse_tune_args(base_cfg)
 
-    clock = TrainingClock()
+    algo_cfg = get_algo_fixedcfgs(
+        cfg.algo_name,
+        params,
+        hidden_nodes=cfg.hidden_nodes,
+    )
 
-    try:
-        adapter_fn = ADAPTER_REGISTRY[algo_cfg.name.lower()]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown algorithm '{algo_cfg.name}'. Available: {list(ADAPTER_REGISTRY)}"
-        ) from exc
+    cfg = replace(cfg, out_dir=cfg.out_dir / cfg.env_name / algo_cfg.name.upper())
+    cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pass 'cfg' (Global) instead of 'trial_cfg' (Truncated) to the adapter.
-    # This ensures the LR Schedule is calculated based on the full 10M steps,
-    # even though training will stop early due to trial_cfg in the next step.
-    trial_algo = adapter_fn(hp, cfg, algo_cfg) 
-    
-    trial_algo.policy_kwargs = {**(algo_cfg.policy_kwargs or {})}
+    space_fn, _ = TUNE_REGISTRY[algo_cfg.name.lower()]
+    cs = space_fn(seed=cfg.base_seed)
 
-    # Run training
-    try:
-        try:
-            train_multiple_seeds(
-                trial_cfg, trial_algo, env, params,
-                seed_parallel=False, max_workers=1, verbose=train_verbose)
-        except Exception as exc:
-            # Fail-safe: return a bad fitness but with measured cost
-            cost = clock.now()
-            return {"fitness": 1e9, "cost": cost, "info": {"error": repr(exc)}}
-        cost = clock.now()
+    min_fidelity = max(
+        cfg.max_wallclock_seconds // (cfg.eta ** (cfg.rungs - 1)),
+        cfg.min_fidelity_seconds,
+    )
+    max_fidelity = cfg.max_wallclock_seconds
 
-        # Read results
-        train_cfgs_path = trial_dir / "train_cfgs.json"
-        if not train_cfgs_path.exists():
-            return {"fitness": 1e9, "cost": cost, "info": {"error": "train_cfgs.json missing"}}
+    n_workers = max(1, (os.cpu_count() or 2) - 1)
 
-        with open(train_cfgs_path, "r") as f:
-            train_cfgs = json.load(f)
+    dehb = DEHB(
+        f=target_function,
+        cs=cs,
+        dimensions=len(list(cs.values())),
+        min_fidelity=min_fidelity,
+        max_fidelity=max_fidelity,
+        n_workers=n_workers,
+        output_path=cfg.out_dir,
+        log_level="INFO",
+        eta=cfg.eta,
+        crossover_prob=cfg.crossover_prob,
+        mutation_factor=cfg.mutation_factor,
+    )
 
-        if not train_cfgs:
-            return {"fitness": 1e9, "cost": cost, "info": {"error": "empty train_cfgs.json"}}
+    traj, runtime, history = dehb.run(
+        total_cost=cfg.total_cost,
+        cfg=cfg,
+        algo_cfg=algo_cfg,
+        params=params,
+        env=env,
+        cs=cs,
+        max_fidelity=max_fidelity,
+        train_verbose=train_verbose,
+    )
 
-        avg_last_return = sum(s["last_eval_return"] for s in train_cfgs) / len(train_cfgs) # TODO: Last eval return?
+    name = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(dehb.start))
+    out_file = cfg.out_dir / f"history_{name}.pkl"
 
-        # Minimize
-        result = {
-            "fitness": -float(avg_last_return),
-            "cost": cost,
-            "info": {
-                "trial_dir": str(trial_dir),
-                "n_seeds": trial_cfg.n_seeds,
-                "seeds": trial_cfg.seeds,
-            },
-        }
-        return result
-    finally:
-        gc.collect()
+    with out_file.open("wb") as f:
+        pickle.dump(history, f)
+
+    return traj, runtime, history

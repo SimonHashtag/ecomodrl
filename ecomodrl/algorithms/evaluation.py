@@ -33,9 +33,10 @@ class BestValueEvalCallback(BaseCallback):
         cfg: Union[Mapping[str, Any], Any],
         algo_cfg: Union[Mapping[str, Any], Any],
         clock: TrainingClock,
-        eco_model,
-        evaluation_sample,
-        out_dir,
+        eco_model: Any,
+        evaluation_sample: Any,
+        out_dir: Union[str, Path],
+        seed: int,
         verbose: bool = True,
         vecnormalize=None,
         eval_on_training_end: bool = True,
@@ -46,6 +47,7 @@ class BestValueEvalCallback(BaseCallback):
         self.economic_model = eco_model
         self.evaluation_sample = evaluation_sample
         self.out_dir = Path(out_dir)
+        self.seed = seed
 
         self.algo_name = str(algo_cfg.name)
         self.model_name = str(cfg.env_name)
@@ -73,7 +75,7 @@ class BestValueEvalCallback(BaseCallback):
             n_states, horizon = int(self.evaluation_sample.n_states), int(self.evaluation_sample.horizon)
 
             print(
-                f"[{self.algo_name} | {self.model_name}] training started "
+                f"[{self.algo_name} | {self.model_name} | {self.seed}] training started "
                 f"(budget={self.wallclock_seconds:.0f}s, "
                 f"eval every {self.eval_interval_seconds:.1f}s, "
                 f"N={n_states}, T={horizon})",
@@ -101,7 +103,7 @@ class BestValueEvalCallback(BaseCallback):
             best = f"{self.best_U:.6f}" if np.isfinite(self.best_U) else "nan"
 
             print(
-                f"[{self.algo_name} | {self.model_name}] training ended | "
+                f"[{self.algo_name} | {self.model_name} | {self.seed}] training ended | "
                 f"best value = {best}",
                 flush=True,
             )
@@ -169,7 +171,7 @@ class BestValueEvalCallback(BaseCallback):
         """Print one evaluation line."""
         if error is not None:
             print(
-                f"[{self.algo_name} | {self.model_name}] "
+                f"[{self.algo_name} | {self.model_name} | {self.seed}] "
                 f"eval={self._n_evaluations:03d} ({reason}) | "
                 f"t={elapsed:>6.1f}s / {self.wallclock_seconds:.0f}s | "
                 f"evaluation failed: {error}",
@@ -181,7 +183,7 @@ class BestValueEvalCallback(BaseCallback):
         value_str = f"{value:>12.6f}" if np.isfinite(value) else "nan"
 
         print(
-            f"[{self.algo_name} | {self.model_name}] "
+            f"[{self.algo_name} | {self.model_name} | {self.seed}] "
             f"eval={self._n_evaluations:03d} ({reason}) | "
             f"t={elapsed:>6.1f}s / {self.wallclock_seconds:.0f}s | "
             f"value={value_str}{marker}",

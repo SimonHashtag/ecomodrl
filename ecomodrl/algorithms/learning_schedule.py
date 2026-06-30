@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import math
 from typing import Optional
-from dataclasses import dataclass, field
 
 import numpy as np
 
 from ecomodrl.algorithms.stopper import TrainingClock
+
 
 class WallClockCosineLR:
     """Cosine learning-rate schedule based on training-only wall clock.

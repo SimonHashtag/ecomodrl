@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from ecomodrl.configs import (
+from ecomodrl.configs.analysisconfigs import (
     CassKoopmansAnalysisConfig,
     BrockMirmanAnalysisConfig,
     BufferStockAnalysisConfig,

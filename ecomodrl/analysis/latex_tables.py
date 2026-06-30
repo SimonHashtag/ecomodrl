@@ -4,10 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ecomodrl.algorithms.training import ALGO_REGISTRY
-
-
-DEFAULT_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
+from ecomodrl.configs.analysisconfigs import ALL_ALGORITHMS
 
 ALGO_LABELS = {
     "ppo": "PPO",
@@ -43,7 +40,7 @@ def format_iqm_ci(point, lo, hi, fmt=NUM_FMT):
     )
 
 
-def make_latex_table(model, summaries_by_algo, save_path, *, algorithms=DEFAULT_ALGORITHMS):
+def make_latex_table(model, summaries_by_algo, save_path, *, algorithms=ALL_ALGORITHMS):
     """Write a LaTeX table for one economic model."""
     lines = []
     lines.append(r"\begin{minipage}{\linewidth}")
@@ -103,7 +100,7 @@ def make_combined_latex_table(
     summaries_by_model,
     save_path,
     *,
-    algorithms=DEFAULT_ALGORITHMS,
+    algorithms=ALL_ALGORITHMS,
 ):
     """Write a compact point-estimate table across models."""
     lines = []

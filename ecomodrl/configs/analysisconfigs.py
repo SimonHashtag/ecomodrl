@@ -19,7 +19,6 @@ from pathlib import Path
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.envs.setup_envs import make_env
 from ecomodrl.configs.runconfigs import (
     CassKoopmansRunConfig,
@@ -37,7 +36,7 @@ from ecomodrl.models import (
     PortfolioChoiceSolver,
 )
 
-ALL_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
+ALL_ALGORITHMS = ("ppo", "td3", "ddpg", "sac")
 
 @dataclass
 class BaseAnalysisConfig:

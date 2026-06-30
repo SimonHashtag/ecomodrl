@@ -23,13 +23,6 @@ from ecomodrl.algorithms.training import ALGO_REGISTRY
 
 DEFAULT_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
 
-ALGO_LABELS = {
-    "ppo": "PPO",
-    "ddpg": "DDPG",
-    "td3": "TD3",
-    "sac": "SAC",
-}
-
 ALGO_COLORS = {
     "ppo": "tab:red",
     "ddpg": "tab:blue",
@@ -237,12 +230,11 @@ def plot_policy_distribution(
             for i, stack in enumerate(stacks):
                 med, q1, q3 = median_iqr(stack, axis=0)
                 color = ALGO_COLORS.get(algo, "tab:blue") if model.exogenous_dim == 0 else slice_colors[i]
-                label = ALGO_LABELS.get(algo, algo.upper()) if model.exogenous_dim == 0 else slice_labels[i]
 
                 ax.fill_between(m, q1, q3, color=color, alpha=0.22)
-                ax.plot(m, med, color=color, linewidth=1.8, label=label)
+                ax.plot(m, med, color=color, linewidth=1.8)
 
-        ax.set_title(ALGO_LABELS.get(algo, algo.upper()))
+        ax.set_title(algo.upper())
         ax.set_xlabel("Cash-on-hand $m$")
         ax.set_ylabel("Consumption share $c/m$")
         ax.set_ylim(y_min, y_max)
@@ -325,10 +317,11 @@ def plot_cev_distribution(
                 ax2.set_zorder(ax.get_zorder() - 1)
                 ax.patch.set_visible(False)
 
-        ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-        ax.set_title(ALGO_LABELS.get(algo, algo.upper()))
+        #ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
+        ax.set_title(algo.upper())
         ax.set_xlabel("Cash-on-hand $m$")
         ax.set_ylabel("CEV relative to EGM [%]")
+        ax.set_yscale("log")
         ax.grid(alpha=0.3)
 
     for ax in axes[len(algorithms):]:
@@ -371,7 +364,7 @@ def plot_euler_error_distribution(
             color = ALGO_COLORS.get(algo, "tab:blue")
 
             ax.fill_between(x, q1, q3, color=color, alpha=0.22)
-            ax.plot(x, med, color=color, linewidth=1.3, label=ALGO_LABELS.get(algo, algo.upper()))
+            ax.plot(x, med, color=color, linewidth=1.3, label=algo.upper())
 
         ax.set_xscale("log")
         ax.set_xlabel("Cash-on-hand $m$")
@@ -419,7 +412,7 @@ def plot_euler_error_distribution(
                     linewidth=0.25,
                 )
 
-                ax.set_ylabel(f"{ALGO_LABELS.get(algo, algo.upper())}\n$n={pooled.size}$")
+                ax.set_ylabel(f"{algo.upper()}\n$n={pooled.size}$")
 
             ax.grid(alpha=0.3)
 
@@ -488,7 +481,7 @@ def plot_training_convergence(
 
         color = ALGO_COLORS.get(algo, "tab:blue")
         ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
-        ax.plot(t_grid, med, color=color, linewidth=1.6, label=ALGO_LABELS.get(algo, algo.upper()))
+        ax.plot(t_grid, med, color=color, linewidth=1.6, label=algo.upper())
 
     ax.set_xlabel("Training-only wall-clock seconds")
     ax.set_ylabel(r"$\log_{10}(U_{\mathrm{EGM}} - U_{\mathrm{RL}})$")

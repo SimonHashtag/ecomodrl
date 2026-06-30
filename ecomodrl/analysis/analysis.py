@@ -8,7 +8,7 @@
 #   4. Compute Euler-error diagnostics.
 #   5. Save summaries for plotting and tables.
 #
-# This file is model-agnostic. A model-specific entry file supplies an
+# This file is model-agnostic. experiments/analyze_experiments.py supplies an
 # AnalysisConfig with factories for model, solver, env, and parameters.
 # -----------------------------------------------------------------------------
 
@@ -77,7 +77,6 @@ def euler_errors_path(cfg, algo: str, train_seed: int) -> Path:
 
 def visited_states_path(cfg, algo: str, train_seed: int) -> Path:
     return analysis_result_dir(cfg, algo, train_seed) / "visited_m.npz"
-
 
 # =============================================================================
 # Small I/O helpers
@@ -170,7 +169,6 @@ def check_required_checkpoints(cfg):
             + "\n  ".join(missing[:10])
         )
 
-
 # =============================================================================
 # Model and policies
 # =============================================================================
@@ -213,7 +211,6 @@ def load_rl_policy(cfg, algo: str, train_seed: int, economic_model):
         model=economic_model,
         vecnormalize=vecnormalize,
     )
-
 
 # =============================================================================
 # Evaluation samples and EGM references
@@ -329,7 +326,6 @@ def cache_train_egm_returns(cfg, economic_model, egm_policy):
         )
 
     write_json(path, {str(k): float(v) for k, v in sorted(existing.items())})
-
 
 # =============================================================================
 # Per-seed analysis
@@ -465,7 +461,6 @@ def analyze_policy_checkpoint(
     if changed_visited:
         write_npz_dict(visited_path, visited)
 
-
 # =============================================================================
 # Summaries
 # =============================================================================
@@ -562,7 +557,6 @@ def summarize_matrix(matrix: np.ndarray) -> dict:
         "ci_hi": float(hi),
     }
 
-
 # =============================================================================
 # Main analysis routines
 # =============================================================================
@@ -627,7 +621,6 @@ def print_status(train_seed, statuses, done=None, total=None):
         suffix = f" ({done}/{total})"
 
     print(f"[analysis] seed={train_seed} [{tags}]{suffix}", flush=True)
-
 
 # =============================================================================
 # Plotting
@@ -788,7 +781,7 @@ def run_plots_and_tables(cfg):
 
     make_combined_latex_table(
         [(cfg.model_name, summaries)],
-        Path(cfg.figures_dir) / f"{cfg.model_name}_comparison_table.tex",
+        figure_dir(cfg) / f"{cfg.model_name}_comparison_table.tex",
         algorithms=cfg.algorithms,
     )
 

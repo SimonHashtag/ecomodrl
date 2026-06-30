@@ -167,6 +167,7 @@ def train_single_seed(
             clock=clock, eco_model=eco_model,
             evaluation_sample=evaluation_sample,
             out_dir=out_dir,
+            seed=seed,
             verbose=verbose,
         )
 
