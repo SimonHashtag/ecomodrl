@@ -88,9 +88,13 @@ class EGMPolicy:
     def controls(self, state):
         state = np.asarray(state, dtype=np.float64)
 
+        c = self.consumption(state)
+        m = state[..., 0]
+        share = c / m
+
         out = {
-            "share": self.share(state),
-            "consumption": self.consumption(state),
+            "share": share,
+            "consumption": c,
         }
 
         if hasattr(self.model, "portfolio_weights"):

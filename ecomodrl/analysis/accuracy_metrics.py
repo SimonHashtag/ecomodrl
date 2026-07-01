@@ -59,11 +59,6 @@ def _policy_controls(policy, state):
     return controls
 
 
-def _transition(model, state, controls, shocks):
-    """Transition using the model's full control dictionary."""
-    return model.transition(state, controls, shocks)
-
-
 def _is_constrained(model):
     """Detect occasionally binding borrowing constraint."""
     return model.interpolation_kink() is not None
@@ -96,34 +91,9 @@ def euler_errors(
     """Evaluate log10 Euler errors.
 
     For standard one-control models this computes
+    log10 |1 - c_implied / c_policy|.
 
-        log10 |1 - c_implied / c_policy|.
-
-    For portfolio-choice models this computes a joint Euler/KKT diagnostic:
-
-        log10 max(consumption Euler error, portfolio KKT residual).
-
-    Parameters
-    ----------
-    model:
-        Economic model.
-
-    policy:
-        Policy object exposing the common policy interface.
-
-    n_sim:
-        Number of states at which to evaluate errors.
-
-    burn_in:
-        Burn-in for simulated stochastic test states.
-
-    seed:
-        Simulation seed.
-
-    max_shock_nodes:
-        Optional cap on RQMC nodes for portfolio diagnostics. This is useful
-        because evaluating RL policies at every RQMC node for every simulated
-        state can be expensive.
+    For portfolio-choice models this computes a joint Euler/KKT diagnostic.
     """
     if _is_portfolio_choice(model):
         return _portfolio_euler_errors(
@@ -163,11 +133,7 @@ def euler_errors(
         err = np.where(constrained, 0.0, err)
 
     err = err[np.isfinite(err) & (err > 0.0)]
-
-    if err.size == 0:
-        return np.array([], dtype=np.float64)
-
-    return np.log10(err)
+    return np.log10(err) if err.size else np.array([], dtype=np.float64)
 
 
 def _test_states_deterministic(model, n_sim):
@@ -179,9 +145,9 @@ def _test_states_deterministic(model, n_sim):
     # Fallback for future deterministic models with exogenous states.
     return model.eval_start_states(int(n_sim))
 
-# TODO: Vectorize?
+
 def _test_states_simulated(model, policy, n_sim, burn_in, seed):
-    """Forward-simulate states under `policy` and discard burn-in."""
+    """Forward-simulate states under the full policy controls."""
     rng = np.random.default_rng(int(seed))
 
     total = int(n_sim) + int(burn_in)
@@ -193,7 +159,7 @@ def _test_states_simulated(model, policy, n_sim, burn_in, seed):
     for t in range(total):
         controls_t = _policy_controls(policy, states[t])
         shock_t = None if shocks is None else shocks[t]
-        states[t + 1] = _transition(model, states[t], controls_t, shock_t)
+        states[t + 1] = model.transition(states[t], controls_t, shock_t)
 
     return states[burn_in:-1]
 
@@ -753,9 +719,9 @@ def _portfolio_next_shock_arrays(model, z, shock_idx):
 # =============================================================================
 
 def _make_value_interpolator(axes, V):
-    """Create a value interpolator object."""
+    """Create a value interpolator."""
     if len(axes) == 1:
-        return None
+        return np.asarray(V, dtype=np.float64)
 
     return RegularGridInterpolator(
         axes,
@@ -766,7 +732,7 @@ def _make_value_interpolator(axes, V):
 
 
 def _eval_value_interpolator(interp, axes, next_states):
-    """Evaluate V at next states using a prebuilt interpolator."""
+    """Evaluate V at next-state coordinates."""
     next_states = np.asarray(next_states, dtype=np.float64)
 
     if len(axes) == 1:

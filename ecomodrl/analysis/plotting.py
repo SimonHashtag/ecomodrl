@@ -270,64 +270,131 @@ def plot_cev_distribution(
     For models with exogenous states, the figure varies the first exogenous
     state over low/middle/high and holds remaining exogenous states fixed.
     """
-    m = np.asarray(grid_axes[0])
+    m_grid = np.asarray(grid_axes[0], dtype=np.float64)
     exog_indices, slice_labels = value_slice_indices(model)
+
     slice_colors = ["tab:blue", "tab:purple", "tab:brown"]
-
-    rows, cols = subplot_grid(len(algorithms))
-    fig, axes = plt.subplots(rows, cols, figsize=(4.8 * cols, 3.6 * rows), sharey=True)
-    axes = np.atleast_1d(axes).ravel()
-
     deterministic = is_deterministic_one_state(model)
 
-    for ax, algo in zip(axes, algorithms):
-        Vs = rl_value_grids_by_algo.get(algo, [])
+    n_algos = len(algorithms)
+    fig, axes = plt.subplots(
+        1,
+        n_algos,
+        figsize=(4.5 * n_algos, 3.8),
+        sharex=True,
+        sharey=True,
+    )
+    axes = np.atleast_1d(axes).ravel()
 
-        if not Vs:
-            ax.text(0.5, 0.5, "no value grids", ha="center", va="center", transform=ax.transAxes, color="0.5")
+    positive_values_for_limits = []
+
+    for ax, algo in zip(axes, algorithms):
+        value_grids = rl_value_grids_by_algo.get(algo, [])
+
+        if not value_grids:
+            ax.text(
+                0.5,
+                0.5,
+                "no value grids",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                color="0.5",
+            )
         else:
-            lam_stack = np.stack([cev_map(model, V, V_egm) for V in Vs], axis=0)
-            lam_stack = np.where(np.isfinite(lam_stack), lam_stack, np.nan)
+            cev_stack = np.stack(
+                [cev_map(model, V_rl, V_egm) for V_rl in value_grids],
+                axis=0,
+            )
 
             for i, exog_idx in enumerate(exog_indices):
                 line_stack = np.stack(
-                    [select_value_line(lam, exog_idx) for lam in lam_stack],
+                    [select_value_line(cev_arr, exog_idx) for cev_arr in cev_stack],
                     axis=0,
                 ) * 100.0
 
                 med, q1, q3 = median_iqr(line_stack, axis=0)
 
-                color = ALGO_COLORS.get(algo, "tab:blue") if model.exogenous_dim == 0 else slice_colors[i]
+                color = (
+                    ALGO_COLORS.get(algo, "tab:blue")
+                    if model.exogenous_dim == 0
+                    else slice_colors[i]
+                )
                 label = None if model.exogenous_dim == 0 else slice_labels[i]
 
-                ax.fill_between(m, q1, q3, color=color, alpha=0.22)
-                ax.plot(m, med, color=color, linewidth=1.7, label=label)
+                ax.fill_between(
+                    m_grid,
+                    q1,
+                    q3,
+                    color=color,
+                    alpha=0.22,
+                    linewidth=0.0,
+                )
+                ax.plot(
+                    m_grid,
+                    med,
+                    color=color,
+                    linewidth=1.7,
+                    label=label,
+                )
+
+                positive_values_for_limits.append(q1)
+                positive_values_for_limits.append(q3)
+                positive_values_for_limits.append(med)
 
             if model.exogenous_dim > 0:
-                ax.legend(fontsize=8)
+                ax.legend(fontsize=8, loc="best")
 
         if not deterministic and visited_m is not None and algo in visited_m:
-            x = np.asarray(visited_m[algo], dtype=np.float64)
-            x = x[np.isfinite(x)]
+            visited = np.asarray(visited_m[algo], dtype=np.float64)
+            visited = visited[np.isfinite(visited)]
 
-            if x.size:
+            if visited.size:
                 ax2 = ax.twinx()
-                ax2.hist(x, bins=60, density=True, color="0.6", alpha=0.35, edgecolor="none")
+                ax2.hist(
+                    visited,
+                    bins=60,
+                    density=True,
+                    color="0.6",
+                    alpha=0.25,
+                    edgecolor="none",
+                )
                 ax2.set_yticks([])
                 ax2.set_zorder(ax.get_zorder() - 1)
                 ax.patch.set_visible(False)
 
-        #ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
         ax.set_title(algo.upper())
         ax.set_xlabel("Cash-on-hand $m$")
-        ax.set_ylabel("CEV relative to EGM [%]")
         ax.set_yscale("log")
-        ax.grid(alpha=0.3)
+        ax.grid(alpha=0.3, which="both")
 
-    for ax in axes[len(algorithms):]:
-        ax.axis("off")
+    axes[0].set_ylabel(r"CEV relative to EGM, $\lambda_{\mathrm{CEV}}$ [\%]")
 
-    fig.suptitle("Consumption-equivalent variation relative to EGM")
+    # Shared positive y-limits. Use robust percentiles to avoid one extreme
+    # curve determining the whole figure.
+    if positive_values_for_limits:
+        vals = np.concatenate(
+            [np.asarray(v, dtype=np.float64).ravel() for v in positive_values_for_limits]
+        )
+        vals = vals[np.isfinite(vals) & (vals > 0.0)]
+
+        if vals.size:
+            y_lo, y_hi = np.nanpercentile(vals, [1.0, 99.0])
+
+            if y_lo <= 0.0 or not np.isfinite(y_lo):
+                y_lo = np.nanmin(vals)
+
+            if y_hi <= y_lo or not np.isfinite(y_hi):
+                y_hi = np.nanmax(vals)
+
+            # Multiplicative padding is appropriate on a log scale.
+            y_lo = max(y_lo / 1.25, np.finfo(float).tiny)
+            y_hi = y_hi * 1.25
+
+            for ax in axes:
+                ax.set_ylim(y_lo, y_hi)
+
+    fig.suptitle("Consumption-equivalent gain of EGM over RL")
     plt.tight_layout()
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)

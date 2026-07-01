@@ -53,8 +53,7 @@ class BaseAnalysisConfig:
     n_test_seeds: int = 10
     
     # Evaluation
-    euler_n_states: int = 10_000
-    eval_n_states: int = 10_000 # for return and value function evaluation
+    euler_n_states: int = 100
 
     # Parallelism
     max_workers: int | None = None
@@ -199,13 +198,21 @@ def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig, argv=None) -> argpar
     )
 
     p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)
-    p.add_argument("--figures_dir", type=Path, default=argparse.SUPPRESS)
+    p.add_argument("--max_wallclock_seconds", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--eval_interval_seconds", type=int, default=argparse.SUPPRESS)
+    p.add_argument(
+        "--normalize_obs",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Whether to use VecNormalize observation normalization.",
+    )
+    p.add_argument("--n_seeds", type=int, default=argparse.SUPPRESS)
 
     p.add_argument("--n_test_seeds", type=int, default=argparse.SUPPRESS)
     p.add_argument("--test_base_seed", type=int, default=argparse.SUPPRESS)
 
     p.add_argument("--euler_n_states", type=int, default=argparse.SUPPRESS)
-    p.add_argument("--eval_n_states", type=int, default=argparse.SUPPRESS)
+    p.add_argument("--eval_m_grid_size", type=int, default=argparse.SUPPRESS)
     p.add_argument("--eval_horizon", type=int, default=argparse.SUPPRESS)
 
     p.add_argument("--max_workers", type=int, default=argparse.SUPPRESS)

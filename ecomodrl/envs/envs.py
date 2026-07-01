@@ -83,6 +83,10 @@ class BaseEconEnv(gym.Env, ABC):
         )
 
         self.state = None
+        
+    @property
+    def beta_eff(self) -> float:
+        return float(self.model.beta_eff)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)

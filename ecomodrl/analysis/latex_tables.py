@@ -6,6 +6,7 @@ import numpy as np
 
 from ecomodrl.configs.analysisconfigs import ALL_ALGORITHMS
 
+
 ALGO_LABELS = {
     "ppo": "PPO",
     "ddpg": "DDPG",
@@ -20,36 +21,54 @@ MODEL_LABELS = {
     "PortfolioChoice": "Portfolio Choice",
 }
 
-def ensure_parent(path) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-
 TABLE_ROWS = [
     (r"$U_{\mathrm{RL}}$", "u_rl", "max", 1.0),
-    ("CEV (%)", "cev_regret", "min", 100.0),
-    ("Euler error mean", "ee_mean", "min", 1.0),
-    ("Wasserstein", "wasserstein", "min", 1.0),
+    (r"$\lambda_{\mathrm{CEV}}$ (\%)", "cev_regret", "min", 100.0),
+    (r"$\mathbb{E}[\log_{10}|\mathrm{EE}|]$", "ee_mean", "min", 1.0),
+    (r"$W_1(\mathrm{EE}_{\mathrm{RL}},\mathrm{EE}_{\mathrm{EGM}})$", "wasserstein", "min", 1.0),
 ]
+
+COMBINED_ROW_LABELS = {
+    "u_rl": r"$U_{\mathrm{RL}}$",
+    "cev_regret": r"$\lambda_{\mathrm{CEV}}$ (\%)",
+    "ee_mean": r"$\mathbb{E}[\log_{10}|\mathrm{EE}|]$",
+    "wasserstein": r"$W_1(\mathrm{EE})$",
+}
 
 NUM_FMT = "%.4f"
 
 
+def ensure_parent(path) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
 def format_iqm_ci(point, lo, hi, fmt=NUM_FMT):
+    """Format IQM and confidence interval for LaTeX tables."""
     return (
         f"\\makecell{{${fmt % point}$ \\\\ "
         f"{{\\scriptsize $[{fmt % lo},\\ {fmt % hi}]$}}}}"
     )
 
 
+def _bold(cell: str) -> str:
+    return r"{\boldmath\bfseries " + cell + "}"
+
+
 def make_latex_table(model, summaries_by_algo, save_path, *, algorithms=ALL_ALGORITHMS):
-    """Write a LaTeX table for one economic model."""
-    lines = []
-    lines.append(r"\begin{minipage}{\linewidth}")
-    lines.append(r"\centering")
-    lines.append(r"\adjustbox{max width=\linewidth}{%")
-    lines.append(r"\begin{tabular}{l" + "c" * len(algorithms) + r"}")
-    lines.append(r"\toprule")
-    lines.append("Metric & " + " & ".join(ALGO_LABELS.get(a, a.upper()) for a in algorithms) + r" \\")
-    lines.append(r"\midrule")
+    """Write a LaTeX table for one economic model.
+
+    Each cell reports the interquartile mean and a crossed-bootstrap confidence
+    interval. The best point estimate in each row is bolded.
+    """
+    lines = [
+        r"\begin{minipage}{\linewidth}",
+        r"\centering",
+        r"\adjustbox{max width=\linewidth}{%",
+        r"\begin{tabular}{l" + "c" * len(algorithms) + r"}",
+        r"\toprule",
+        "Metric & " + " & ".join(ALGO_LABELS.get(a, a.upper()) for a in algorithms) + r" \\",
+        r"\midrule",
+    ]
 
     for label, key, direction, scale in TABLE_ROWS:
         values = []
@@ -75,21 +94,23 @@ def make_latex_table(model, summaries_by_algo, save_path, *, algorithms=ALL_ALGO
         if np.any(np.isfinite(arr)):
             best = np.nanargmax(arr) if direction == "max" else np.nanargmin(arr)
             if cells[best] != "--":
-                cells[best] = r"{\boldmath\bfseries " + cells[best] + "}"
+                cells[best] = _bold(cells[best])
 
         lines.append(label + " & " + " & ".join(cells) + r" \\")
 
-    lines.append(r"\bottomrule")
-    lines.append(r"\end{tabular}}")
-    lines.append(r"\par\vspace{4pt}")
-
     model_name = type(model).__name__
-    lines.append(
-        r"{\footnotesize Multi-seed analysis for "
-        + model_name
-        + r". Each cell reports the IQM with a 95\% crossed-bootstrap confidence interval.}"
-    )
-    lines.append(r"\end{minipage}")
+
+    lines += [
+        r"\bottomrule",
+        r"\end{tabular}}",
+        r"\par\vspace{4pt}",
+        (
+            r"{\footnotesize Multi-seed analysis for "
+            + MODEL_LABELS.get(model_name, model_name)
+            + r". Each cell reports the IQM with a 95\% crossed-bootstrap confidence interval.}"
+        ),
+        r"\end{minipage}",
+    ]
 
     ensure_parent(save_path)
     with open(save_path, "w") as f:
@@ -102,21 +123,20 @@ def make_combined_latex_table(
     *,
     algorithms=ALL_ALGORITHMS,
 ):
-    """Write a compact point-estimate table across models."""
-    lines = []
-    lines.append(r"\begin{frame}[t]{Results}")
-    lines.append(r"  \centering\footnotesize")
-    lines.append(r"  \renewcommand{\arraystretch}{1.15}")
-    lines.append(r"  \begin{tabular}{ll" + "r" * len(algorithms) + r"}")
-    lines.append(r"    \toprule")
-
-    header = (
-        r"    \textbf{Model} & \textbf{Metric} & "
-        + " & ".join(r"\textbf{" + ALGO_LABELS.get(a, a.upper()) + "}" for a in algorithms)
-        + r" \\"
-    )
-    lines.append(header)
-    lines.append(r"    \midrule")
+    """Write a compact point-estimate LaTeX table across economic models."""
+    lines = [
+        r"\begin{frame}[t]{Results}",
+        r"  \centering\footnotesize",
+        r"  \renewcommand{\arraystretch}{1.15}",
+        r"  \begin{tabular}{ll" + "r" * len(algorithms) + r"}",
+        r"    \toprule",
+        (
+            r"    \textbf{Model} & \textbf{Metric} & "
+            + " & ".join(r"\textbf{" + ALGO_LABELS.get(a, a.upper()) + "}" for a in algorithms)
+            + r" \\"
+        ),
+        r"    \midrule",
+    ]
 
     for model_idx, (model_key, summaries_by_algo) in enumerate(summaries_by_model):
         model_label = MODEL_LABELS.get(model_key, model_key)
@@ -150,15 +170,17 @@ def make_combined_latex_table(
                 else r"   "
             )
 
-            metric_label = key.replace("_", r"\_")
+            metric_label = COMBINED_ROW_LABELS[key]
             lines.append(first_cell + " & " + metric_label + " & " + " & ".join(cells) + r" \\")
 
         if model_idx < len(summaries_by_model) - 1:
             lines.append(r"    \midrule")
 
-    lines.append(r"    \bottomrule")
-    lines.append(r"  \end{tabular}")
-    lines.append(r"\end{frame}")
+    lines += [
+        r"    \bottomrule",
+        r"  \end{tabular}",
+        r"\end{frame}",
+    ]
 
     ensure_parent(save_path)
     with open(save_path, "w") as f:

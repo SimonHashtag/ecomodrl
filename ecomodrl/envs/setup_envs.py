@@ -23,11 +23,6 @@ def make_env(
     def _thunk():
         env = env_class(params=params,)
         
-        # Economic-model-implied RL discount.
-        # For CK/BM this equals beta. For BufferStock this is beta_eff.
-        rl_discount = float(env.model.beta_eff)
-        setattr(env, "beta_eff", rl_discount)
-        
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
         # stabilize: avoid large negative rewards during training
         if reward_floor is not None:
@@ -68,9 +63,9 @@ def build_envs(
         seed=seed,
         vec_env_cls=vec_cls,
         ) # Seeding: VecEnv seeds each sub-env with seed + env_number
-    beta_eff = float(getattr(envs, "beta_eff", params.beta))
+    beta_eff = float(envs.env_method("get_wrapper_attr", "beta_eff")[0])
     envs = VecNormalize(
-        envs, norm_obs=True, norm_reward=False, 
+        envs, norm_obs=cfg.normalize_obs, norm_reward=False, 
         clip_obs=10.0, clip_reward=1000.0, gamma=beta_eff,
     )
 

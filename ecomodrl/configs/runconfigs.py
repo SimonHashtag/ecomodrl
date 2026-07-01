@@ -35,8 +35,10 @@ class BaseRunConfig:
     hidden_nodes: int = 128
     total_timesteps: int = 1_000_000_000
     max_wallclock_seconds: int = 600
+    normalize_obs: bool = False
+    
     base_seed: int = 200
-    n_seeds: int = 10
+    n_seeds: int = 100
     @property
     def seeds(self) -> list[int]:
         """Deterministic seed set (for common random numbers across trials)."""
@@ -126,6 +128,12 @@ def parse_run_args(RunConfig: BaseRunConfig) -> argparse.Namespace:
     p.add_argument("--n_envs", type=int, default=argparse.SUPPRESS)
     p.add_argument("--max_wallclock_seconds", type=int, default=argparse.SUPPRESS)
     p.add_argument("--eval_interval_seconds", type=int, default=argparse.SUPPRESS)
+    p.add_argument(
+        "--normalize_obs",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Whether to use VecNormalize observation normalization.",
+    )
     p.add_argument("--n_seeds", type=int, default=argparse.SUPPRESS)
     
     args = p.parse_args()
