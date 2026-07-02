@@ -23,6 +23,8 @@ def _common_space(seed: int | None = None) -> CS.ConfigurationSpace:
     cs = CS.ConfigurationSpace(seed=seed)
     cs.add([
         CSH.UniformFloatHyperparameter("learning_rate", lower=1e-5, upper=3e-3, log=True),
+        # Log10 drop in learning rate by the end of training.
+        CSH.UniformFloatHyperparameter("drop", lower=0.0, upper=2.0),
         # Number of vector-env steps collected before an update.
         # total_steps = n_envs * steps_per_env.
         CSH.OrdinalHyperparameter(
@@ -36,7 +38,10 @@ def _common_space(seed: int | None = None) -> CS.ConfigurationSpace:
 
         # PPO: n_epochs.
         # Off-policy: target replay-sample reuse per newly collected transition.
-        CSH.UniformIntegerHyperparameter("sample_reuse", lower=1, upper=16),
+        CSH.OrdinalHyperparameter(
+            "sample_reuse", 
+            sequence=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        ),
     ])
 
     return cs

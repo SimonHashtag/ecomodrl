@@ -35,14 +35,15 @@ if __name__ == "__main__":
         egm_policy = EGMPolicy(model)
         solved.append((label, model, solver, egm_policy))
 
-    header = f"{'Model':<35} {'Mean log10|Euler error|':>24} {'Solve time (s)':>16}"
+    header = f"{'Model':<35} {'Mean log10|Euler error|':>24} {'Mean Return':>24} {'Solve time (s)':>16}"
     print(header)
     print("=" * len(header))
 
     for label, model, solver, egm_policy in solved:
-        ee = accuracy_metrics.euler_errors(model, egm_policy)
+        ee = accuracy_metrics.euler_errors(model, egm_policy, n_sim=100)
         mean_err = np.mean(ee) if ee.size else np.nan
-
-        print(f"{label:<35} {mean_err:>24.4f} {solver.solve_time:>16.2f}")
+        sample = accuracy_metrics.make_evaluation_sample(model, seed=1, n_states=1000, horizon=100)
+        mean_U = accuracy_metrics.eval_return_grid(model, egm_policy, sample)
+        print(f"{label:<35} {mean_err:>24.4f} {mean_U:>24.4f} {solver.solve_time:>16.2f}")
 
     print("=" * len(header))

@@ -30,6 +30,7 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
         "gae_lambda": 0.95,
         "ent_coef": 0.0,
         "vf_coef": 0.5,
+        "drop": 1.0,
     },
     "td3": {
         "learning_rate": 1e-3,
@@ -40,6 +41,7 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
         "exploration_sigma": 0.1,
         "target_policy_noise": 0.2,
         "target_noise_clip": 0.5,
+        "drop": 1.0,
     },
     "ddpg": {
         "learning_rate": 1e-3,
@@ -48,6 +50,7 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
         "sample_reuse": 1,
         "tau": 0.005,
         "exploration_sigma": 0.1,
+        "drop": 1.0,
     },
     "sac": {
         "learning_rate": 3e-4,
@@ -55,6 +58,7 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
         "batch_size": 256,
         "sample_reuse": 1,
         "tau": 0.005,
+        "drop": 1.0,
         # ent_coef fixed to "auto" in adapter
     },
 }
@@ -101,6 +105,7 @@ def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
 
     params.update({
         "learning_rate": float(hp["learning_rate"]),
+        "drop": float(hp["drop"]),
         "n_steps": steps_per_env,
         "batch_size": batch_size,
         "n_epochs": int(hp["sample_reuse"]),
@@ -121,6 +126,7 @@ def _offpolicy_adapter_common(hp: Dict[str, Any], cfg: Any, base: AlgoConfig,) -
 
     params.update({
         "learning_rate": float(hp["learning_rate"]),
+        "drop": float(hp["drop"]),
         "train_freq": (int(steps_per_env), "step"),
         "batch_size": batch_size,
         "gradient_steps": gradient_steps,
@@ -178,7 +184,6 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "clip_range_vf": None,
                 "target_kl": None,
                 "use_sde": False,
-                "drop": 1.,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -198,7 +203,6 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "max_grad_norm": 1.0,
                 "buffer_size": 10_000,
                 "learning_starts": 0,
-                "drop": 1.,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,
@@ -216,7 +220,6 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
                 "use_sde": False,
                 "buffer_size": 10_000,
                 "learning_starts": 0,
-                "drop": 1.,
             },
             policy_kwargs={
                 "activation_fn": th.nn.ReLU,

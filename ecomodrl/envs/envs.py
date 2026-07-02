@@ -71,6 +71,7 @@ class BaseEconEnv(gym.Env, ABC):
             raise ValueError("MODEL_CLS must be set by subclasses.")
 
         self.model = self.MODEL_CLS(params=params, **model_kwargs)
+        self.beta_eff = float(self.model.beta_eff)
 
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, 
@@ -83,10 +84,6 @@ class BaseEconEnv(gym.Env, ABC):
         )
 
         self.state = None
-        
-    @property
-    def beta_eff(self) -> float:
-        return float(self.model.beta_eff)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
