@@ -36,6 +36,7 @@ class BaseRunConfig:
     total_timesteps: int = 1_000_000_000
     max_wallclock_seconds: int = 600
     normalize_obs: bool = False
+    reward_floor: float | None = 100.0
     
     base_seed: int = 200
     n_seeds: int = 100

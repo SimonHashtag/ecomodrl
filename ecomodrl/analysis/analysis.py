@@ -8,9 +8,6 @@
 # 3. Evaluate trained RL checkpoints by algorithm, training seed, and test seed.
 # 4. Compute Euler-error diagnostics.
 # 5. Save summaries for plotting and LaTeX tables.
-#
-# The file is model-agnostic. A model-specific AnalysisConfig supplies factories
-# for the economic model, solver, environment, and parameters.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -19,6 +16,7 @@ import json
 import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
 from pathlib import Path
 
 import numpy as np
@@ -325,7 +323,10 @@ def cache_egm_value_grid(cfg, economic_model, egm_policy) -> None:
     if path.exists() and not cfg.overwrite:
         return
 
-    grid, V = metrics.policy_value_on_grid(economic_model, egm_policy)
+    grid, V = metrics.policy_value_on_grid(
+        economic_model, 
+        egm_policy,
+    )
     save_value_grid(path, grid, V)
 
 
@@ -410,10 +411,15 @@ def analyze_checkpoint_worker(args):
     import torch
 
     torch.set_num_threads(1)
+    
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
 
     cfg, algo, train_seed = args
 
-    economic_model, _ = solve_egm_model(cfg)
+    economic_model = cfg.make_economic_model()
     deterministic = is_deterministic_one_state(economic_model)
     seeds = effective_test_seeds(cfg, economic_model)
 
@@ -465,7 +471,10 @@ def analyze_policy_checkpoint(
     # 1. Grid Bellman value for CEV maps.
     vg_path = value_grid_path(cfg, algo, train_seed)
     if cfg.overwrite or not vg_path.exists():
-        grid, V = metrics.policy_value_on_grid(economic_model, policy)
+        grid, V = metrics.policy_value_on_grid(
+            economic_model, 
+            policy,
+        )
         save_value_grid(vg_path, grid, V)
 
     # 2. Test returns, CEV regret, Euler errors, and visited states.
@@ -662,7 +671,9 @@ def run_testing(cfg) -> None:
             algo, train_seed, status = analyze_checkpoint_worker(unit)
             print(f"[analysis] {algo} seed={train_seed}: {status}", flush=True)
     else:
-        with ProcessPoolExecutor(max_workers=worker_count) as pool:
+        ctx = mp.get_context("spawn")
+
+        with ProcessPoolExecutor(max_workers=worker_count, mp_context=ctx) as pool:
             futures = {pool.submit(analyze_checkpoint_worker, u): u for u in units}
 
             done = 0

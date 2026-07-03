@@ -5,7 +5,7 @@ from typing import Callable, Any, Union, Mapping
 
 from gymnasium.wrappers import TimeLimit, TransformReward
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 def make_env(
     env_class: Callable[..., Any],
@@ -37,6 +37,7 @@ def build_envs(
     seed: int,
     *,
     reward_floor: float | None = 100,
+    vec_env_type: str = "dummy",
     ):
     """ 
     Creates vectorized training env and eval env with normalization and explicit seeding.
@@ -49,24 +50,40 @@ def build_envs(
     
     Returns: vectorized training env, effective RL discount (beta_eff)
     """
-    # Avoid SubProcVecEnv when parallelizing across multiple seeds.
-    vec_cls = DummyVecEnv if os.getenv("ECOMODRL_SEED_PARALLEL") == "1" else None
     
+    if vec_env_type == "dummy":
+        vec_cls = DummyVecEnv
+        vec_env_kwargs = None
+    elif vec_env_type == "subproc":
+        vec_cls = SubprocVecEnv
+        vec_env_kwargs = {"start_method": "spawn"}
+    else:
+        raise ValueError(f"Unknown vec_env_type={vec_env_type!r}")
+
+    # Avoid Gymnasium wrapper attribute warning entirely.
+    model = env_class.MODEL_CLS(params=params)
+    beta_eff = float(model.beta_eff)
+
     envs = make_vec_env(
         make_env(
             env_class,
             params,
             max_episode_steps=cfg.max_episode_steps,
             reward_floor=reward_floor,
-        ), 
-        n_envs=cfg.n_envs, 
+        ),
+        n_envs=cfg.n_envs,
         seed=seed,
         vec_env_cls=vec_cls,
-        ) # Seeding: VecEnv seeds each sub-env with seed + env_number
-    beta_eff = float(envs.env_method("get_wrapper_attr", "beta_eff")[0])
+        vec_env_kwargs=vec_env_kwargs,
+    )
+
     envs = VecNormalize(
-        envs, norm_obs=cfg.normalize_obs, norm_reward=False, 
-        clip_obs=10.0, clip_reward=1000.0, gamma=beta_eff,
+        envs,
+        norm_obs=cfg.normalize_obs,
+        norm_reward=False,
+        clip_obs=10.0,
+        clip_reward=reward_floor,
+        gamma=beta_eff,
     )
 
     return envs, beta_eff

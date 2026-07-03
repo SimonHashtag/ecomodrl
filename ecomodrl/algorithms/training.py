@@ -101,11 +101,11 @@ def _set_thread_env(n: int = 1) -> None:
     except Exception:
         pass
 
-def _worker_run(args: Tuple[Any, AlgoConfig, Callable[..., Any], Any, int]) -> dict:
+def _worker_run(args: Tuple[Any, AlgoConfig, Callable[..., Any], Any, int, int, str]) -> dict:
     """Top-level wrapper for pickling + per-process thread cap."""
-    cfg, algo_cfg, env, params, seed, verbose = args
+    cfg, algo_cfg, env, params, seed, verbose, vec_env_type = args
     _set_thread_env(1)
-    return train_single_seed(cfg, algo_cfg, env, params, seed, verbose=verbose)
+    return train_single_seed(cfg, algo_cfg, env, params, seed, verbose=verbose, vec_env_type=vec_env_type)
 
 # -------------------------------------------------------
 # Main training functions
@@ -117,7 +117,8 @@ def train_single_seed(
     env: Callable[..., Any],
     params: Union[Mapping[str, Any], Any],
     seed: int,
-    verbose: int = 0
+    verbose: int = 0,
+    vec_env_type: str = "dummy",
 ) -> dict:
     """Train RL model for one seed and return metadata."""
     set_random_seed(seed)
@@ -136,7 +137,7 @@ def train_single_seed(
     envs = model = None
     clock = TrainingClock()
     try:
-        envs, beta_eff = build_envs(env, params=params, cfg=cfg, seed=seed)
+        envs, beta_eff = build_envs(env, params=params, cfg=cfg, seed=seed, reward_floor=cfg.reward_floor, vec_env_type=vec_env_type)
         algo_cfg.algo_params.update({"gamma": beta_eff}) # pass effective RL discount factor for Buffer Stock with normalization by prices
 
         eco_model = envs.get_attr("model")[0]
@@ -209,6 +210,7 @@ def train_multiple_seeds(
     *,
     max_workers: Optional[int] = None,
     seed_parallel: bool = True,
+    vec_env_type: str = "dummy",
     verbose: int = 0,
 ) -> List[dict]:
     """
@@ -224,16 +226,23 @@ def train_multiple_seeds(
     if max_workers is None:
         total = max(1, os.cpu_count() - 1 or 1)
         max_workers = max(1, min(len(seeds), total))
+        
+    # If we parallelize over seeds, force DummyVecEnv inside each seed worker.
+    if max_workers > 1:
+        vec_env_type = "dummy"
 
     ctx = mp.get_context("spawn")
-    tasks = [(cfg, algo_cfg, env, params, s, verbose) for s in seeds]
+    tasks = [
+        (cfg, algo_cfg, env, params, s, verbose, vec_env_type) 
+        for s in seeds
+    ]
+    
     results: List[dict] = []
 
     if max_workers == 1:
         for t in tasks:
             results.append(_worker_run(t))
     else:
-        os.environ["ECOMODRL_SEED_PARALLEL"] = "1" # tell env builder to avoid SubprocVecEnv in seed workers
         with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as ex:
             futs = {ex.submit(_worker_run, t): t[-1] for t in tasks}
             for fut in as_completed(futs):
