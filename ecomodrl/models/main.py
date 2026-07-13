@@ -33,6 +33,7 @@ if __name__ == "__main__":
             solver = BaseEGM(model)
         solver.solve(verbose=True)
         egm_policy = EGMPolicy(model)
+        print(f"Grid-reference state m_ref for {label}: {solver.model.m_ref:.2f}")
         solved.append((label, model, solver, egm_policy))
 
     header = f"{'Model':<35} {'Mean log10|Euler error|':>24} {'Mean Return':>24} {'Solve time (s)':>16}"

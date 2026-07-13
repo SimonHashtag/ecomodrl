@@ -24,8 +24,8 @@ class BufferStock(EconomicModel):
 
     n_gh_nodes = 7
 
-    min_m_max = 20.0
-    grid_upper_factor = 5.0
+    min_m_max = 5.0
+    grid_upper_factor = 2.5
     impatience_gap_floor = 1e-3
 
     max_action_share = 1.0
@@ -105,14 +105,17 @@ class BufferStock(EconomicModel):
         )
 
         self._beta_eff = self.params.beta * self.G ** theta * M_psi
-
+    
     def _buffer_stock_grid_scale(self) -> tuple[float, float]:
-        """Theory-anchored buffer-stock grid scale.
-
-        This function chooses a fixed m-grid before solving the model.
+        """Theory-anchored heuristic for choosing the pre-solution m-grid scale.
 
         It does not compute the exact stochastic target m*. Instead it builds a
-        deterministic proxy with the correct buffer-stock comparative statics.
+        deterministic proxy using the buffer-stock comparative statics:
+
+            - more patience              -> larger grid
+            - higher income risk         -> larger grid
+            - higher prudence            -> larger grid
+            - smaller GIC gap            -> larger grid
 
         Main object (perfect-foresight consumption growth factor implied by the
         Euler equation):
@@ -125,14 +128,16 @@ class BufferStock(EconomicModel):
 
         thorn = (p.beta * self.R) ** (1.0 / p.gamma)
 
-        growth_impatience_gap = max(1.0 - thorn / self.G, self.impatience_gap_floor)
-        unemployment_risk = p.unemp_prob * (1.0 - p.theta_low) ** 2
+        growth_impatience_gap = max(np.log(self.G) - np.log(thorn), self.impatience_gap_floor)
+        unemployment_risk = p.unemp_prob * (1.0 - p.unemp_prob) * (1.0 - p.theta_low) ** 2
         income_risk = p.sigma_perm ** 2 + p.sigma_tran ** 2 + unemployment_risk
         prudence_risk_term = 0.5 * p.gamma * (p.gamma + 1.0) * income_risk
 
-        precautionary_assets = prudence_risk_term / growth_impatience_gap
+        # Dimensionless risk pressure relative to impatience.
+        risk_index = prudence_risk_term / growth_impatience_gap
 
-        m_ref = max(1.0, 1.0 + precautionary_assets)
+        # Damp the risk index via a square-root transformation to avoid overshooting the target m*. Heuristic m_ref!
+        m_ref = 1.0 + np.sqrt(max(risk_index, 0.0))
 
         m_max = max(
             self.min_m_max,
