@@ -1,6 +1,7 @@
 gymnasium
 matplotlib
 numpy
+numba
 tensorboard
 torch
 stable_baselines3
