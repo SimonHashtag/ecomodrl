@@ -44,7 +44,7 @@ class PortfolioChoice(EconomicModel):
 
     min_action_share = 1e-6
     max_action_share = 1.0
-    logit_cap = 12.0
+    logit_cap = 3.0
 
     def __init__(
         self,
@@ -52,8 +52,8 @@ class PortfolioChoice(EconomicModel):
         m_grid_size: int = 61,
         rs_grid_size: int = 61,
         z_grid_size: int = 21,
-        m_span: tuple[float, float] = (0.2, 30.0),
-        rs_span: tuple[float, float] = (0.0, 30.0),
+        m_span: tuple[float, float] = (0.2, 10.0),
+        rs_span: tuple[float, float] = (0.0, 10.0),
         z_width: float = 3.0,
         rqmc_nodes: int | None = None,
         rqmc_seed: int | None = None,

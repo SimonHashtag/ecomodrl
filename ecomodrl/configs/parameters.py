@@ -188,9 +188,9 @@ class PortfolioChoiceParams:
     # ---- assets & predictors ----
     rho_z: Union[Sequence[float], float] = (0.90,)         # AR(1) coefficient(s) |rho|<1
     sigma_z: Union[Sequence[float], float] = (0.08,)       # predictor innovation std(s) >= 0
-    kappa_R: Union[Sequence[float], float] = (0.00,)       # intercept(s) in ln R
-    xi_R: Union[Sequence[float], float] = (0.045,)          # slope(s) on z in ln R
-    sigma_R: Union[Sequence[float], float] = (0.28,)       # std(s) in ln R innovations >= 0
+    kappa_R: Union[Sequence[float], float] = (0.04,)       # intercept(s) in ln R
+    xi_R: Union[Sequence[float], float] = (0.4,)           # slope(s) on z in ln R
+    sigma_R: Union[Sequence[float], float] = (0.18,)       # std(s) in ln R innovations >= 0
 
     n_risky: Optional[int] = 1
 
