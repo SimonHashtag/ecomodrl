@@ -18,17 +18,26 @@ import pickle
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 from pathlib import Path
+from typing import Any, Mapping, Union
 
 import numpy as np
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.analysis.policy_interface import EGMPolicy, RLPolicy
-from ecomodrl.analysis import accuracy_metrics as metrics
+from ecomodrl.analysis import accuracy_metrics
+from ecomodrl.analysis.efficiency_metrics import (
+    aulc_per_seed,
+    time_to_best_per_seed,
+    time_to_converged_per_seed,
+)
 from ecomodrl.analysis.plotting import (
     plot_policy_distribution,
     plot_cev_distribution,
     plot_euler_error_distribution,
     plot_training_convergence,
+    plot_portfolio_share_heatmaps,
+    plot_portfolio_share_diff_heatmaps,
+    plot_portfolio_share_slices,
 )
 from ecomodrl.analysis.latex_tables import (
     make_latex_table,
@@ -40,27 +49,34 @@ from ecomodrl.analysis.latex_tables import (
 # Paths
 # =============================================================================
 
-def model_results_dir(cfg) -> Path:
+def model_results_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
     """Root directory for one economic model's training and analysis results."""
     return Path(cfg.out_dir) / cfg.model_name
 
 
-def figure_dir(cfg) -> Path:
+def figure_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
     """Directory for figures and tables."""
     return model_results_dir(cfg) / "figures"
 
 
-def egm_analysis_dir(cfg) -> Path:
+def egm_analysis_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
     """Directory for benchmark-policy analysis output."""
     return model_results_dir(cfg) / "egm_analysis"
 
 
-def evaluation_sample_path(cfg, test_seed: int) -> Path:
+def evaluation_sample_path(
+    cfg: Union[Mapping[str, Any], Any], 
+    test_seed: int,
+) -> Path:
     """Path to the fixed common-random-number evaluation sample."""
     return egm_analysis_dir(cfg) / f"evaluation_sample_seed_{int(test_seed)}.pkl"
 
 
-def checkpoint_dir(cfg, algo: str, train_seed: int) -> Path:
+def checkpoint_dir(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str, 
+    train_seed: int,
+) -> Path:
     """Directory containing one trained RL checkpoint.
 
     Training code writes algorithm names in uppercase directories.
@@ -68,28 +84,51 @@ def checkpoint_dir(cfg, algo: str, train_seed: int) -> Path:
     return model_results_dir(cfg) / algo.upper() / f"seed_{int(train_seed)}"
 
 
-def analysis_result_dir(cfg, algo: str, train_seed: int) -> Path:
+def analysis_result_dir(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str, 
+    train_seed: int,
+) -> Path:
     """Directory for one checkpoint's analysis output."""
     return checkpoint_dir(cfg, algo, train_seed) / "analysis"
 
 
-def value_grid_path(cfg, algo: str, train_seed: int) -> Path:
+def value_grid_path(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str, 
+    train_seed: int,
+) -> Path:
     return analysis_result_dir(cfg, algo, train_seed) / "value_grid.npz"
 
 
-def test_values_path(cfg, algo: str, train_seed: int) -> Path:
+def test_values_path(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str, 
+    train_seed: int,
+) -> Path:
     return analysis_result_dir(cfg, algo, train_seed) / "test_values.json"
 
 
-def euler_errors_path(cfg, algo: str, train_seed: int) -> Path:
+def euler_errors_path(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str, 
+    train_seed: int,
+) -> Path:
     return analysis_result_dir(cfg, algo, train_seed) / "euler_errors.npz"
 
 
-def visited_states_path(cfg, algo: str, train_seed: int) -> Path:
+def visited_states_path(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str, 
+    train_seed: int,
+) -> Path:
     return analysis_result_dir(cfg, algo, train_seed) / "visited_m.npz"
 
 
-def algorithm_summary_path(cfg, algo: str) -> Path:
+def algorithm_summary_path(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str,
+) -> Path:
     """Summary path for one algorithm and one economic model."""
     return model_results_dir(cfg) / algo.upper() / "analysis_summary.json"
 
@@ -187,7 +226,7 @@ def load_value_grid(path: Path):
 # Model and policy helpers
 # =============================================================================
 
-def solve_egm_model(cfg):
+def solve_egm_model(cfg: Union[Mapping[str, Any], Any]):
     """Construct and solve the economic model with its configured solver."""
     model = cfg.make_economic_model()
     solver = cfg.make_egm_solver(model)
@@ -204,7 +243,16 @@ def is_deterministic_one_state(model) -> bool:
     return model.weights is None and model.exogenous_dim == 0
 
 
-def effective_test_seeds(cfg, model) -> list[int]:
+def is_portfolio_model(model) -> bool:
+    """Return True for models with a safe/risky portfolio choice (PortfolioChoice)."""
+    return (
+        hasattr(model, "portfolio_weights")
+        and getattr(model, "n_risky", 0) >= 1
+        and model.exogenous_dim >= 1
+    )
+
+
+def effective_test_seeds(cfg: Union[Mapping[str, Any], Any], model) -> list[int]:
     """Return relevant test seeds.
 
     Deterministic one-state models do not need repeated test seeds because the
@@ -215,7 +263,12 @@ def effective_test_seeds(cfg, model) -> list[int]:
     return list(cfg.test_seeds)
 
 
-def load_rl_policy(cfg, algo: str, train_seed: int, economic_model):
+def load_rl_policy(
+    cfg: Union[Mapping[str, Any], Any], 
+    algo: str, 
+    train_seed: int, 
+    economic_model,
+) -> RLPolicy:
     """Load one trained RL checkpoint as an `RLPolicy`."""
     seed_dir = checkpoint_dir(cfg, algo, train_seed)
 
@@ -254,7 +307,7 @@ def load_rl_policy(cfg, algo: str, train_seed: int, economic_model):
     )
 
 
-def check_required_checkpoints(cfg) -> None:
+def check_required_checkpoints(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Fail early if requested checkpoints are missing."""
     missing = []
 
@@ -276,7 +329,11 @@ def check_required_checkpoints(cfg) -> None:
 # EGM reference objects
 # =============================================================================
 
-def prepare_evaluation_samples(cfg, economic_model, egm_policy) -> None:
+def prepare_evaluation_samples(
+    cfg: Union[Mapping[str, Any], Any], 
+    economic_model, 
+    egm_policy,
+) -> None:
     """Create fixed evaluation samples and EGM reference returns."""
     out_dir = egm_analysis_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -293,7 +350,7 @@ def prepare_evaluation_samples(cfg, economic_model, egm_policy) -> None:
         path = evaluation_sample_path(cfg, test_seed)
 
         if cfg.overwrite or not path.exists():
-            sample = metrics.make_evaluation_sample(
+            sample = accuracy_metrics.make_evaluation_sample(
                 economic_model,
                 seed=test_seed,
                 n_states=cfg.eval_m_grid_size,
@@ -307,7 +364,7 @@ def prepare_evaluation_samples(cfg, economic_model, egm_policy) -> None:
                 sample = pickle.load(f)
 
             egm_returns[test_seed] = float(
-                metrics.eval_return_grid(economic_model, egm_policy, sample)
+                accuracy_metrics.eval_return_grid(economic_model, egm_policy, sample)
             )
 
     write_json(
@@ -316,21 +373,29 @@ def prepare_evaluation_samples(cfg, economic_model, egm_policy) -> None:
     )
 
 
-def cache_egm_value_grid(cfg, economic_model, egm_policy) -> None:
+def cache_egm_value_grid(
+    cfg: Union[Mapping[str, Any], Any], 
+    economic_model: Any, 
+    egm_policy: EGMPolicy,
+) -> None:
     """Cache the benchmark value function on the model grid."""
     path = egm_analysis_dir(cfg) / "value_grid.npz"
 
     if path.exists() and not cfg.overwrite:
         return
 
-    grid, V = metrics.policy_value_on_grid(
+    grid, V = accuracy_metrics.policy_value_on_grid(
         economic_model, 
         egm_policy,
     )
     save_value_grid(path, grid, V)
 
 
-def cache_egm_euler_errors(cfg, economic_model, egm_policy) -> None:
+def cache_egm_euler_errors(
+    cfg: Union[Mapping[str, Any], Any], 
+    economic_model: Any, 
+    egm_policy: EGMPolicy,
+) -> None:
     """Cache benchmark Euler-error reference distributions."""
     out_dir = egm_analysis_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -341,7 +406,7 @@ def cache_egm_euler_errors(cfg, economic_model, egm_policy) -> None:
         if path.exists() and not cfg.overwrite:
             return
 
-        ee = metrics.euler_errors(
+        ee = accuracy_metrics.euler_errors(
             economic_model,
             egm_policy,
             n_sim=cfg.euler_n_states,
@@ -355,7 +420,7 @@ def cache_egm_euler_errors(cfg, economic_model, egm_policy) -> None:
         if path.exists() and not cfg.overwrite:
             continue
 
-        ee = metrics.euler_errors(
+        ee = accuracy_metrics.euler_errors(
             economic_model,
             egm_policy,
             n_sim=cfg.euler_n_states,
@@ -364,7 +429,11 @@ def cache_egm_euler_errors(cfg, economic_model, egm_policy) -> None:
         np.save(path, np.asarray(ee, dtype=np.float64))
 
 
-def cache_train_egm_returns(cfg, economic_model, egm_policy) -> None:
+def cache_train_egm_returns(
+    cfg: Union[Mapping[str, Any], Any], 
+    economic_model: Any, 
+    egm_policy: EGMPolicy,
+) -> None:
     """Cache EGM returns on training-time evaluation samples.
 
     The convergence plot compares checkpoint returns to EGM returns on the same
@@ -379,20 +448,24 @@ def cache_train_egm_returns(cfg, economic_model, egm_policy) -> None:
     missing = [s for s in cfg.seeds if cfg.overwrite or s not in existing]
 
     for train_seed in missing:
-        sample = metrics.make_evaluation_sample(
+        sample = accuracy_metrics.make_evaluation_sample(
             economic_model,
             seed=train_seed + cfg.eval_seed_offset,
             n_states=cfg.eval_m_grid_size,
             horizon=cfg.eval_horizon,
         )
         existing[train_seed] = float(
-            metrics.eval_return_grid(economic_model, egm_policy, sample)
+            accuracy_metrics.eval_return_grid(economic_model, egm_policy, sample)
         )
 
     write_json(path, {str(k): float(v) for k, v in sorted(existing.items())})
 
 
-def load_egm_euler_reference(cfg, economic_model, test_seed: int | None):
+def load_egm_euler_reference(
+    cfg: Union[Mapping[str, Any], Any], 
+    economic_model: Any, 
+    test_seed: int | None
+) -> np.ndarray | None:
     """Load cached EGM Euler-error reference."""
     if is_deterministic_one_state(economic_model):
         path = egm_analysis_dir(cfg) / "euler_errors.npy"
@@ -454,8 +527,8 @@ def analyze_checkpoint_worker(args):
 
 def analyze_policy_checkpoint(
     *,
-    cfg,
-    economic_model,
+    cfg: Union[Mapping[str, Any], Any],
+    economic_model: Any,
     algo: str,
     train_seed: int,
     test_samples: dict[int, object],
@@ -471,7 +544,7 @@ def analyze_policy_checkpoint(
     # 1. Grid Bellman value for CEV maps.
     vg_path = value_grid_path(cfg, algo, train_seed)
     if cfg.overwrite or not vg_path.exists():
-        grid, V = metrics.policy_value_on_grid(
+        grid, V = accuracy_metrics.policy_value_on_grid(
             economic_model, 
             policy,
         )
@@ -497,7 +570,7 @@ def analyze_policy_checkpoint(
 
         if cfg.overwrite or key not in values:
             u_rl = float(
-                metrics.eval_return_grid(
+                accuracy_metrics.eval_return_grid(
                     economic_model,
                     policy,
                     test_samples[test_seed],
@@ -506,7 +579,7 @@ def analyze_policy_checkpoint(
             u_egm = float(egm_returns[test_seed])
 
             if np.isfinite(u_rl) and np.isfinite(u_egm):
-                cev_regret = float(metrics.cev(economic_model, u_rl, u_egm))
+                cev_regret = float(accuracy_metrics.cev(economic_model, u_rl, u_egm))
             else:
                 cev_regret = float("nan")
 
@@ -518,7 +591,7 @@ def analyze_policy_checkpoint(
             changed_values = True
 
         if cfg.overwrite or array_key not in eulers:
-            ee = metrics.euler_errors(
+            ee = accuracy_metrics.euler_errors(
                 economic_model,
                 policy,
                 n_sim=cfg.euler_n_states,
@@ -528,7 +601,7 @@ def analyze_policy_checkpoint(
             changed_eulers = True
 
         if not deterministic and (cfg.overwrite or array_key not in visited):
-            states = metrics.simulate_states(
+            states = accuracy_metrics.simulate_states(
                 economic_model,
                 policy,
                 n_sim=cfg.euler_n_states,
@@ -551,7 +624,35 @@ def analyze_policy_checkpoint(
 # Summaries
 # =============================================================================
 
-def summarize_algorithm(cfg, economic_model, algo: str) -> None:
+
+def summarize_matrix(matrix: np.ndarray) -> dict:
+    """Return descriptive statistics and crossed-bootstrap IQM interval."""
+    matrix = np.asarray(matrix, dtype=np.float64)
+    finite = matrix[np.isfinite(matrix)]
+
+    if finite.size == 0:
+        return {"n": 0}
+
+    iqm, lo, hi = accuracy_metrics.iqm_ci_crossed(matrix)
+
+    return {
+        "n": int(finite.size),
+        "median": float(np.median(finite)),
+        "q1": float(np.percentile(finite, 25)),
+        "q3": float(np.percentile(finite, 75)),
+        "min": float(np.min(finite)),
+        "max": float(np.max(finite)),
+        "iqm": float(iqm),
+        "ci_lo": float(lo),
+        "ci_hi": float(hi),
+    }
+
+
+def summarize_algorithm(
+    cfg: Union[Mapping[str, Any], Any], 
+    economic_model: Any, 
+    algo: str,
+) -> None:
     """Aggregate train-seed × test-seed cells for one algorithm."""
     active_test_seeds = effective_test_seeds(cfg, economic_model)
     shape = (len(cfg.seeds), len(active_test_seeds))
@@ -599,7 +700,7 @@ def summarize_algorithm(cfg, economic_model, algo: str) -> None:
 
             ref = egm_euler_refs[test_seed]
             if ref is not None:
-                matrices["wasserstein"][i, j] = metrics.wasserstein_euler(ee, ref)
+                matrices["wasserstein"][i, j] = accuracy_metrics.wasserstein_euler(ee, ref)
 
             n_cells += 1
 
@@ -613,36 +714,57 @@ def summarize_algorithm(cfg, economic_model, algo: str) -> None:
         summary[name] = summarize_matrix(matrix)
 
     write_json(algorithm_summary_path(cfg, algo), summary)
+    
+    
+def efficiency_summary(
+    histories_by_algo: dict[str, list],
+    egm_returns_by_algo: dict[str, list],
+    wallclock_seconds: float,
+    grid_step: float,
+    *,
+    algorithms: list[str],
+    conv_tol: float = 0.05,
+):
+    """Efficiency metrics: AULC, time-to-best, time-to-converged.
 
+    Each metric is aggregated over training seeds with IQM + bootstrap CI.
+    """
+    t_grid = np.arange(0.0, float(wallclock_seconds) + 1e-9, float(grid_step))
 
-def summarize_matrix(matrix: np.ndarray) -> dict:
-    """Return descriptive statistics and crossed-bootstrap IQM interval."""
-    matrix = np.asarray(matrix, dtype=np.float64)
-    finite = matrix[np.isfinite(matrix)]
+    summary = {}
+    for algo in algorithms:
+        histories = histories_by_algo.get(algo, [])
+        egm_returns = egm_returns_by_algo.get(algo, [])
 
-    if finite.size == 0:
-        return {"n": 0}
+        entry = {}
 
-    iqm, lo, hi = metrics.iqm_ci_crossed(matrix)
+        if not histories or len(histories) != len(egm_returns):
+            entry["aulc"] = {"n": 0}
+            entry["time_to_best"] = {"n": 0}
+            entry["time_to_converged"] = {"n": 0}
+            summary[algo] = entry
+            continue
 
-    return {
-        "n": int(finite.size),
-        "median": float(np.median(finite)),
-        "q1": float(np.percentile(finite, 25)),
-        "q3": float(np.percentile(finite, 75)),
-        "min": float(np.min(finite)),
-        "max": float(np.max(finite)),
-        "iqm": float(iqm),
-        "ci_lo": float(lo),
-        "ci_hi": float(hi),
-    }
+        entry["aulc"] = summarize_matrix(
+            aulc_per_seed(histories, egm_returns, t_grid)
+        )
+        entry["time_to_best"] = summarize_matrix(
+            time_to_best_per_seed(histories)
+        )
+        entry["time_to_converged"] = summarize_matrix(
+            time_to_converged_per_seed(histories, egm_returns, conv_tol)
+        )
+
+        summary[algo] = entry
+
+    return summary
 
 
 # =============================================================================
 # Main analysis
 # =============================================================================
 
-def run_testing(cfg) -> None:
+def run_testing(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Run numerical post-training analysis."""
     print(f"\n========== Analysis: {cfg.model_name} ==========")
     print(f"Algorithms: {', '.join(cfg.algorithms)}")
@@ -728,7 +850,7 @@ def load_training_history(seed_dir: Path):
     return None
 
 
-def run_plots_and_tables(cfg) -> None:
+def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Create figures and LaTeX tables from saved analysis output."""
     print(f"\n========== Figures: {cfg.model_name} ==========")
 
@@ -820,6 +942,7 @@ def run_plots_and_tables(cfg) -> None:
         out / "cev.png",
         algorithms=cfg.algorithms,
         visited_m=pooled_visited,
+        support_quantiles=(0.1, 99.9),
     )
 
     plot_euler_error_distribution(
@@ -830,6 +953,50 @@ def run_plots_and_tables(cfg) -> None:
         algorithms=cfg.algorithms,
     )
 
+    # -------------------------------------------------------------------------
+    # Portfolio-share figures
+    # -------------------------------------------------------------------------
+    if is_portfolio_model(economic_model):
+        plot_portfolio_share_heatmaps(
+            economic_model,
+            rl_policies,
+            out / "portfolio_share.png",
+            algorithms=cfg.algorithms,
+        )
+
+        plot_portfolio_share_diff_heatmaps(
+            economic_model,
+            egm_policy,
+            rl_policies,
+            out / "portfolio_share_diff.png",
+            algorithms=cfg.algorithms,
+        )
+
+        plot_portfolio_share_slices(
+            economic_model,
+            egm_policy,
+            rl_policies,
+            out / "portfolio_share_slices.png",
+            algorithms=cfg.algorithms,
+        )
+
+        print("[figures] portfolio-share plots saved")
+
+    # -------------------------------------------------------------------------
+    # Efficiency metrics: AULC and time-to-convergence
+    # -------------------------------------------------------------------------
+    efficiency = efficiency_summary(
+        histories,
+        egm_returns_by_algo,
+        cfg.max_wallclock_seconds,
+        cfg.eval_interval_seconds,
+        algorithms=cfg.algorithms,
+        conv_tol=getattr(cfg, "conv_tol", 0.0001),
+    )
+    # 0.01 percentage points of regret above the best regret are considered 
+    # "converged" time periods for the time-to-convergence metric.
+    write_json(figure_dir(cfg) / "efficiency_summary.json", efficiency)
+
     plot_training_convergence(
         histories,
         egm_returns_by_algo,
@@ -837,6 +1004,7 @@ def run_plots_and_tables(cfg) -> None:
         out / "convergence.png",
         algorithms=cfg.algorithms,
         grid_step=cfg.eval_interval_seconds,
+        efficiency=efficiency,
     )
 
     summaries = {}
@@ -844,6 +1012,13 @@ def run_plots_and_tables(cfg) -> None:
         path = algorithm_summary_path(cfg, algo)
         if path.exists():
             summaries[algo] = read_json(path, {})
+
+    # Merge efficiency stats into the per-algorithm summaries for the table.
+    for algo in cfg.algorithms:
+        summaries.setdefault(algo, {})
+        for key in ("aulc", "time_to_best", "time_to_converged"):
+            if key in efficiency.get(algo, {}):
+                summaries[algo][key] = efficiency[algo][key]
 
     make_latex_table(
         economic_model,
@@ -861,7 +1036,7 @@ def run_plots_and_tables(cfg) -> None:
     print(f"[figures] saved -> {out}")
 
 
-def run_analysis(cfg) -> None:
+def run_analysis(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Run requested analysis stages."""
     if cfg.run_testing:
         run_testing(cfg)

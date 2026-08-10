@@ -19,6 +19,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
+from ecomodrl.analysis.efficiency_metrics import (
+    last_value_carried_forward, 
+    normalized_regret,
+)
 
 
 DEFAULT_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
@@ -30,6 +34,8 @@ ALGO_COLORS = {
     "sac": "tab:green",
 }
 
+SLICE_COLORS = ["tab:blue", "tab:purple", "tab:brown"]
+
 MODEL_LABELS = {
     "CassKoopmans": "Cass--Koopmans",
     "BrockMirman": "Brock--Mirman",
@@ -38,6 +44,9 @@ MODEL_LABELS = {
 }
 
 EGM_COLOR = "0.45"
+
+PORTFOLIO_LEVEL_CMAP = "viridis"
+PORTFOLIO_DIFF_CMAP = "RdBu_r"
 
 
 def ensure_parent(path) -> None:
@@ -174,9 +183,7 @@ def plot_policy_distribution(
     """
     m = positive_m_grid(model)
     x_slices, slice_labels = exogenous_plot_slices(model)
-
-    slice_colors = ["tab:blue", "tab:purple", "tab:brown"]
-
+    
     egm_shares = []
     for x in x_slices:
         states = states_for_m_slice(m, x)
@@ -219,7 +226,7 @@ def plot_policy_distribution(
     for ax, algo in zip(axes, algorithms):
         for i, egm_share in enumerate(egm_shares):
             label = "EGM" if model.exogenous_dim == 0 else f"EGM {slice_labels[i]}"
-            color = EGM_COLOR if model.exogenous_dim == 0 else slice_colors[i]
+            color = EGM_COLOR if model.exogenous_dim == 0 else SLICE_COLORS[i]
             ax.plot(m, egm_share, color=color, linestyle="--", linewidth=1.8, alpha=0.8, label=label)
 
         stacks = rl_stacks.get(algo)
@@ -229,7 +236,7 @@ def plot_policy_distribution(
         else:
             for i, stack in enumerate(stacks):
                 med, q1, q3 = median_iqr(stack, axis=0)
-                color = ALGO_COLORS.get(algo, "tab:blue") if model.exogenous_dim == 0 else slice_colors[i]
+                color = ALGO_COLORS.get(algo, "tab:blue") if model.exogenous_dim == 0 else SLICE_COLORS[i]
 
                 ax.fill_between(m, q1, q3, color=color, alpha=0.22)
                 ax.plot(m, med, color=color, linewidth=1.8)
@@ -249,11 +256,363 @@ def plot_policy_distribution(
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)
     plt.close(fig)
+    
+
+# =============================================================================
+# Portfolio-share policy plots
+# =============================================================================
+
+def _risky_asset_label(asset_index: int) -> str:
+    return fr"risky asset {asset_index}"
+
+
+def portfolio_share_grid(model, policy, m_grid, x1_grid, asset_index=1):
+    """Evaluate a policy's portfolio share of one risky asset over (m, x1).
+
+    All exogenous predictors other than the first (x1) are held at their
+    unconditional mean of zero. Returns an array of shape
+    (len(m_grid), len(x1_grid)) where entry [i, j] is the portfolio weight on
+    the requested risky asset at state (m_grid[i], x1_grid[j], 0, ..., 0).
+
+    Asset order is [safe, risky_1, ..., risky_N], so asset_index=1 selects the
+    first risky asset.
+    """
+    MM, XX = np.meshgrid(m_grid, x1_grid, indexing="ij")
+
+    states = np.zeros((MM.size, model.state_dim), dtype=np.float64)
+    states[:, 0] = MM.ravel()
+    states[:, 1] = XX.ravel()
+
+    controls = policy.controls(states)
+    weights = np.asarray(controls["portfolio_weights"], dtype=np.float64)
+
+    share = weights[..., asset_index]
+    return share.reshape(MM.shape)
+
+
+def median_rl_portfolio_share_grid(model, policies, m_grid, x1_grid, asset_index=1):
+    """Median RL portfolio share across training seeds on the (m, x1) grid."""
+    stacks = [
+        portfolio_share_grid(model, policy, m_grid, x1_grid, asset_index)
+        for policy in policies
+    ]
+    return np.nanmedian(np.stack(stacks, axis=0), axis=0)
+
+
+def _portfolio_mesh(m_grid, x1_grid):
+    """pcolormesh coordinate arrays with m on the x-axis and x1 on the y-axis."""
+    return np.meshgrid(m_grid, x1_grid, indexing="xy")
+
+
+def plot_portfolio_share_heatmaps(
+    model,
+    rl_policies_by_algo,
+    save_path,
+    *,
+    algorithms=DEFAULT_ALGORITHMS,
+    asset_index=1,
+):
+    """Heatmaps of the median RL portfolio share of one risky asset.
+
+    One panel per algorithm. The x-axis is cash-on-hand m, the y-axis is the
+    predictor x_j (j=asset_index), and the color encodes the median (across training
+    seeds) RL portfolio weight on the requested risky asset. All other
+    predictors are held at their unconditional mean of zero.
+    """
+    m_grid = positive_m_grid(model)
+    x_grid = np.asarray(model.exogenous_grids[asset_index-1], dtype=np.float64)
+
+    share_grids = {}
+    for algo in algorithms:
+        policies = rl_policies_by_algo.get(algo, [])
+        if not policies:
+            continue
+        share_grids[algo] = median_rl_portfolio_share_grid(
+            model, policies, m_grid, x_grid, asset_index
+        )
+
+    if share_grids:
+        pooled = np.concatenate([g.ravel() for g in share_grids.values()])
+        pooled = pooled[np.isfinite(pooled)]
+        vmin = float(np.nanpercentile(pooled, 1)) if pooled.size else 0.0
+        vmax = float(np.nanpercentile(pooled, 99)) if pooled.size else 1.0
+    else:
+        vmin, vmax = 0.0, 1.0
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+
+    M, X1 = _portfolio_mesh(m_grid, x_grid)
+
+    rows, cols = subplot_grid(len(algorithms))
+    fig, axes = plt.subplots(
+        rows,
+        cols,
+        figsize=(4.6 * cols, 3.8 * rows),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+    )
+    axes = np.atleast_1d(axes).ravel()
+
+    mesh = None
+    for ax, algo in zip(axes, algorithms):
+        grid = share_grids.get(algo)
+
+        if grid is None:
+            ax.text(
+                0.5, 0.5, "no policies", ha="center", va="center",
+                transform=ax.transAxes, color="0.5",
+            )
+            ax.set_title(algo.upper())
+            continue
+
+        mesh = ax.pcolormesh(
+            M, X1, grid.T,
+            shading="auto",
+            cmap=PORTFOLIO_LEVEL_CMAP,
+            vmin=vmin, vmax=vmax,
+        )
+        ax.set_title(algo.upper())
+        ax.set_xlabel(r"Cash-on-hand $m$")
+        ax.set_ylabel(r"Predictor $x_{" + str(asset_index) + r"}$")
+
+    for ax in axes[len(algorithms):]:
+        ax.axis("off")
+
+    if mesh is not None:
+        cbar = fig.colorbar(mesh, ax=axes.tolist(), shrink=0.9)
+        cbar.set_label(
+            fr"Median RL portfolio share on "
+            fr"$w_{{{asset_index}}}$"
+        )
+
+    fig.suptitle(
+        fr"RL portfolio share of {_risky_asset_label(asset_index)}: "
+        fr"median across training seeds"
+    )
+    ensure_parent(save_path)
+    fig.savefig(save_path, dpi=140)
+    plt.close(fig)
+
+
+def plot_portfolio_share_diff_heatmaps(
+    model,
+    egm_policy,
+    rl_policies_by_algo,
+    save_path,
+    *,
+    algorithms=DEFAULT_ALGORITHMS,
+    asset_index=1,
+):
+    """Heatmaps of median RL minus EGM portfolio share (percentage points).
+
+    One panel per algorithm. Positive (red) values mean the RL policy holds
+    more of the risky asset than the EGM benchmark; negative (blue) values mean
+    it holds less. The color scale is symmetric around zero, so hue and
+    saturation are directly comparable across panels.
+    """
+    m_grid = positive_m_grid(model)
+    x_grid = np.asarray(model.exogenous_grids[asset_index-1], dtype=np.float64)
+
+    egm_grid = portfolio_share_grid(model, egm_policy, m_grid, x_grid, asset_index)
+
+    diff_grids = {}
+    for algo in algorithms:
+        policies = rl_policies_by_algo.get(algo, [])
+        if not policies:
+            continue
+        rl_grid = median_rl_portfolio_share_grid(
+            model, policies, m_grid, x_grid, asset_index
+        )
+        diff_grids[algo] = 100.0 * (rl_grid - egm_grid)
+
+    if diff_grids:
+        pooled = np.concatenate([g.ravel() for g in diff_grids.values()])
+        pooled = pooled[np.isfinite(pooled)]
+        vmax = float(np.nanpercentile(np.abs(pooled), 99)) if pooled.size else 1.0
+    else:
+        vmax = 1.0
+    vmax = max(vmax, 1e-6)
+    vmin = -vmax
+
+    M, X1 = _portfolio_mesh(m_grid, x_grid)
+
+    rows, cols = subplot_grid(len(algorithms))
+    fig, axes = plt.subplots(
+        rows,
+        cols,
+        figsize=(4.6 * cols, 3.8 * rows),
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+    )
+    axes = np.atleast_1d(axes).ravel()
+
+    mesh = None
+    for ax, algo in zip(axes, algorithms):
+        grid = diff_grids.get(algo)
+
+        if grid is None:
+            ax.text(
+                0.5, 0.5, "no policies", ha="center", va="center",
+                transform=ax.transAxes, color="0.5",
+            )
+            ax.set_title(algo.upper())
+            continue
+
+        mesh = ax.pcolormesh(
+            M, X1, grid.T,
+            shading="auto",
+            cmap=PORTFOLIO_DIFF_CMAP,
+            vmin=vmin, vmax=vmax,
+        )
+        ax.set_title(algo.upper())
+        ax.set_xlabel(r"Cash-on-hand $m$")
+        ax.set_ylabel(r"Predictor $x_{" + str(asset_index) + r"}$")
+
+    for ax in axes[len(algorithms):]:
+        ax.axis("off")
+
+    if mesh is not None:
+        cbar = fig.colorbar(mesh, ax=axes.tolist(), shrink=0.9)
+        cbar.set_label(
+            fr"RL $-$ EGM portfolio share on w_{{{asset_index}}} [pp]"
+        )
+
+    fig.suptitle(
+        fr"RL vs EGM portfolio share of {_risky_asset_label(asset_index)}: "
+        fr"median deviation"
+    )
+    ensure_parent(save_path)
+    fig.savefig(save_path, dpi=140)
+    plt.close(fig)
+
+
+def plot_portfolio_share_slices(
+    model,
+    egm_policy,
+    rl_policies_by_algo,
+    save_path,
+    *,
+    algorithms=DEFAULT_ALGORITHMS,
+    asset_index=1,
+):
+    """Optional complement to the heatmaps.
+
+    Portfolio share of one risky asset as a function of m for low/middle/high
+    x_j slices (j=asset_index), showing EGM (dashed) and the RL median with an IQR band across
+    training seeds. Unlike the heatmaps, this figure exposes cross-seed
+    dispersion, which is useful for judging whether the RL policy is reliable.
+    """
+    m = positive_m_grid(model)
+    x_grid = np.asarray(model.exogenous_grids[asset_index - 1], dtype=np.float64)
+
+    x_values = [x_grid[0], x_grid[len(x_grid) // 2], x_grid[-1]]
+    slice_labels = ["low", "middle", "high"]
+
+    def states_for(x):
+        s = np.zeros((len(m), model.state_dim), dtype=np.float64)
+        s[:, 0] = m
+        s[:, asset_index] = x
+        return s
+
+    egm_lines = []
+    for x in x_values:
+        w = np.asarray(
+            egm_policy.controls(states_for(x))["portfolio_weights"],
+            dtype=np.float64,
+        )
+        egm_lines.append(w[..., asset_index])
+
+    rows, cols = subplot_grid(len(algorithms))
+    fig, axes = plt.subplots(
+        rows,
+        cols,
+        figsize=(4.5 * cols, 3.5 * rows),
+        sharex=True,
+        sharey=True,
+    )
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax, algo in zip(axes, algorithms):
+        policies = rl_policies_by_algo.get(algo, [])
+
+        for i, x in enumerate(x_values):
+            color = SLICE_COLORS[i]
+            ax.plot(
+                m, egm_lines[i],
+                color=color, linestyle="--", linewidth=1.6, alpha=0.8,
+                label=fr"EGM $x_{{{asset_index}}}$ {slice_labels[i]}",
+            )
+
+            if policies:
+                stack = np.stack(
+                    [
+                        np.asarray(
+                            p.controls(states_for(x))["portfolio_weights"],
+                            dtype=np.float64,
+                        )[..., asset_index]
+                        for p in policies
+                    ],
+                    axis=0,
+                )
+                med, q1, q3 = median_iqr(stack, axis=0)
+                ax.fill_between(m, q1, q3, color=color, alpha=0.20)
+                ax.plot(
+                    m, med, color=color, linewidth=1.8,
+                    label=fr"RL $x_{{{asset_index}}}$ {slice_labels[i]}",
+                )
+
+        if not policies:
+            ax.text(
+                0.5, 0.5, "no policies", ha="center", va="center",
+                transform=ax.transAxes, color="0.5",
+            )
+
+        ax.set_title(algo.upper())
+        ax.set_xlabel(r"Cash-on-hand $m$")
+        ax.set_ylabel(fr"Portfolio share $w_{{{asset_index}}}$")
+        ax.set_ylim(-0.02, 1.02)
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=7, ncol=2)
+
+    for ax in axes[len(algorithms):]:
+        ax.axis("off")
+
+    fig.suptitle(
+        fr"Portfolio share of {_risky_asset_label(asset_index)}: "
+        fr"EGM vs RL (median and IQR)"
+    )
+    plt.tight_layout()
+    ensure_parent(save_path)
+    fig.savefig(save_path, dpi=140)
+    plt.close(fig)
 
 
 # =============================================================================
 # CEV distribution
 # =============================================================================
+
+def _pooled_visited(visited_m, algorithms):
+    """Pool visited cash-on-hand across algorithms into one array (or None)."""
+    if not visited_m:
+        return None
+
+    arrays = []
+    for algo in algorithms:
+        v = visited_m.get(algo)
+        if v is None:
+            continue
+        v = np.asarray(v, dtype=np.float64).ravel()
+        v = v[np.isfinite(v)]
+        if v.size:
+            arrays.append(v)
+
+    if not arrays:
+        return None
+
+    return np.concatenate(arrays)
+
 
 def plot_cev_distribution(
     model,
@@ -264,16 +623,28 @@ def plot_cev_distribution(
     *,
     algorithms=DEFAULT_ALGORITHMS,
     visited_m=None,
+    support_quantiles=(0.1, 99.9),
 ):
     """Plot CEV relative to the EGM benchmark.
-
-    For models with exogenous states, the figure varies the first exogenous
-    state over low/middle/high and holds remaining exogenous states fixed.
+    We trim data-adaptively to the ergodic support: the plotted range is 
+    restricted to the [support_quantiles] range of the pooled visited-state 
+    distribution.
     """
-    m_grid = np.asarray(grid_axes[0], dtype=np.float64)
-    exog_indices, slice_labels = value_slice_indices(model)
+    m_full = np.asarray(grid_axes[0], dtype=np.float64)
 
-    slice_colors = ["tab:blue", "tab:purple", "tab:brown"]
+    # Data-adaptive ergodic-support trim
+    pooled = _pooled_visited(visited_m, algorithms)
+    if pooled is not None and pooled.size:
+        lo, hi = np.nanpercentile(pooled, support_quantiles)
+        mask = (m_full >= lo) & (m_full <= hi)
+
+    # Safety fallback if we trimmed too aggressively
+    if mask.sum() < 5:
+        mask = np.ones(m_full.size, dtype=bool)
+
+    m_grid = m_full[mask]
+
+    exog_indices, slice_labels = value_slice_indices(model)
     deterministic = is_deterministic_one_state(model)
 
     n_algos = len(algorithms)
@@ -291,15 +662,13 @@ def plot_cev_distribution(
     for ax, algo in zip(axes, algorithms):
         value_grids = rl_value_grids_by_algo.get(algo, [])
 
+        legend_handles = []
+        legend_labels = []
+
         if not value_grids:
             ax.text(
-                0.5,
-                0.5,
-                "no value grids",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                color="0.5",
+                0.5, 0.5, "no value grids", ha="center", va="center",
+                transform=ax.transAxes, color="0.5",
             )
         else:
             cev_stack = np.stack(
@@ -311,67 +680,56 @@ def plot_cev_distribution(
                 line_stack = np.stack(
                     [select_value_line(cev_arr, exog_idx) for cev_arr in cev_stack],
                     axis=0,
-                ) * 100.0
+                )
+                line_stack = line_stack[:, mask] * 100.0
 
                 med, q1, q3 = median_iqr(line_stack, axis=0)
 
                 color = (
                     ALGO_COLORS.get(algo, "tab:blue")
                     if model.exogenous_dim == 0
-                    else slice_colors[i]
+                    else SLICE_COLORS[i]
                 )
                 label = None if model.exogenous_dim == 0 else slice_labels[i]
 
-                ax.fill_between(
-                    m_grid,
-                    q1,
-                    q3,
-                    color=color,
-                    alpha=0.22,
-                    linewidth=0.0,
-                )
-                ax.plot(
-                    m_grid,
-                    med,
-                    color=color,
-                    linewidth=1.7,
-                    label=label,
-                )
+                ax.fill_between(m_grid, q1, q3, color=color, alpha=0.22, linewidth=0.0)
+                line, = ax.plot(m_grid, med, color=color, linewidth=1.7, label=label)
+
+                if label is not None:
+                    legend_handles.append(line)
+                    legend_labels.append(label)
 
                 positive_values_for_limits.append(q1)
                 positive_values_for_limits.append(q3)
                 positive_values_for_limits.append(med)
 
-            if model.exogenous_dim > 0:
-                ax.legend(fontsize=8, loc="best")
-
+        # State distribution (drawn behind the CEV curves).
         if not deterministic and visited_m is not None and algo in visited_m:
             visited = np.asarray(visited_m[algo], dtype=np.float64)
             visited = visited[np.isfinite(visited)]
+            visited = visited[(visited >= m_grid[0]) & (visited <= m_grid[-1])]
 
             if visited.size:
                 ax2 = ax.twinx()
                 ax2.hist(
-                    visited,
-                    bins=60,
-                    density=True,
-                    color="0.6",
-                    alpha=0.25,
-                    edgecolor="none",
+                    visited, bins=60, density=True,
+                    color="0.5", alpha=0.38, edgecolor="0.35", linewidth=0.3,
                 )
                 ax2.set_yticks([])
                 ax2.set_zorder(ax.get_zorder() - 1)
                 ax.patch.set_visible(False)
+
+        if legend_handles:
+            ax.legend(legend_handles, legend_labels, fontsize=8, loc="best")
 
         ax.set_title(algo.upper())
         ax.set_xlabel("Cash-on-hand $m$")
         ax.set_yscale("log")
         ax.grid(alpha=0.3, which="both")
 
-    axes[0].set_ylabel(r"CEV relative to EGM, $\lambda_{\mathrm{CEV}}$ [\%]")
+    axes[0].set_ylabel(r"CEV relative to EGM, $\lambda_{\mathrm{CEV}}$ [%]")
 
-    # Shared positive y-limits. Use robust percentiles to avoid one extreme
-    # curve determining the whole figure.
+    # Shared positive y-limits (robust percentiles).
     if positive_values_for_limits:
         vals = np.concatenate(
             [np.asarray(v, dtype=np.float64).ravel() for v in positive_values_for_limits]
@@ -383,16 +741,17 @@ def plot_cev_distribution(
 
             if y_lo <= 0.0 or not np.isfinite(y_lo):
                 y_lo = np.nanmin(vals)
-
             if y_hi <= y_lo or not np.isfinite(y_hi):
                 y_hi = np.nanmax(vals)
 
-            # Multiplicative padding is appropriate on a log scale.
             y_lo = max(y_lo / 1.25, np.finfo(float).tiny)
             y_hi = y_hi * 1.25
 
             for ax in axes:
                 ax.set_ylim(y_lo, y_hi)
+
+    for ax in axes:
+        ax.set_xlim(m_grid[0], m_grid[-1])
 
     fig.suptitle("Consumption-equivalent gain of EGM over RL")
     plt.tight_layout()
@@ -497,20 +856,6 @@ def plot_euler_error_distribution(
 # Convergence
 # =============================================================================
 
-def last_value_carried_forward(t, y, t_grid):
-    t = np.asarray(t, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-
-    if t.size == 0:
-        return np.full_like(t_grid, np.nan, dtype=np.float64)
-
-    order = np.argsort(t)
-    t = t[order]
-    y = y[order]
-
-    idx = np.searchsorted(t, t_grid, side="right") - 1
-    return np.where(idx >= 0, y[np.clip(idx, 0, len(y) - 1)], np.nan)
-
 
 def plot_training_convergence(
     histories_by_algo,
@@ -520,8 +865,13 @@ def plot_training_convergence(
     *,
     algorithms=DEFAULT_ALGORITHMS,
     grid_step=5.0,
+    efficiency=None,
 ):
-    """Plot convergence as log10 EGM regret over training time."""
+    """Plot convergence as log10 of the EGM-normalized regret over training time.
+
+    If `efficiency` is passed, each algorithm's AULC is added to the legend and a 
+    faint vertical marker is drawn at its median time-to-converged.
+    """
     t_grid = np.arange(0.0, float(wallclock_seconds) + 1e-9, float(grid_step))
 
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -538,22 +888,29 @@ def plot_training_convergence(
             axis=0,
         )
 
-        egm = np.asarray(egm_returns, dtype=np.float64)[:, None]
-        regret = egm - rl_returns
-
-        with np.errstate(invalid="ignore", divide="ignore"):
-            log_regret = np.where(regret > 0.0, np.log10(regret), np.nan)
-
-        med, q1, q3 = median_iqr(log_regret, axis=0)
+        reg_norm = normalized_regret(egm_returns, rl_returns)
+        med, q1, q3 = median_iqr(reg_norm, axis=0)
 
         color = ALGO_COLORS.get(algo, "tab:blue")
-        ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
-        ax.plot(t_grid, med, color=color, linewidth=1.6, label=algo.upper())
 
-    ax.set_xlabel("Training-only wall-clock seconds")
-    ax.set_ylabel(r"$\log_{10}(U_{\mathrm{EGM}} - U_{\mathrm{RL}})$")
+        label = algo.upper()
+        if efficiency is not None:
+            aulc = efficiency.get(algo, {}).get("aulc", {})
+            if aulc.get("n", 0):
+                label = f"{algo.upper()} (AULC={aulc['iqm']:.4f})"
+
+        ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
+        ax.plot(t_grid, med, color=color, linewidth=1.6, label=label)
+
+        if efficiency is not None:
+            conv = efficiency.get(algo, {}).get("time_to_converged", {})
+            if conv.get("n", 0):
+                ax.axvline(conv["median"], color=color, linestyle=":", linewidth=1.4, alpha=0.9)
+
+    ax.set_xlabel("Wall-clock seconds")
+    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$")
+    ax.set_yscale("log")
     ax.set_title("Convergence of RL policies relative to EGM")
-    ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=9)
 
     plt.tight_layout()
