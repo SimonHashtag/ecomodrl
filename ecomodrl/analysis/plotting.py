@@ -23,6 +23,7 @@ from ecomodrl.analysis.efficiency_metrics import (
     last_value_carried_forward, 
     normalized_regret,
 )
+from ecomodrl.analysis.accuracy_metrics import iqm_ci_crossed
 
 
 DEFAULT_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
@@ -53,20 +54,8 @@ def ensure_parent(path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
 
-def median_iqr(stack, axis=0):
-    stack = np.asarray(stack, dtype=np.float64)
-    med = np.nanmedian(stack, axis=axis)
-    q1 = np.nanpercentile(stack, 25, axis=axis)
-    q3 = np.nanpercentile(stack, 75, axis=axis)
-    return med, q1, q3
-
-
 def positive_m_grid(model):
     return np.asarray(model.m_grid)[np.asarray(model.m_grid) > 0.0]
-
-
-def is_deterministic_one_state(model) -> bool:
-    return model.weights is None and model.exogenous_dim == 0
 
 
 def exogenous_plot_slices(model):
@@ -215,9 +204,8 @@ def plot_policy_distribution(
             candidates.append(stack[np.isfinite(stack)].ravel())
 
     finite = np.concatenate([x for x in candidates if x.size])
-    y_min = max(0.0, float(np.nanpercentile(finite, 1)) if finite.size else 0.0)
-    y_max = float(np.nanpercentile(finite, 99)) if finite.size else 1.0
-    y_max *= 1.05
+    y_min = max(0.0, float(np.nanpercentile(finite, 5.0) - 0.05) if finite.size else 0.0)
+    y_max = min(1.05, 0.05 + float(np.nanpercentile(finite, 95.0)) if finite.size else 1.0)
 
     rows, cols = subplot_grid(len(algorithms))
     fig, axes = plt.subplots(rows, cols, figsize=(4.5 * cols, 3.5 * rows), sharex=True, sharey=True)
@@ -235,11 +223,12 @@ def plot_policy_distribution(
             ax.text(0.5, 0.5, "no policies", ha="center", va="center", transform=ax.transAxes, color="0.5")
         else:
             for i, stack in enumerate(stacks):
-                med, q1, q3 = median_iqr(stack, axis=0)
+                iqm, _, _ = iqm_ci_crossed(stack, B=1, axis=0)
+                q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
                 color = ALGO_COLORS.get(algo, "tab:blue") if model.exogenous_dim == 0 else SLICE_COLORS[i]
 
                 ax.fill_between(m, q1, q3, color=color, alpha=0.22)
-                ax.plot(m, med, color=color, linewidth=1.8)
+                ax.plot(m, iqm, color=color, linewidth=1.8)
 
         ax.set_title(algo.upper())
         ax.set_xlabel("Cash-on-hand $m$")
@@ -371,6 +360,7 @@ def plot_portfolio_share_heatmaps(
             shading="auto",
             cmap=PORTFOLIO_LEVEL_CMAP,
             vmin=vmin, vmax=vmax,
+            rasterized=True,
         )
         ax.set_title(algo.upper())
         ax.set_xlabel(r"Cash-on-hand $m$")
@@ -391,7 +381,7 @@ def plot_portfolio_share_heatmaps(
         fr"median across training seeds"
     )
     ensure_parent(save_path)
-    fig.savefig(save_path, dpi=140)
+    fig.savefig(save_path, dpi=300)
     plt.close(fig)
 
 
@@ -465,6 +455,7 @@ def plot_portfolio_share_diff_heatmaps(
             shading="auto",
             cmap=PORTFOLIO_DIFF_CMAP,
             vmin=vmin, vmax=vmax,
+            rasterized=True,
         )
         ax.set_title(algo.upper())
         ax.set_xlabel(r"Cash-on-hand $m$")
@@ -484,7 +475,7 @@ def plot_portfolio_share_diff_heatmaps(
         fr"median deviation"
     )
     ensure_parent(save_path)
-    fig.savefig(save_path, dpi=140)
+    fig.savefig(save_path, dpi=300)
     plt.close(fig)
 
 
@@ -556,10 +547,11 @@ def plot_portfolio_share_slices(
                     ],
                     axis=0,
                 )
-                med, q1, q3 = median_iqr(stack, axis=0)
+                iqm, _, _ = iqm_ci_crossed(stack, B=1, axis=0)
+                q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
                 ax.fill_between(m, q1, q3, color=color, alpha=0.20)
                 ax.plot(
-                    m, med, color=color, linewidth=1.8,
+                    m, iqm, color=color, linewidth=1.8,
                     label=fr"RL $x_{{{asset_index}}}$ {slice_labels[i]}",
                 )
 
@@ -634,6 +626,7 @@ def plot_cev_distribution(
 
     # Data-adaptive ergodic-support trim
     pooled = _pooled_visited(visited_m, algorithms)
+    mask = np.ones(m_full.size, dtype=bool)
     if pooled is not None and pooled.size:
         lo, hi = np.nanpercentile(pooled, support_quantiles)
         mask = (m_full >= lo) & (m_full <= hi)
@@ -645,13 +638,12 @@ def plot_cev_distribution(
     m_grid = m_full[mask]
 
     exog_indices, slice_labels = value_slice_indices(model)
-    deterministic = is_deterministic_one_state(model)
 
     n_algos = len(algorithms)
     fig, axes = plt.subplots(
         1,
         n_algos,
-        figsize=(4.5 * n_algos, 3.8),
+        figsize=(4.5 * n_algos, 4.5),
         sharex=True,
         sharey=True,
     )
@@ -681,9 +673,10 @@ def plot_cev_distribution(
                     [select_value_line(cev_arr, exog_idx) for cev_arr in cev_stack],
                     axis=0,
                 )
-                line_stack = line_stack[:, mask] * 100.0
+                line_stack = line_stack[:, mask] * 100.0    # convert to percentage points
 
-                med, q1, q3 = median_iqr(line_stack, axis=0)
+                iqm, _, _ = iqm_ci_crossed(line_stack, B=1, axis=0)
+                q1, q3 = np.nanpercentile(line_stack, [25, 75], axis=0)
 
                 color = (
                     ALGO_COLORS.get(algo, "tab:blue")
@@ -693,7 +686,7 @@ def plot_cev_distribution(
                 label = None if model.exogenous_dim == 0 else slice_labels[i]
 
                 ax.fill_between(m_grid, q1, q3, color=color, alpha=0.22, linewidth=0.0)
-                line, = ax.plot(m_grid, med, color=color, linewidth=1.7, label=label)
+                line, = ax.plot(m_grid, iqm, color=color, linewidth=1.7, label=label)
 
                 if label is not None:
                     legend_handles.append(line)
@@ -701,10 +694,10 @@ def plot_cev_distribution(
 
                 positive_values_for_limits.append(q1)
                 positive_values_for_limits.append(q3)
-                positive_values_for_limits.append(med)
+                positive_values_for_limits.append(iqm)
 
         # State distribution (drawn behind the CEV curves).
-        if not deterministic and visited_m is not None and algo in visited_m:
+        if visited_m is not None and algo in visited_m:
             visited = np.asarray(visited_m[algo], dtype=np.float64)
             visited = visited[np.isfinite(visited)]
             visited = visited[(visited >= m_grid[0]) & (visited <= m_grid[-1])]
@@ -722,12 +715,12 @@ def plot_cev_distribution(
         if legend_handles:
             ax.legend(legend_handles, legend_labels, fontsize=8, loc="best")
 
-        ax.set_title(algo.upper())
-        ax.set_xlabel("Cash-on-hand $m$")
+        ax.set_title(algo.upper(), fontsize="x-large")
+        ax.set_xlabel("Cash-on-hand $m$", fontsize="x-large")
         ax.set_yscale("log")
         ax.grid(alpha=0.3, which="both")
 
-    axes[0].set_ylabel(r"CEV relative to EGM, $\lambda_{\mathrm{CEV}}$ [%]")
+    axes[0].set_ylabel(r"CEV relative to EGM, $\lambda_{\mathrm{CEV}}$ [%]", fontsize="x-large")
 
     # Shared positive y-limits (robust percentiles).
     if positive_values_for_limits:
@@ -753,10 +746,10 @@ def plot_cev_distribution(
     for ax in axes:
         ax.set_xlim(m_grid[0], m_grid[-1])
 
-    fig.suptitle("Consumption-equivalent gain of EGM over RL")
+    fig.suptitle("Consumption-equivalent gain of EGM over RL", fontsize="xx-large")
     plt.tight_layout()
     ensure_parent(save_path)
-    fig.savefig(save_path, dpi=140)
+    fig.savefig(save_path, dpi=300)
     plt.close(fig)
 
 
@@ -766,33 +759,32 @@ def plot_cev_distribution(
 
 def plot_euler_error_distribution(
     model,
-    euler_pools_by_algo,
-    euler_seedwise_by_algo,
+    euler_by_algo,
     save_path,
+    deterministic=False,
     *,
     algorithms=DEFAULT_ALGORITHMS,
 ):
-    deterministic = is_deterministic_one_state(model)
 
     if deterministic:
         fig, ax = plt.subplots(figsize=(9, 5))
 
         for algo in algorithms:
-            arrays = euler_seedwise_by_algo.get(algo, [])
+            arrays = euler_by_algo.get(algo, [])
             if not arrays:
                 continue
 
             min_len = min(len(a) for a in arrays)
             stack = np.stack([np.asarray(a[:min_len], dtype=np.float64) for a in arrays], axis=0)
-            med, q1, q3 = median_iqr(stack, axis=0)
+            iqm, _, _ = iqm_ci_crossed(stack, B=1, axis=0)
+            q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
 
             x = model.log_grid(model.m_grid[0], model.m_grid[-1], min_len)
             color = ALGO_COLORS.get(algo, "tab:blue")
 
             ax.fill_between(x, q1, q3, color=color, alpha=0.22)
-            ax.plot(x, med, color=color, linewidth=1.3, label=algo.upper())
+            ax.plot(x, iqm, color=color, linewidth=1.3, label=algo.upper())
 
-        ax.set_xscale("log")
         ax.set_xlabel("Cash-on-hand $m$")
         ax.set_ylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
         ax.set_title("Euler errors across deterministic test grid")
@@ -806,7 +798,7 @@ def plot_euler_error_distribution(
 
         all_values = []
         for algo in algorithms:
-            for arr in euler_pools_by_algo.get(algo, []):
+            for arr in euler_by_algo.get(algo, []):
                 x = np.asarray(arr, dtype=np.float64).ravel()
                 x = x[np.isfinite(x)]
                 if x.size:
@@ -820,7 +812,7 @@ def plot_euler_error_distribution(
             bins = 80
 
         for ax, algo in zip(axes, algorithms):
-            arrays = euler_pools_by_algo.get(algo, [])
+            arrays = euler_by_algo.get(algo, [])
 
             if not arrays:
                 ax.text(0.5, 0.5, "no Euler errors", ha="center", va="center", transform=ax.transAxes, color="0.5")
@@ -884,12 +876,13 @@ def plot_training_convergence(
             continue
 
         rl_returns = np.stack(
-            [last_value_carried_forward(t, u, t_grid) for t, u in histories],
+            [last_value_carried_forward(hist["t"], hist["u"], t_grid) for hist in histories],
             axis=0,
         )
 
         reg_norm = normalized_regret(egm_returns, rl_returns)
-        med, q1, q3 = median_iqr(reg_norm, axis=0)
+        iqm, _, _ = iqm_ci_crossed(reg_norm, B=1, axis=0)
+        q1, q3 = np.nanpercentile(reg_norm, [25, 75], axis=0)
 
         color = ALGO_COLORS.get(algo, "tab:blue")
 
@@ -900,7 +893,7 @@ def plot_training_convergence(
                 label = f"{algo.upper()} (AULC={aulc['iqm']:.4f})"
 
         ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
-        ax.plot(t_grid, med, color=color, linewidth=1.6, label=label)
+        ax.plot(t_grid, iqm, color=color, linewidth=1.6, label=label)
 
         if efficiency is not None:
             conv = efficiency.get(algo, {}).get("time_to_converged", {})
@@ -908,7 +901,7 @@ def plot_training_convergence(
                 ax.axvline(conv["median"], color=color, linestyle=":", linewidth=1.4, alpha=0.9)
 
     ax.set_xlabel("Wall-clock seconds")
-    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$")
+    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$", fontsize="large")
     ax.set_yscale("log")
     ax.set_title("Convergence of RL policies relative to EGM")
     ax.legend(fontsize=9)

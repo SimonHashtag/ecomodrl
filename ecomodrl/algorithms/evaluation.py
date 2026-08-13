@@ -61,6 +61,8 @@ class BestValueEvalCallback(BaseCallback):
 
         self.eval_times: list[float] = []
         self.eval_returns: list[float] = []
+        self.eval_steps: list[float] = []
+        self.eval_updates: list[float] = []
 
         self.best_U = -np.inf
         self.improved_at_least_once = False
@@ -118,6 +120,8 @@ class BestValueEvalCallback(BaseCallback):
 
             self.eval_times.append(float(elapsed))
             self.eval_returns.append(float(value))
+            self.eval_steps.append(float(getattr(self.model, "num_timesteps", np.nan)))
+            self.eval_updates.append(float(getattr(self.model, "_n_updates", np.nan)))
             self._n_evaluations += 1
 
             improved = bool(np.isfinite(value) and value > self.best_U)
@@ -190,6 +194,18 @@ class BestValueEvalCallback(BaseCallback):
             flush=True,
         )
 
+    def _history_arrays(self) -> dict:
+        """Common history payload written to both npz files."""
+        return {
+            "best_U": np.asarray(self.best_U),
+            "history_t": np.asarray(self.eval_times, dtype=np.float64),
+            "history_U": np.asarray(self.eval_returns, dtype=np.float64),
+            "history_steps": np.asarray(self.eval_steps, dtype=np.float64),
+            "history_updates": np.asarray(self.eval_updates, dtype=np.float64),
+            "n_evaluations": np.asarray(self._n_evaluations),
+            "improved_at_least_once": np.asarray(self.improved_at_least_once),
+        }
+
     def _save_best(self, vecnormalize) -> None:
         """Save best SB3 model, VecNormalize stats, and best-evaluation info."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -201,24 +217,10 @@ class BestValueEvalCallback(BaseCallback):
 
         self._save_history()
 
-        np.savez(
-            self.out_dir / "best_info.npz",
-            best_U=np.asarray(self.best_U),
-            history_t=np.asarray(self.eval_times, dtype=np.float64),
-            history_U=np.asarray(self.eval_returns, dtype=np.float64),
-            n_evaluations=np.asarray(self._n_evaluations),
-            improved_at_least_once=np.asarray(self.improved_at_least_once),
-        )
+        np.savez(self.out_dir / "best_info.npz", **self._history_arrays())
 
     def _save_history(self) -> None:
         """Save the full evaluation history."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
-        np.savez(
-            self.out_dir / "eval_history.npz",
-            best_U=np.asarray(self.best_U),
-            history_t=np.asarray(self.eval_times, dtype=np.float64),
-            history_U=np.asarray(self.eval_returns, dtype=np.float64),
-            n_evaluations=np.asarray(self._n_evaluations),
-            improved_at_least_once=np.asarray(self.improved_at_least_once),
-        )
+        np.savez(self.out_dir / "eval_history.npz", **self._history_arrays())

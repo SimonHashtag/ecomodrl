@@ -1,6 +1,0 @@
-[flake8]
-max-line-length = 1000
-max-complexity = 20
-ignore = D, E203, W503, E266, F401
-inline-quotes = "
-min_python_version = 3.9.0

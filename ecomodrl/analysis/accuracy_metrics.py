@@ -137,12 +137,7 @@ def euler_errors(
 
 
 def _test_states_deterministic(model, n_sim):
-    """Dense log-spaced m-grid for deterministic one-state models."""
-    if model.exogenous_dim == 0:
-        m_test = model.log_grid(model.m_grid[0], model.m_grid[-1], int(n_sim))
-        return m_test[:, None]
-
-    # Fallback for future deterministic models with exogenous states.
+    """Dense grid for deterministic one-state models."""
     return model.eval_start_states(int(n_sim))
 
 
@@ -166,8 +161,6 @@ def _test_states_simulated(model, policy, n_sim, burn_in, seed):
 
 def simulate_states(model, policy, n_sim, burn_in=1_000, seed=0):
     """Return the states used by `euler_errors`."""
-    if model.weights is None:
-        return _test_states_deterministic(model, int(n_sim))
 
     return _test_states_simulated(
         model=model,
@@ -213,33 +206,95 @@ def iqm(x):
     return float(np.mean(a[mask]))
 
 
-def iqm_ci_crossed(matrix, B=2000, alpha=0.05, seed=42):
-    """Two-way crossed bootstrap confidence interval for the IQM."""
-    M = np.atleast_2d(np.asarray(matrix, dtype=np.float64))
-    finite = M[np.isfinite(M)]
+def iqm_ci_crossed(
+    matrix: np.ndarray, 
+    B:int = 2000, 
+    alpha:float = 0.05, 
+    seed:int = 42, 
+    axis: int | None = None
+):
+    """IQM with a percentile-bootstrap confidence interval.
 
-    if finite.size == 0:
-        return float("nan"), float("nan"), float("nan")
+    matrix: np.ndarray 
+        The input matrix for which to compute the IQM with confidence intervals.
+    
+    B: int
+        Number of bootstrap resamples. If B=1, no resampling is performed and only the point estimate is returned.
+        
+    alpha: float
+        Significance level for the confidence interval. The default is 0.05, which corresponds to a 95% confidence interval.
+        
+    seed: int
+        Random seed for reproducibility of the bootstrap resampling.
+    
+    axis=None (default)
+        Two-way *crossed* bootstrap over both rows and columns. Returns three
+        scalars (point, lo, hi). This is the aggregate train x test-seed metric.
 
-    point = iqm(finite)
-
-    R, C = M.shape
+    axis=int
+        Reduce along `axis` with a *paired one-way* bootstrap, keeping the other
+        axes. For a 2D matrix, axis=0 produces one IQM per column (reducing over
+        rows), i.e. arrays of shape (n_cols,). The same resampled indices are
+        reused across all kept-axis slices, which preserves correlation along the
+        kept axis (e.g. the temporal correlation of a learning curve). Returns
+        three arrays shaped like `matrix` with `axis` removed.
+    """
+    M = np.asarray(matrix, dtype=np.float64)
     rng = np.random.default_rng(int(seed))
-    iqms = np.empty(int(B), dtype=np.float64)
+    q = [100 * alpha / 2, 100 * (1 - alpha / 2)]
 
-    for b in range(int(B)):
-        ri = rng.integers(0, R, size=R)
-        ci = rng.integers(0, C, size=C)
-        iqms[b] = iqm(M[np.ix_(ri, ci)])
+    if axis is None:
+        M2 = np.atleast_2d(M)
+        finite = M2[np.isfinite(M2)]
 
-    iqms = iqms[np.isfinite(iqms)]
+        if finite.size == 0:
+            return float("nan"), float("nan"), float("nan")
 
-    if iqms.size == 0:
-        return float(point), float("nan"), float("nan")
+        point = iqm(finite)
 
-    lo, hi = np.percentile(iqms, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+        R, C = M2.shape
+        iqms = np.empty(int(B), dtype=np.float64)
+        for b in range(int(B)):
+            ri = rng.integers(0, R, size=R)
+            ci = rng.integers(0, C, size=C)
+            iqms[b] = iqm(M2[np.ix_(ri, ci)])
 
-    return float(point), float(lo), float(hi)
+        iqms = iqms[np.isfinite(iqms)]
+        if iqms.size == 0:
+            return float(point), float("nan"), float("nan")
+
+        lo, hi = np.percentile(iqms, q)
+        return float(point), float(lo), float(hi)
+
+    Mm = np.moveaxis(M, axis, 0)          
+    n = Mm.shape[0]
+    rest_shape = Mm.shape[1:]
+    flat = Mm.reshape(n, -1)             
+    K = flat.shape[1]
+
+    point = np.full(K, np.nan)
+    lo = np.full(K, np.nan)
+    hi = np.full(K, np.nan)
+
+    if n > 0:
+        boot_idx = rng.integers(0, n, size=(int(B), n))
+        for k in range(K):
+            col = flat[:, k]
+            if not np.any(np.isfinite(col)):
+                continue
+
+            point[k] = iqm(col)
+
+            stats = np.array([iqm(col[boot_idx[b]]) for b in range(int(B))])
+            stats = stats[np.isfinite(stats)]
+            if stats.size:
+                lo[k], hi[k] = np.percentile(stats, q)
+
+    return (
+        point.reshape(rest_shape),
+        lo.reshape(rest_shape),
+        hi.reshape(rest_shape),
+    )
 
 
 # =============================================================================
@@ -487,6 +542,31 @@ def cev(model, V_rl, V_egm, discount=None):
         return np.exp((V_egm - V_rl) * (1.0 - discount)) - 1.0
 
     return (V_egm / V_rl) ** (1.0 / (1.0 - gamma)) - 1.0
+
+
+def cev_on_states(model, grid_axes, V_rl, V_egm, states):
+    """Mean consumption-equivalent variation over simulated states.
+
+    Computes the state-wise CEV on the shared value grid and averages 
+    it over the provided simulated/ergodic states.
+    """
+    lam = cev(model, V_rl, V_egm, discount=model.params.beta)
+
+    axes = grid_axes if isinstance(grid_axes, tuple) else (grid_axes,)
+    states = np.asarray(states, dtype=np.float64)
+
+    if len(axes) == 1:
+        vals = np.interp(states[..., 0].ravel(), axes[0], lam)
+    else:
+        interp = RegularGridInterpolator(
+            axes, lam, bounds_error=False, fill_value=None,
+        )
+        vals = interp(_clip_to_axes(states, axes))
+
+    vals = np.asarray(vals, dtype=np.float64)
+    vals = vals[np.isfinite(vals)]
+
+    return float(np.mean(vals)) if vals.size else float("nan")
 
 
 # =============================================================================

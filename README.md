@@ -9,41 +9,60 @@ Four dynamic economic models are solved with deep RL and evaluated against high-
 
 | Model | CLI name | Economics | Benchmark solver |
 |---|---|---|---|
-| Cass–Koopmans | `casskoopmans` | deterministic optimal growth | EGM |
+| Cass–Koopmans | `casskoopmans` | deterministic growth | EGM |
 | Brock–Mirman | `brockmirman` | stochastic growth, AR(1) technology | EGM |
 | Buffer-stock saving | `bufferstock` | income risk, occasionally binding borrowing constraint | EGM |
-| Portfolio choice | `portfoliochoice` | buffer-stock saving + risky/safe asset allocation | nested EGM + KKT root-solving |
+| Portfolio choice | `portfoliochoice` | buffer-stock saving + asset allocation | nested EGM + KKT root-solving |
 
-Each model is exposed as a Gymnasium environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) and solved with four algorithms: PPO, DDPG, TD3, and SAC (stable-baselines3). Benchmark solutions come from endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py). Accuracy and welfare are measured by Euler-equation errors (mean log10 absolute error), the Wasserstein-1 distance between the RL and benchmark Euler-error distributions, and the consumption-equivalent welfare cost (CEV) of the RL policy. All results are aggregated across seeds using interquartile means with bootstrap confidence intervals. Model derivations are documented in the notebooks under [ecomodrl/models/theory/](ecomodrl/models/theory/).
+Each model in [ecomodrl/models](ecomodrl/models/) is translated into a [Gymnasium](https://gymnasium.farama.org/) environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) - the API standard for reinforcement learning. All models are solved in [ecomodrl/experiments](ecomodrl/experiments) with four algorithms: PPO, DDPG, TD3, and SAC (the implementation of the core algorithms is based on the [stable-baselines3](https://stable-baselines3.readthedocs.io/en/master/#) package). Benchmark solutions come from (nested) endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py).
 
 ## Repository structure
 
 ```
 ecomodrl/
-  algorithms/    # SB3 training loop, multi-seed runner, evaluation callbacks
-  analysis/      # accuracy metrics, plotting, LaTeX tables
+  algorithms/    # training loop, multi-seed runner, evaluation callbacks, hyperparameter adapters, algo wrappers
+  analysis/      # metrics, plotting, LaTeX tables
   cluster/       # SLURM scripts: full tune -> train -> analyze pipeline per model
   configs/       # model calibrations + run/tune/analysis configs (CLI)
   envs/          # Gymnasium environments + vectorized env setup
   experiments/   # training entry points (one per model) + analyze_experiments.py
-  models/        # economic models, EGM benchmark solvers, theory notebooks
-  tune/          # DEHB hyperparameter tuning entry points
-  utils/         # tuned-hyperparameter loading
+  models/        # economic models, benchmark solvers, theory notebooks
+  tune/          # DEHB hyperparameter tuning CLI, target function, entry points, tuned-hyperparameter loading
 ```
 
 The package is not installed via pip. Run all commands from the repository root using `python -m`, as shown below.
 
 ## Installation
 
-Requires Python 3.11.
+**Platform note.** The conda environment definition in [requirements.yml](requirements.yml) targets `win-64` and Python 3.11.
 
+We use conda-lock to install the requirements of this project. This ensures full reproducibility of the code.
+
+First install conda-lock via condax (safer):
 ```
-python -m venv .venv
-.venv\Scripts\activate          # Windows;  source .venv/bin/activate on Linux/macOS
+conda install condax
+condax install conda-lock
+```
+
+Create a new conda environment "YOURENV" or install the packages into your preexisting conda env "YOURENV" by
+```
+conda-lock install -n YOURENV requirements.conda-lock.yml
+```
+
+To update a single package to the latest version compatible with the version constraints in the source:
+```
+conda-lock lock  --lockfile requirements.conda-lock.yml --update PACKAGE
+```
+
+To re-solve the entire environment (produce a new requirements.conda-lock.yml), e.g. after changing a version constraint or adding a package in the source file:
+```
+conda-lock -f requirements.yml --lockfile requirements.conda-lock.yml
+```
+
+You can also use pip to reproduce our results. Simply run:
+```
 pip install -r requirements.txt
 ```
-
-The pinned versions in [requirements.txt](requirements.txt) reproduce the paper environment (Python 3.11.8, torch 2.8.0, numpy 1.26.4).
 
 ## Quickstart
 
@@ -54,27 +73,27 @@ python -m ecomodrl.experiments.casskoopmans --algo_name ppo --n_seeds 4
 python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_name ppo --n_seeds 4
 ```
 
-`--n_seeds` must match between the two calls. Outputs land under `./runs` (override with the `RUNRESULTS_PATH` environment variable):
+`--n_seeds` must match between the two calls. Outputs land under `./runs` (override with the `RUNRESULTS_PATH` environment variable, see instructions in `/configs/runconfigs.py`):
 
-- **Checkpoints:** `runs/CassKoopmans/PPO/seed_<n>/` — best model (`model.zip`), normalization stats (`vecnormalize.pkl`), evaluation history (`eval_history.npz`), TensorBoard event files — plus run metadata in `train_cfgs.json`.
+- **Checkpoints:** `./runs/CassKoopmans/PPO/seed_<n>/` — best model (`model.zip`), normalization stats (`vecnormalize.pkl`), evaluation history (`eval_history.npz`), TensorBoard event files — plus run metadata in `train_cfgs.json`.
 - **Metrics:** `runs/CassKoopmans/PPO/analysis_summary.json` — aggregated accuracy and welfare statistics.
 - **Figures and tables:** `runs/CassKoopmans/figures/` — `policy.png`, `cev.png`, `euler_errors.png`, `convergence.png`, `table.tex`, `CassKoopmans_comparison_table.tex`.
 
 ## Hyperparameter tuning (optional)
 
-Hyperparameters are tuned with DEHB, using wall-clock training time as the multi-fidelity budget:
+Hyperparameters are tuned with DEHB, using wall-clock training time as the multi-fidelity budget (in seconds):
 
 ```
 python -m ecomodrl.tune.casskoopmans --algo_name ppo --total_cost 3600
 ```
 
-This writes `tune_results/<Model>/<ALGO>/incumbent.json` (override the root with `TUNERESULTS_PATH`), which training picks up automatically. Without tuning results, training falls back to default hyperparameters (the quickstart works either way).
+This writes `./tune_results/<Model>/<ALGO>/incumbent.json` (override the root with `TUNERESULTS_PATH`), which training picks up automatically. Without tuning results, training falls back to default hyperparameters (the quickstart works either way).
 
 ## Full replication
 
 The CLI defaults are the paper settings: `--n_seeds 100`, `--hidden_nodes 128`, `--n_envs 10`, with wall-clock budgets of 300 s (Cass–Koopmans), 600 s (Brock–Mirman, buffer-stock), and 1200 s (portfolio choice) per seed. To replicate a model's results, run tune, train, and analyze for each algorithm (`ppo`, `ddpg`, `td3`, `sac`), substituting the model's CLI name in the commands above.
 
-The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipeline: DEHB tuning (4 h per algorithm), training, and analysis for all four algorithms as a single job per model on an HPC cluster.
+The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipeline: DEHB tuning (4 h per algorithm), training, and analysis for all four algorithms as a single job per model on a HPC cluster.
 
 ## Extending to new models
 

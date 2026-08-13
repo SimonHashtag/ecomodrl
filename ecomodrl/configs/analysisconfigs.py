@@ -64,6 +64,10 @@ class BaseAnalysisConfig:
     # Analysis stages
     run_testing: bool = True
     make_plots_and_tables: bool = True
+    
+    # Metrics
+    conv_tol: float = 1e-4      # Convergence tolerance used for time-to-converged metric
+    flops_forward_steps: int | None = None    # Env_steps used to determine FLOPs count; automatically determined from hyperparameters if None
 
     @property
     def test_seeds(self) -> list[int]:

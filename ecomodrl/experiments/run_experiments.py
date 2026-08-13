@@ -7,7 +7,7 @@ from ecomodrl.configs.runconfigs import (
     parse_run_args,
 )
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY, get_algo_fixedcfgs
-from ecomodrl.utils.hyperparam_import import load_tuned_hp
+from ecomodrl.tune.hyperparam_import import load_tuned_hp
 from ecomodrl.algorithms.training import train_multiple_seeds
 
 def run_experiment(run_config_cls: Type):

@@ -14,16 +14,16 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 
-def last_value_carried_forward(t, y, t_grid):
+def last_value_carried_forward(
+    t: NDArray[np.float64], 
+    y: NDArray[np.float64], 
+    t_grid: NDArray[np.float64]
+) -> NDArray[np.float64]:
     """Left-continuous step interpolation of (t, y) onto t_grid.
 
     Used to align irregular evaluation times onto a common grid 
     for area computations.
     """
-    t = np.asarray(t, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    t_grid = np.asarray(t_grid, dtype=np.float64)
-
     if t.size == 0:
         return np.full_like(t_grid, np.nan, dtype=np.float64)
 
@@ -80,11 +80,13 @@ def aulc_per_seed(histories, egm_returns, t_grid):
     T = float(t_grid[-1] - t_grid[0])
 
     out = []
-    for (t, u), egm in zip(histories, egm_returns):
+    for hist, egm in zip(histories, egm_returns):
         if not np.isfinite(egm) or egm == 0.0:
             out.append(np.nan)
             continue
-
+        
+        t = np.asarray(hist["t"], dtype=np.float64)
+        u = np.asarray(hist["u"], dtype=np.float64)
         rl = last_value_carried_forward(t, u, t_grid)
         r = normalized_regret(egm, rl)
 
@@ -96,9 +98,9 @@ def aulc_per_seed(histories, egm_returns, t_grid):
 def time_to_best_per_seed(histories):
     """Per-seed training-only wall-clock time at which best_eval was stored."""
     out = []
-    for (t, u) in histories:
-        t = np.asarray(t, dtype=np.float64)
-        u = np.asarray(u, dtype=np.float64)
+    for hist in histories:
+        t = np.asarray(hist["t"], dtype=np.float64)
+        u = np.asarray(hist["u"], dtype=np.float64)
         out.append(float(t[int(np.argmax(u))]))
     return out
 
@@ -116,9 +118,9 @@ def time_to_converged_per_seed(histories, egm_returns, tol=0.01):
     best_eval no longer pushes the reported convergence time far to the right.
     """
     out = []
-    for (t, u), egm in zip(histories, egm_returns):
-        t = np.asarray(t, dtype=np.float64)
-        u = np.asarray(u, dtype=np.float64)
+    for hist, egm in zip(histories, egm_returns):
+        t = np.asarray(hist["t"], dtype=np.float64)
+        u = np.asarray(hist["u"], dtype=np.float64)
 
         mask = np.isfinite(t) & np.isfinite(u)
         if not mask.any() or not np.isfinite(egm) or egm == 0.0:

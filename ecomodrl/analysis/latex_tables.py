@@ -31,9 +31,15 @@ ACCURACY_ROWS = [
 ]
 
 EFFICIENCY_ROWS = [
-    (r"AULC (norm. regret, $\downarrow$)", "aulc", "min", 1.0, "%.4f"),
-    (r"Time-to-best [s] ($\downarrow$)", "time_to_best", "min", 1.0, "%.0f"),
-    (r"Time-to-conv. [s] ($\downarrow$)", "time_to_converged", "min", 1.0, "%.0f"),
+    (r"AULC", "aulc", "min", 1.0, "%.4f"),
+    (r"Time-to-best [s]", "time_to_best", "min", 1.0, "%.0f"),
+    (r"Time-to-conv. [s]", "time_to_converged", "min", 1.0, "%.0f"),
+]
+
+COMPLEXITY_ROWS = [
+    (r"FLOPs/update ($\log_{10}$)", "flops_per_update", "min", 1.0, "%.2f"),
+    (r"FLOPs to conv.\ ($\log_{10}$)", "flops_to_conv", "min", 1.0, "%.2f"),
+    (r"Sampled states [M]", "sampled_states", "min", 1e-6, "%.2f"),
 ]
 
 COMBINED_ACCURACY_ROWS = [
@@ -49,6 +55,12 @@ COMBINED_EFFICIENCY_ROWS = [
     ("time_to_converged", "min", 1.0, "%.0f"),
 ]
 
+COMBINED_COMPLEXITY_ROWS = [
+    ("flops_per_update", "min", 1.0, "%.2f"),
+    ("flops_to_conv",    "min", 1.0, "%.2f"),
+    ("sampled_states",   "min", 1e-6, "%.2f"),
+]
+
 COMBINED_ROW_LABELS = {
     "u_rl": r"$U_{\mathrm{RL}}$",
     "cev_regret": r"$\lambda_{\mathrm{CEV}}$ (\%)",
@@ -57,6 +69,9 @@ COMBINED_ROW_LABELS = {
     "aulc": r"AULC",
     "time_to_best": r"$t_{\mathrm{best}}$ [s]",
     "time_to_converged": r"$t_{\varepsilon}$ [s]",
+    "flops_per_update": r"FLOPs/upd. ($\log_{10}$)",
+    "flops_to_conv": r"FLOPs$_{\mathrm{conv}}$ ($\log_{10}$)",
+    "sampled_states": r"States [M]",
 }
 
 
@@ -80,8 +95,29 @@ def _section_row(title: str, ncols: int) -> str:
     return r"\multicolumn{" + str(ncols + 1) + r"}{l}{\textit{" + title + r"}} \\"
 
 
+def _apply_transform(key: str, value: float) -> float:
+    """Apply a per-metric display transform (log10 for FLOPs metrics)."""
+    if key in {"flops_per_update", "flops_to_conv"}:
+        return float(np.log10(value)) if (np.isfinite(value) and value > 0.0) else float("nan")
+    return value
+
+
+def _has_ci(stats: dict) -> bool:
+    return (
+        "ci_lo" in stats
+        and "ci_hi" in stats
+        and np.isfinite(stats.get("ci_lo", np.nan))
+        and np.isfinite(stats.get("ci_hi", np.nan))
+        and int(stats.get("n", 0)) > 1
+    )
+
+
 def _emit_rows(lines: list[str], rows: list[tuple], summaries_by_algo: dict, algorithms: list[str]):
-    """Append metric rows, bolding the best point estimate per row."""
+    """Append metric rows, bolding the best point estimate per row.
+
+    Cells with a confidence interval are formatted as IQM + CI; deterministic
+    point metrics (e.g. FLOPs/update, n=1) are formatted as a bare value.
+    """
     for label, key, direction, scale, fmt in rows:
         values = []
         cells = []
@@ -94,12 +130,15 @@ def _emit_rows(lines: list[str], rows: list[tuple], summaries_by_algo: dict, alg
                 cells.append("--")
                 continue
 
-            point = stats["iqm"] * scale
-            lo = stats["ci_lo"] * scale
-            hi = stats["ci_hi"] * scale
-
+            point = _apply_transform(key, stats["iqm"] * scale)
             values.append(point)
-            cells.append(format_iqm_ci(point, lo, hi, fmt))
+
+            if _has_ci(stats):
+                lo = _apply_transform(key, stats["ci_lo"] * scale)
+                hi = _apply_transform(key, stats["ci_hi"] * scale)
+                cells.append(format_iqm_ci(point, lo, hi, fmt))
+            else:
+                cells.append("$" + (fmt % point) + "$")
 
         arr = np.asarray(values, dtype=np.float64)
         if np.any(np.isfinite(arr)):
@@ -110,25 +149,27 @@ def _emit_rows(lines: list[str], rows: list[tuple], summaries_by_algo: dict, alg
         lines.append(label + " & " + " & ".join(cells) + r" \\")
 
 
-def make_latex_table(
-    model: object, 
-    summaries_by_algo: dict, 
-    save_path: str, 
-    *, 
-    algorithms: list[str] = ALL_ALGORITHMS
-    ):
-    """Write a LaTeX table with an Accuracy section and an Efficiency section.
+def _present_rows(rows: list[tuple], summaries_by_algo: dict, algorithms: list[str]) -> list[tuple]:
+    """Keep only rows that at least one algorithm reports."""
+    return [
+        r for r in rows
+        if any(summaries_by_algo.get(a, {}).get(r[1], {}).get("n", 0) for a in algorithms)
+    ]
 
-    Each cell reports the interquartile mean and a bootstrap confidence
-    interval. Efficiency metrics (AULC, time-to-best, optional time-to-epsilon)
-    are read from the same summaries dict under keys 'aulc', 'time_to_best',
-    and 'time_to_converged'.
-    """
+
+def make_latex_table(
+    model: object,
+    summaries_by_algo: dict,
+    save_path: str,
+    *,
+    algorithms: list[str] = ALL_ALGORITHMS,
+):
+    """Write a LaTeX table with Accuracy, Efficiency, and Complexity sections."""
     ncols = len(algorithms)
 
     lines = [
-        r"\begin{minipage}{\linewidth}",
-        r"\centering",
+        r"\begin{table}",
+        r"{\centering",
         r"\adjustbox{max width=\linewidth}{%",
         r"\begin{tabular}{l" + "c" * ncols + r"}",
         r"\toprule",
@@ -139,7 +180,7 @@ def make_latex_table(
 
     _emit_rows(lines, ACCURACY_ROWS, summaries_by_algo, algorithms)
 
-    # Drop the time-to-converged row unless at least one algorithm reports it.
+    # Efficiency section
     eff_rows = list(EFFICIENCY_ROWS)
     has_conv = any(
         summaries_by_algo.get(a, {}).get("time_to_converged", {}).get("n", 0)
@@ -152,37 +193,48 @@ def make_latex_table(
     lines.append(_section_row("Efficiency", ncols))
     _emit_rows(lines, eff_rows, summaries_by_algo, algorithms)
 
+    # Complexity section
+    comp_rows = _present_rows(COMPLEXITY_ROWS, summaries_by_algo, algorithms)
+    if comp_rows:
+        lines.append(r"\midrule")
+        lines.append(_section_row("Complexity", ncols))
+        _emit_rows(lines, comp_rows, summaries_by_algo, algorithms)
+
     model_name = type(model).__name__
 
     lines += [
         r"\bottomrule",
-        r"\end{tabular}}",
+        r"\end{tabular}}}",
         r"\par\vspace{4pt}",
         (
-            r"{\footnotesize Multi-seed analysis for "
+            r"\caption{Multi-seed analysis for "
             + MODEL_LABELS.get(model_name, model_name)
             + r". Accuracy cells report the IQM with a 95\% crossed "
-            r"(train$\times$test seed) bootstrap CI. Efficiency cells report "
-            r"the IQM with a 95\% bootstrap CI over training seeds. AULC is the "
-            r"time-averaged normalized regret"
-            r"; lower is better for all efficiency metrics.}"
+            r"(train$\times$test seed) bootstrap CI. Efficiency cells report the "
+            r"IQM with a 95\% bootstrap CI over training seeds; AULC is the "
+            r"time-averaged normalized regret. Complexity reports cumulative "
+            r"FLOPs to convergence ($\log_{10}$, IQM $+$ CI over seeds) and the "
+            r"deterministic FLOPs per minibatch update; network forward/backward "
+            r"FLOPs are measured with PyTorch's FlopCounter, with Adam and "
+            r"target-update FLOPs added analytically. Lower is better for all "
+            r"efficiency and complexity metrics.}"
         ),
-        r"\end{minipage}",
+        r"\end{table}",
     ]
 
     ensure_parent(save_path)
     with open(save_path, "w") as f:
         f.write("\n".join(lines) + "\n")
-        
+
 
 def _combined_cells(
-    summaries_by_algo: dict, 
-    key: str, 
-    direction: str, 
-    scale: float, 
-    fmt: str, 
-    algorithms: list[str]
-    ):
+    summaries_by_algo: dict,
+    key: str,
+    direction: str,
+    scale: float,
+    fmt: str,
+    algorithms: list[str],
+):
     """Point-estimate cells for one combined-table row, bolding the best."""
     values, cells = [], []
 
@@ -192,7 +244,7 @@ def _combined_cells(
             values.append(np.nan)
             cells.append("--")
             continue
-        point = stats["iqm"] * scale
+        point = _apply_transform(key, stats["iqm"] * scale)
         values.append(point)
         cells.append("$" + (fmt % point) + "$")
 
@@ -211,13 +263,7 @@ def make_combined_latex_table(
     *,
     algorithms: list[str] = ALL_ALGORITHMS,
 ):
-    """Compact point-estimate LaTeX table across economic models.
-
-    Each model block is split into an Accuracy sub-block and an Efficiency
-    sub-block, separated by a rule that leaves the model \\multirow intact.
-    Efficiency metrics (AULC, time-to-best, optional time-to-converged) are read
-    from the same summaries dict; time-to-converged is shown only if present.
-    """
+    """Compact point-estimate LaTeX table across economic models."""
     ncols = len(algorithms)
     end_col = ncols + 2  # columns: Model | Metric | <algorithms...>
 
@@ -243,16 +289,21 @@ def make_combined_latex_table(
         eff_rows = []
         for key, direction, scale, fmt in COMBINED_EFFICIENCY_ROWS:
             present = any(
-                summaries_by_algo.get(a, {}).get(key, {}).get("n", 0)
-                for a in algorithms
+                summaries_by_algo.get(a, {}).get(key, {}).get("n", 0) for a in algorithms
             )
             if key == "time_to_converged" and not present:
                 continue
             eff_rows.append((key, direction, scale, fmt))
 
-        total = len(acc_rows) + len(eff_rows)
+        comp_rows = [
+            (key, direction, scale, fmt)
+            for key, direction, scale, fmt in COMBINED_COMPLEXITY_ROWS
+            if any(summaries_by_algo.get(a, {}).get(key, {}).get("n", 0) for a in algorithms)
+        ]
 
-        # --- accuracy sub-block ---
+        total = len(acc_rows) + len(eff_rows) + len(comp_rows)
+
+        # --- accuracy sub-block  ---
         for row_idx, (key, direction, scale, fmt) in enumerate(acc_rows):
             cells = _combined_cells(summaries_by_algo, key, direction, scale, fmt, algorithms)
             first_cell = (
@@ -264,16 +315,23 @@ def make_combined_latex_table(
                 first_cell + " & " + COMBINED_ROW_LABELS[key] + " & " + " & ".join(cells) + r" \\"
             )
 
-        # --- separator that does not cut the model column ---
+        # --- efficiency sub-block ---
         if eff_rows:
             lines.append(r"    \cmidrule(lr){2-" + str(end_col) + r"}")
+            for key, direction, scale, fmt in eff_rows:
+                cells = _combined_cells(summaries_by_algo, key, direction, scale, fmt, algorithms)
+                lines.append(
+                    r"    & " + COMBINED_ROW_LABELS[key] + " & " + " & ".join(cells) + r" \\"
+                )
 
-        # --- efficiency sub-block ---
-        for key, direction, scale, fmt in eff_rows:
-            cells = _combined_cells(summaries_by_algo, key, direction, scale, fmt, algorithms)
-            lines.append(
-                r"    & " + COMBINED_ROW_LABELS[key] + " & " + " & ".join(cells) + r" \\"
-            )
+        # --- complexity sub-block ---
+        if comp_rows:
+            lines.append(r"    \cmidrule(lr){2-" + str(end_col) + r"}")
+            for key, direction, scale, fmt in comp_rows:
+                cells = _combined_cells(summaries_by_algo, key, direction, scale, fmt, algorithms)
+                lines.append(
+                    r"    & " + COMBINED_ROW_LABELS[key] + " & " + " & ".join(cells) + r" \\"
+                )
 
         if model_idx < len(summaries_by_model) - 1:
             lines.append(r"    \midrule")

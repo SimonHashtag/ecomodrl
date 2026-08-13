@@ -30,6 +30,7 @@ from ecomodrl.analysis.efficiency_metrics import (
     time_to_best_per_seed,
     time_to_converged_per_seed,
 )
+from ecomodrl.analysis import complexity_metrics
 from ecomodrl.analysis.plotting import (
     plot_policy_distribution,
     plot_cev_distribution,
@@ -305,6 +306,20 @@ def load_rl_policy(
         model=economic_model,
         vecnormalize=vecnormalize,
     )
+    
+
+def _make_FLOPs_measurement_model(cfg: Union[Mapping[str, Any], Any], algo: str):
+    """Load the first available checkpoint of `algo` as a THROWAWAY SB3 model
+    for offline FLOPs measurement.
+    """
+    for seed in cfg.seeds:
+        model_path = checkpoint_dir(cfg, algo, seed) / "model.zip"
+        if model_path.exists():
+            env = cfg.make_unnormalized_vecenv(seed)
+            model = ALGO_REGISTRY[algo].load(str(model_path), env=env)
+            return model
+
+    raise FileNotFoundError(f"No checkpoint found to measure FLOPs for algo={algo!r}")
 
 
 def check_required_checkpoints(cfg: Union[Mapping[str, Any], Any]) -> None:
@@ -493,7 +508,6 @@ def analyze_checkpoint_worker(args):
     cfg, algo, train_seed = args
 
     economic_model = cfg.make_economic_model()
-    deterministic = is_deterministic_one_state(economic_model)
     seeds = effective_test_seeds(cfg, economic_model)
 
     samples = {}
@@ -514,7 +528,6 @@ def analyze_checkpoint_worker(args):
             train_seed=train_seed,
             test_samples=samples,
             egm_returns=egm_returns,
-            deterministic=deterministic,
         )
         status = "ok"
     except FileNotFoundError:
@@ -533,7 +546,6 @@ def analyze_policy_checkpoint(
     train_seed: int,
     test_samples: dict[int, object],
     egm_returns: dict[int, float],
-    deterministic: bool,
 ) -> None:
     """Analyze one trained RL policy checkpoint."""
     policy = load_rl_policy(cfg, algo, train_seed, economic_model)
@@ -544,11 +556,11 @@ def analyze_policy_checkpoint(
     # 1. Grid Bellman value for CEV maps.
     vg_path = value_grid_path(cfg, algo, train_seed)
     if cfg.overwrite or not vg_path.exists():
-        grid, V = accuracy_metrics.policy_value_on_grid(
-            economic_model, 
-            policy,
-        )
+        grid, V = accuracy_metrics.policy_value_on_grid(economic_model, policy)
         save_value_grid(vg_path, grid, V)
+
+    rl_axes, V_rl_grid = load_value_grid(vg_path)
+    _, V_egm_grid = load_value_grid(egm_analysis_dir(cfg) / "value_grid.npz")
 
     # 2. Test returns, CEV regret, Euler errors, and visited states.
     values_path = test_values_path(cfg, algo, train_seed)
@@ -558,7 +570,7 @@ def analyze_policy_checkpoint(
     eulers = read_npz_dict(eulers_path)
 
     visited_path = visited_states_path(cfg, algo, train_seed)
-    visited = read_npz_dict(visited_path) if not deterministic else {}
+    visited = read_npz_dict(visited_path)
 
     changed_values = False
     changed_eulers = False
@@ -568,20 +580,32 @@ def analyze_policy_checkpoint(
         key = str(test_seed)
         array_key = f"seed_{test_seed}"
 
-        if cfg.overwrite or key not in values:
+        need_values = cfg.overwrite or key not in values
+        need_eulers = cfg.overwrite or array_key not in eulers
+        need_visited = cfg.overwrite or array_key not in visited
+
+        states_full = None
+        if need_values or need_visited:
+            states_full = accuracy_metrics.simulate_states(
+                economic_model,
+                policy,
+                n_sim=cfg.euler_n_states,
+                seed=test_seed,
+            )
+
+        if need_values:
             u_rl = float(
                 accuracy_metrics.eval_return_grid(
-                    economic_model,
-                    policy,
-                    test_samples[test_seed],
+                    economic_model, policy, test_samples[test_seed],
                 )
             )
             u_egm = float(egm_returns[test_seed])
 
-            if np.isfinite(u_rl) and np.isfinite(u_egm):
-                cev_regret = float(accuracy_metrics.cev(economic_model, u_rl, u_egm))
-            else:
-                cev_regret = float("nan")
+            cev_regret = float(
+                accuracy_metrics.cev_on_states(
+                    economic_model, rl_axes, V_rl_grid, V_egm_grid, states_full,
+                )
+            )
 
             values[key] = {
                 "u_rl": u_rl,
@@ -590,7 +614,7 @@ def analyze_policy_checkpoint(
             }
             changed_values = True
 
-        if cfg.overwrite or array_key not in eulers:
+        if need_eulers:
             ee = accuracy_metrics.euler_errors(
                 economic_model,
                 policy,
@@ -600,14 +624,8 @@ def analyze_policy_checkpoint(
             eulers[array_key] = np.asarray(ee, dtype=np.float64)
             changed_eulers = True
 
-        if not deterministic and (cfg.overwrite or array_key not in visited):
-            states = accuracy_metrics.simulate_states(
-                economic_model,
-                policy,
-                n_sim=cfg.euler_n_states,
-                seed=test_seed,
-            )
-            visited[array_key] = np.asarray(states[..., 0], dtype=np.float64)
+        if need_visited:
+            visited[array_key] = np.asarray(states_full, dtype=np.float64)
             changed_visited = True
 
     if changed_values:
@@ -760,6 +778,85 @@ def efficiency_summary(
     return summary
 
 
+def complexity_summary(
+    cfg: Union[Mapping[str, Any], Any],
+    histories_by_algo: dict[str, list],
+    egm_returns_by_algo: dict[str, list],
+    *,
+    algorithms: list[str],
+    tol: float,
+):
+    """FLOPs complexity per algorithm.
+
+    - flops_per_update : deterministic point value (single measurement).
+    - flops_to_conv    : per-seed cumulative FLOPs, IQM + bootstrap CI.
+    - sampled_states   : per-seed sampled environment states, IQM + bootstrap CI.
+    """
+    summary = {}
+
+    for algo in algorithms:
+        entry = {
+            "flops_per_update": {"n": 0},
+            "flops_to_conv": {"n": 0},
+            "sampled_states": {"n": 0},
+        }
+
+        try:
+            model = _make_FLOPs_measurement_model(cfg, algo)
+        except Exception as exc:
+            print(f"[complexity] {algo}: no checkpoint to measure ({exc!r})")
+            summary[algo] = entry
+            continue
+
+        env = None
+        try:
+            env = model.get_env()
+            flops = complexity_metrics.measure_algo_flops(
+                model,
+                algo,
+                n_envs_train=int(getattr(cfg, "n_envs", 1)),
+                forward_env_steps=getattr(cfg, "flops_forward_steps", None),
+            )
+        except Exception as exc:
+            print(f"[complexity] {algo}: measurement failed ({exc!r})")
+            summary[algo] = entry
+            try:
+                if env is not None:
+                    env.close()
+            except Exception:
+                pass
+            continue
+
+        try:
+            if env is not None:
+                env.close()
+        except Exception:
+            pass
+
+        entry["flops_per_update"] = {
+            "n": 1,
+            "iqm": float(flops["f_per_update"]),
+        }
+
+        histories = histories_by_algo.get(algo, [])
+        egm = egm_returns_by_algo.get(algo, [])
+
+        if histories and len(histories) == len(egm):
+            cumflops, states = complexity_metrics.cumulative_flops_per_seed(
+                histories,
+                egm,
+                flops=flops,
+                n_envs_train=int(getattr(cfg, "n_envs", 1)),
+                tol=tol,
+            )
+            entry["flops_to_conv"] = summarize_matrix(np.asarray(cumflops, dtype=np.float64))
+            entry["sampled_states"] = summarize_matrix(np.asarray(states, dtype=np.float64))
+
+        summary[algo] = entry
+    
+    return summary
+
+
 # =============================================================================
 # Main analysis
 # =============================================================================
@@ -829,25 +926,30 @@ def run_testing(cfg: Union[Mapping[str, Any], Any]) -> None:
 # =============================================================================
 
 def load_training_history(seed_dir: Path):
-    """Load training-time evaluation history from current or legacy files."""
-    candidates = [
-        seed_dir / "eval_history.npz",
-        seed_dir / "history.npz",
-    ]
+    """Load training-time evaluation history and per-eval compute counters.
 
-    for path in candidates:
-        if not path.exists():
-            continue
+    Reads eval_history.npz and returns a dict:
+        t       : evaluation wall-clock times
+        u       : evaluation returns
+        steps   : cumulative environment steps per eval (None if not logged)
+        updates : cumulative gradient updates per eval (None if not logged)
 
-        with np.load(path) as d:
-            if "history_t" in d and "history_U" in d:
-                return d["history_t"].copy(), d["history_U"].copy()
-            if "history_t" in d and "history_V" in d:
-                return d["history_t"].copy(), d["history_V"].copy()
-            if "t" in d and "V_grid" in d:
-                return d["t"].copy(), d["V_grid"].copy()
+    Returns None if no usable history file is present.
+    """
+    path = seed_dir / "eval_history.npz"
+    if not path.exists():
+        return None
 
-    return None
+    with np.load(path) as d:
+        if "history_t" not in d.files or "history_U" not in d.files:
+            return None
+
+        return {
+            "t": d["history_t"].copy(),
+            "u": d["history_U"].copy(),
+            "steps": d["history_steps"].copy() if "history_steps" in d.files else None,
+            "updates": d["history_updates"].copy() if "history_updates" in d.files else None,
+        }
 
 
 def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
@@ -865,8 +967,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     rl_value_grids = {algo: [] for algo in cfg.algorithms}
     histories = {algo: [] for algo in cfg.algorithms}
     history_seeds = {algo: [] for algo in cfg.algorithms}
-    euler_pools = {algo: [] for algo in cfg.algorithms}
-    euler_seedwise = {algo: [] for algo in cfg.algorithms}
+    euler = {algo: [] for algo in cfg.algorithms}
     visited_pools = {algo: [] for algo in cfg.algorithms}
 
     for algo in cfg.algorithms:
@@ -899,13 +1000,13 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
                 key = f"seed_{test_seed}"
 
                 if key in eulers:
-                    euler_pools[algo].append(eulers[key])
+                    if not got_deterministic:
+                        euler[algo].append(eulers[key])
 
-                    if deterministic and not got_deterministic:
-                        euler_seedwise[algo].append(eulers[key])
+                    if deterministic:
                         got_deterministic = True
 
-                if not deterministic and key in visited:
+                if key in visited:
                     visited_pools[algo].append(visited[key])
 
     train_egm_returns = {
@@ -918,11 +1019,15 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         for algo in cfg.algorithms
     }
 
-    pooled_visited = {
-        algo: np.concatenate([np.asarray(x).ravel() for x in arrays])
-        for algo, arrays in visited_pools.items()
-        if arrays
-    }
+    pooled_visited = {}
+    for algo, arrays in visited_pools.items():
+        if not arrays:
+            continue
+        ms = [
+            (np.asarray(x)[..., 0] if np.asarray(x).ndim > 1 else np.asarray(x)).ravel()
+            for x in arrays
+        ]
+        pooled_visited[algo] = np.concatenate(ms)
 
     out = figure_dir(cfg)
 
@@ -930,7 +1035,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         economic_model,
         egm_policy,
         rl_policies,
-        out / "policy.png",
+        out / "policy.pdf",
         algorithms=cfg.algorithms,
     )
 
@@ -939,7 +1044,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         axes_egm,
         V_egm,
         rl_value_grids,
-        out / "cev.png",
+        out / "cev.pdf",
         algorithms=cfg.algorithms,
         visited_m=pooled_visited,
         support_quantiles=(0.1, 99.9),
@@ -947,9 +1052,9 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
 
     plot_euler_error_distribution(
         economic_model,
-        euler_pools,
-        euler_seedwise,
-        out / "euler_errors.png",
+        euler,
+        out / "euler_errors.pdf",
+        deterministic,
         algorithms=cfg.algorithms,
     )
 
@@ -960,7 +1065,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         plot_portfolio_share_heatmaps(
             economic_model,
             rl_policies,
-            out / "portfolio_share.png",
+            out / "portfolio_share.pdf",
             algorithms=cfg.algorithms,
         )
 
@@ -968,7 +1073,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             economic_model,
             egm_policy,
             rl_policies,
-            out / "portfolio_share_diff.png",
+            out / "portfolio_share_diff.pdf",
             algorithms=cfg.algorithms,
         )
 
@@ -976,7 +1081,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             economic_model,
             egm_policy,
             rl_policies,
-            out / "portfolio_share_slices.png",
+            out / "portfolio_share_slices.pdf",
             algorithms=cfg.algorithms,
         )
 
@@ -993,15 +1098,13 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         algorithms=cfg.algorithms,
         conv_tol=getattr(cfg, "conv_tol", 0.0001),
     )
-    # 0.01 percentage points of regret above the best regret are considered 
-    # "converged" time periods for the time-to-convergence metric.
     write_json(figure_dir(cfg) / "efficiency_summary.json", efficiency)
 
     plot_training_convergence(
         histories,
         egm_returns_by_algo,
         cfg.max_wallclock_seconds,
-        out / "convergence.png",
+        out / "convergence.pdf",
         algorithms=cfg.algorithms,
         grid_step=cfg.eval_interval_seconds,
         efficiency=efficiency,
@@ -1019,6 +1122,29 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         for key in ("aulc", "time_to_best", "time_to_converged"):
             if key in efficiency.get(algo, {}):
                 summaries[algo][key] = efficiency[algo][key]
+
+    # -------------------------------------------------------------------------
+    # Complexity metrics: FLOPs per update and cumulative FLOPs to convergence.
+    # -------------------------------------------------------------------------
+    try:
+        complexity = complexity_summary(
+            cfg,
+            histories,
+            egm_returns_by_algo,
+            algorithms=cfg.algorithms,
+            tol=getattr(cfg, "conv_tol", 0.0001),
+        )
+    except Exception as exc:
+        print(f"[figures] complexity metrics skipped: {exc!r}")
+        complexity = {}
+
+    write_json(figure_dir(cfg) / "complexity_summary.json", complexity)
+
+    for algo in cfg.algorithms:
+        summaries.setdefault(algo, {})
+        for key in ("flops_per_update", "flops_to_conv", "sampled_states"):
+            if key in complexity.get(algo, {}):
+                summaries[algo][key] = complexity[algo][key]
 
     make_latex_table(
         economic_model,
