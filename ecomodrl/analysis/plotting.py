@@ -23,7 +23,7 @@ from ecomodrl.analysis.efficiency_metrics import (
     last_value_carried_forward, 
     normalized_regret,
 )
-from ecomodrl.analysis.accuracy_metrics import iqm_ci_crossed
+from ecomodrl.analysis.accuracy_metrics import iqm
 
 
 DEFAULT_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
@@ -223,12 +223,12 @@ def plot_policy_distribution(
             ax.text(0.5, 0.5, "no policies", ha="center", va="center", transform=ax.transAxes, color="0.5")
         else:
             for i, stack in enumerate(stacks):
-                iqm, _, _ = iqm_ci_crossed(stack, B=1, axis=0)
+                iqm_values = iqm(stack, axis=0)
                 q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
                 color = ALGO_COLORS.get(algo, "tab:blue") if model.exogenous_dim == 0 else SLICE_COLORS[i]
 
                 ax.fill_between(m, q1, q3, color=color, alpha=0.22)
-                ax.plot(m, iqm, color=color, linewidth=1.8)
+                ax.plot(m, iqm_values, color=color, linewidth=1.8)
 
         ax.set_title(algo.upper())
         ax.set_xlabel("Cash-on-hand $m$")
@@ -547,11 +547,11 @@ def plot_portfolio_share_slices(
                     ],
                     axis=0,
                 )
-                iqm, _, _ = iqm_ci_crossed(stack, B=1, axis=0)
+                iqm_values = iqm(stack, axis=0)
                 q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
                 ax.fill_between(m, q1, q3, color=color, alpha=0.20)
                 ax.plot(
-                    m, iqm, color=color, linewidth=1.8,
+                    m, iqm_values, color=color, linewidth=1.8,
                     label=fr"RL $x_{{{asset_index}}}$ {slice_labels[i]}",
                 )
 
@@ -675,7 +675,7 @@ def plot_cev_distribution(
                 )
                 line_stack = line_stack[:, mask] * 100.0    # convert to percentage points
 
-                iqm, _, _ = iqm_ci_crossed(line_stack, B=1, axis=0)
+                iqm_values = iqm(line_stack, axis=0)
                 q1, q3 = np.nanpercentile(line_stack, [25, 75], axis=0)
 
                 color = (
@@ -686,7 +686,7 @@ def plot_cev_distribution(
                 label = None if model.exogenous_dim == 0 else slice_labels[i]
 
                 ax.fill_between(m_grid, q1, q3, color=color, alpha=0.22, linewidth=0.0)
-                line, = ax.plot(m_grid, iqm, color=color, linewidth=1.7, label=label)
+                line, = ax.plot(m_grid, iqm_values, color=color, linewidth=1.7, label=label)
 
                 if label is not None:
                     legend_handles.append(line)
@@ -776,14 +776,14 @@ def plot_euler_error_distribution(
 
             min_len = min(len(a) for a in arrays)
             stack = np.stack([np.asarray(a[:min_len], dtype=np.float64) for a in arrays], axis=0)
-            iqm, _, _ = iqm_ci_crossed(stack, B=1, axis=0)
+            iqm_values = iqm(stack, axis=0)
             q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
 
             x = model.log_grid(model.m_grid[0], model.m_grid[-1], min_len)
             color = ALGO_COLORS.get(algo, "tab:blue")
 
             ax.fill_between(x, q1, q3, color=color, alpha=0.22)
-            ax.plot(x, iqm, color=color, linewidth=1.3, label=algo.upper())
+            ax.plot(x, iqm_values, color=color, linewidth=1.3, label=algo.upper())
 
         ax.set_xlabel("Cash-on-hand $m$")
         ax.set_ylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
@@ -881,7 +881,7 @@ def plot_training_convergence(
         )
 
         reg_norm = normalized_regret(egm_returns, rl_returns)
-        iqm, _, _ = iqm_ci_crossed(reg_norm, B=1, axis=0)
+        iqm_values = iqm(reg_norm, axis=0)
         q1, q3 = np.nanpercentile(reg_norm, [25, 75], axis=0)
 
         color = ALGO_COLORS.get(algo, "tab:blue")
@@ -893,7 +893,7 @@ def plot_training_convergence(
                 label = f"{algo.upper()} (AULC={aulc['iqm']:.4f})"
 
         ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
-        ax.plot(t_grid, iqm, color=color, linewidth=1.6, label=label)
+        ax.plot(t_grid, iqm_values, color=color, linewidth=1.6, label=label)
 
         if efficiency is not None:
             conv = efficiency.get(algo, {}).get("time_to_converged", {})

@@ -189,29 +189,47 @@ def wasserstein_euler(ee_rl, ee_egm):
 # Aggregation utilities
 # =============================================================================
 
-def iqm(x):
-    """Interquartile mean with NaNs dropped."""
-    a = np.asarray(x, dtype=np.float64).ravel()
-    a = a[np.isfinite(a)]
+def iqm(x, axis: int | None = None):
+    """Interquartile mean with non-finite values dropped.
 
-    if a.size == 0:
-        return float("nan")
+    With ``axis=None``, all observations are reduced to one scalar. With an
+    integer axis, the reduction is performed independently for each retained
+    slice and returns an array with that axis removed. Slices containing no
+    finite observations return ``NaN``.
+    """
+    if axis is None:
+        a = np.asarray(x, dtype=np.float64).ravel()
+        a = a[np.isfinite(a)]
 
-    q1, q3 = np.percentile(a, [25, 75])
-    mask = (a >= q1) & (a <= q3)
+        if a.size == 0:
+            return float("nan")
 
-    if not mask.any():
-        return float(np.mean(a))
+        q1, q3 = np.percentile(a, [25, 75])
+        mask = (a >= q1) & (a <= q3)
 
-    return float(np.mean(a[mask]))
+        if not mask.any():
+            return float(np.mean(a))
+
+        return float(np.mean(a[mask]))
+
+    values = np.moveaxis(np.asarray(x, dtype=np.float64), axis, 0)
+    reduced_shape = values.shape[1:]
+    flattened = values.reshape(values.shape[0], -1)
+    result = np.full(flattened.shape[1], np.nan, dtype=np.float64)
+
+    for index in range(flattened.shape[1]):
+        column = flattened[:, index]
+        if np.any(np.isfinite(column)):
+            result[index] = iqm(column)
+
+    return result.reshape(reduced_shape)
 
 
 def iqm_ci_crossed(
     matrix: np.ndarray, 
     B:int = 2000, 
     alpha:float = 0.05, 
-    seed:int = 42, 
-    axis: int | None = None
+    seed:int = 42,
 ):
     """IQM with a percentile-bootstrap confidence interval.
 
@@ -219,7 +237,7 @@ def iqm_ci_crossed(
         The input matrix for which to compute the IQM with confidence intervals.
     
     B: int
-        Number of bootstrap resamples. If B=1, no resampling is performed and only the point estimate is returned.
+        Number of bootstrap resamples.
         
     alpha: float
         Significance level for the confidence interval. The default is 0.05, which corresponds to a 95% confidence interval.
@@ -227,74 +245,34 @@ def iqm_ci_crossed(
     seed: int
         Random seed for reproducibility of the bootstrap resampling.
     
-    axis=None (default)
-        Two-way *crossed* bootstrap over both rows and columns. Returns three
-        scalars (point, lo, hi). This is the aggregate train x test-seed metric.
-
-    axis=int
-        Reduce along `axis` with a *paired one-way* bootstrap, keeping the other
-        axes. For a 2D matrix, axis=0 produces one IQM per column (reducing over
-        rows), i.e. arrays of shape (n_cols,). The same resampled indices are
-        reused across all kept-axis slices, which preserves correlation along the
-        kept axis (e.g. the temporal correlation of a learning curve). Returns
-        three arrays shaped like `matrix` with `axis` removed.
+    The bootstrap is crossed over both rows and columns and returns three
+    scalars (point, lo, hi). This is the aggregate train x test-seed metric.
     """
     M = np.asarray(matrix, dtype=np.float64)
     rng = np.random.default_rng(int(seed))
     q = [100 * alpha / 2, 100 * (1 - alpha / 2)]
 
-    if axis is None:
-        M2 = np.atleast_2d(M)
-        finite = M2[np.isfinite(M2)]
+    M2 = np.atleast_2d(M)
+    finite = M2[np.isfinite(M2)]
 
-        if finite.size == 0:
-            return float("nan"), float("nan"), float("nan")
+    if finite.size == 0:
+        return float("nan"), float("nan"), float("nan")
 
-        point = iqm(finite)
+    point = iqm(finite)
 
-        R, C = M2.shape
-        iqms = np.empty(int(B), dtype=np.float64)
-        for b in range(int(B)):
-            ri = rng.integers(0, R, size=R)
-            ci = rng.integers(0, C, size=C)
-            iqms[b] = iqm(M2[np.ix_(ri, ci)])
+    R, C = M2.shape
+    iqms = np.empty(int(B), dtype=np.float64)
+    for b in range(int(B)):
+        ri = rng.integers(0, R, size=R)
+        ci = rng.integers(0, C, size=C)
+        iqms[b] = iqm(M2[np.ix_(ri, ci)])
 
-        iqms = iqms[np.isfinite(iqms)]
-        if iqms.size == 0:
-            return float(point), float("nan"), float("nan")
+    iqms = iqms[np.isfinite(iqms)]
+    if iqms.size == 0:
+        return float(point), float("nan"), float("nan")
 
-        lo, hi = np.percentile(iqms, q)
-        return float(point), float(lo), float(hi)
-
-    Mm = np.moveaxis(M, axis, 0)          
-    n = Mm.shape[0]
-    rest_shape = Mm.shape[1:]
-    flat = Mm.reshape(n, -1)             
-    K = flat.shape[1]
-
-    point = np.full(K, np.nan)
-    lo = np.full(K, np.nan)
-    hi = np.full(K, np.nan)
-
-    if n > 0:
-        boot_idx = rng.integers(0, n, size=(int(B), n))
-        for k in range(K):
-            col = flat[:, k]
-            if not np.any(np.isfinite(col)):
-                continue
-
-            point[k] = iqm(col)
-
-            stats = np.array([iqm(col[boot_idx[b]]) for b in range(int(B))])
-            stats = stats[np.isfinite(stats)]
-            if stats.size:
-                lo[k], hi[k] = np.percentile(stats, q)
-
-    return (
-        point.reshape(rest_shape),
-        lo.reshape(rest_shape),
-        hi.reshape(rest_shape),
-    )
+    lo, hi = np.percentile(iqms, q)
+    return float(point), float(lo), float(hi)
 
 
 # =============================================================================
