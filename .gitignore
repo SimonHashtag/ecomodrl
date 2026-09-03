@@ -138,6 +138,7 @@ dmypy.json
 # runs
 /runs
 /tune_results
+/figures
 
 # github copilot 
 /.github

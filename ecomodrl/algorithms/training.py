@@ -1,8 +1,8 @@
 import os
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from pathlib import Path
-from typing import Optional, Callable, Union, Mapping, Any, List, Tuple
+from typing import Dict, Optional, Callable, Union, Mapping, Any, List, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 
@@ -11,10 +11,13 @@ import torch as th
 from stable_baselines3 import PPO, TD3, DDPG, SAC
 from stable_baselines3.common.utils import set_random_seed
 
+from ecomodrl.analysis.accuracy_metrics import make_evaluation_sample
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.utils.stopper import WallClockEarlyStoppingCallback
-from ecomodrl.utils.grad_norm_wrapper import add_grad_norm_rescaling
-from ecomodrl.utils.action_noise import make_action_noise
+from ecomodrl.algorithms.learning_schedule import WallClockCosineLR
+from ecomodrl.algorithms.stopper import TrainingClock, WallClockBudgetCallback
+from ecomodrl.algorithms.evaluation import BestValueEvalCallback
+from ecomodrl.algorithms.grad_norm_wrapper import add_grad_norm_rescaling
+from ecomodrl.algorithms.action_noise import make_action_noise
 
 # -------------------------------------------------------
 # Build deep RL algorithm
@@ -33,6 +36,23 @@ class AlgoConfig:
     policy: str = "MlpPolicy"
     algo_params: Optional[dict] = None
     policy_kwargs: Optional[dict] = None
+
+
+def _set_lr_schedule(
+    algo_params: Dict[str, Any],
+    cfg: Any,
+    clock: TrainingClock | None = None,
+) -> None:
+    initial_lr = float(algo_params["learning_rate"])
+    drop = float(algo_params.pop("drop", 0.0))
+
+    algo_params["learning_rate"] = WallClockCosineLR(
+        clock=clock,
+        lr0=initial_lr,
+        drop=drop,
+        wallclock_seconds=cfg.max_wallclock_seconds,
+    )
+
 
 def build_model(
     algo_cfg: AlgoConfig,
@@ -81,11 +101,11 @@ def _set_thread_env(n: int = 1) -> None:
     except Exception:
         pass
 
-def _worker_run(args: Tuple[Any, AlgoConfig, Callable[..., Any], Any, int]) -> dict:
+def _worker_run(args: Tuple[Any, AlgoConfig, Callable[..., Any], Any, int, int, str]) -> dict:
     """Top-level wrapper for pickling + per-process thread cap."""
-    cfg, algo_cfg, env, params, seed, verbose = args
+    cfg, algo_cfg, env, params, seed, verbose, vec_env_type = args
     _set_thread_env(1)
-    return train_single_seed(cfg, algo_cfg, env, params, seed, verbose=verbose)
+    return train_single_seed(cfg, algo_cfg, env, params, seed, verbose=verbose, vec_env_type=vec_env_type)
 
 # -------------------------------------------------------
 # Main training functions
@@ -97,21 +117,41 @@ def train_single_seed(
     env: Callable[..., Any],
     params: Union[Mapping[str, Any], Any],
     seed: int,
-    verbose: int = 0
+    verbose: int = 0,
+    vec_env_type: str = "dummy",
 ) -> dict:
     """Train RL model for one seed and return metadata."""
     set_random_seed(seed)
 
+    # Copy algo_cfg to avoid mutating the original
+    algo_cfg = replace(
+            algo_cfg,
+            algo_params=dict(algo_cfg.algo_params or {}),
+        )
+
     out_dir = cfg.out_dir / f"seed_{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    best_model_path = out_dir / "best_model_ppo.zip"
+    best_model_path = out_dir / f"best_model_{algo_cfg.name.lower()}.zip"
     vecnorm_path = out_dir / "best_vecnormalize.pkl"
 
-    train_env = eval_env = model = None
+    envs = model = None
+    clock = TrainingClock()
     try:
-        train_env, eval_env = build_envs(env, params=params, cfg=cfg, seed=seed)
+        envs, beta_eff = build_envs(env, params=params, cfg=cfg, seed=seed, reward_floor=cfg.reward_floor, vec_env_type=vec_env_type)
+        algo_cfg.algo_params.update({"gamma": beta_eff}) # pass effective RL discount factor for Buffer Stock with normalization by prices
 
-        model = build_model(algo_cfg, train_env, seed, tensorboard_log=out_dir, verbose=0)
+        eco_model = envs.get_attr("model")[0]
+        evaluation_sample = make_evaluation_sample(
+            eco_model,
+            seed + cfg.eval_seed_offset,
+            cfg.eval_m_grid_size,
+            cfg.eval_horizon,
+        )
+
+        _set_lr_schedule(algo_cfg.algo_params, cfg, clock)
+        
+        
+        model = build_model(algo_cfg, envs, seed, tensorboard_log=out_dir, verbose=0)
         
         max_grad_norm = algo_cfg.algo_params.get('max_grad_norm', None) if algo_cfg.algo_params else None
         
@@ -121,33 +161,23 @@ def train_single_seed(
                 max_grad_norm=max_grad_norm,
                 clip_actor=True,
                 clip_critic=True)
-        
-        lr_obj = getattr(model, "learning_rate", None)
-        
-        callback = WallClockEarlyStoppingCallback(
-            eval_env=eval_env,
-            beta=params.beta,
-            eval_freq_steps=cfg.eval_every,     # evaluation schedule in env steps
-            patience=cfg.patience,
-            min_delta=cfg.min_delta,
-            max_wallclock_seconds=cfg.max_wallclock_seconds,
-            n_eval_episodes=getattr(cfg, "n_eval_episodes", None) or 1.0,  # increase for stochastic envs
-            deterministic_eval=True,
-            best_model_path=str(best_model_path),
-            vecnorm_path=str(vecnorm_path),
-            final_eval_on_budget=True,
-            lr_schedule_obj=lr_obj if callable(getattr(lr_obj, "update", None)) else None,
-            eval_seed=seed,
+
+        budget_cb = WallClockBudgetCallback(clock=clock, seconds=cfg.max_wallclock_seconds)
+        eval_cb = BestValueEvalCallback(
+            cfg=cfg, algo_cfg=algo_cfg,
+            clock=clock, eco_model=eco_model,
+            evaluation_sample=evaluation_sample,
+            out_dir=out_dir,
+            seed=seed,
             verbose=verbose,
         )
 
-        model.learn(total_timesteps=cfg.total_timesteps, callback=callback)
+        model.learn(total_timesteps=cfg.total_timesteps, callback=[budget_cb, eval_cb])
 
         return {
             "seed": seed,
-            "best_eval_return": float(callback.best_score),
-            "last_eval_return": float(callback.last_eval_score),
-            "num_timesteps": int(callback.num_timesteps),
+            "best_eval_return": float(eval_cb.best_U),
+            "last_eval_return": float(eval_cb.eval_returns[-1]) if eval_cb.eval_returns[-1] is not None else None,
             "best_model_path": str(best_model_path),
             "vecnorm_path": str(vecnorm_path),
             "cfg": asdict(cfg),
@@ -156,13 +186,10 @@ def train_single_seed(
         }
     finally:
         try:
-            if train_env is not None:
-                train_env.close()
+            if envs is not None:
+                envs.close()
         except Exception:
             pass
-        try:
-            if eval_env is not None:
-                eval_env.close()
         except Exception:
             pass
         try:
@@ -183,6 +210,7 @@ def train_multiple_seeds(
     *,
     max_workers: Optional[int] = None,
     seed_parallel: bool = True,
+    vec_env_type: str = "dummy",
     verbose: int = 0,
 ) -> List[dict]:
     """
@@ -198,16 +226,23 @@ def train_multiple_seeds(
     if max_workers is None:
         total = max(1, os.cpu_count() - 1 or 1)
         max_workers = max(1, min(len(seeds), total))
+        
+    # If we parallelize over seeds, force DummyVecEnv inside each seed worker.
+    if max_workers > 1:
+        vec_env_type = "dummy"
 
     ctx = mp.get_context("spawn")
-    tasks = [(cfg, algo_cfg, env, params, s, verbose) for s in seeds]
+    tasks = [
+        (cfg, algo_cfg, env, params, s, verbose, vec_env_type) 
+        for s in seeds
+    ]
+    
     results: List[dict] = []
 
     if max_workers == 1:
         for t in tasks:
             results.append(_worker_run(t))
     else:
-        os.environ["ECOMODRL_SEED_PARALLEL"] = "1" # tell env builder to avoid SubprocVecEnv in seed workers
         with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as ex:
             futs = {ex.submit(_worker_run, t): t[-1] for t in tasks}
             for fut in as_completed(futs):

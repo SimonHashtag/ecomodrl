@@ -7,6 +7,7 @@ dependencies:
   - gymnasium
   - matplotlib
   - numpy
+  - numba
   - tensorboard
   - ConfigSpace
   - pip
