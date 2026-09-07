@@ -81,12 +81,6 @@ def parse_tune_args(TuneConfig: BaseTuneConfig) -> argparse.Namespace:
     p.add_argument("--n_envs", type=int, default=argparse.SUPPRESS)
     p.add_argument("--max_wallclock_seconds", type=int, default=argparse.SUPPRESS)
     p.add_argument("--eval_interval_seconds", type=int, default=argparse.SUPPRESS)
-    p.add_argument(
-        "--normalize_obs",
-        action=argparse.BooleanOptionalAction,
-        default=argparse.SUPPRESS,
-        help="Whether to use VecNormalize observation normalization.",
-    )
     p.add_argument("--n_seeds", type=int, default=argparse.SUPPRESS)
     
     args = p.parse_args()

@@ -8,8 +8,9 @@ import multiprocessing as mp
 
 import torch as th
 
-from stable_baselines3 import PPO, TD3, DDPG, SAC
 from stable_baselines3.common.utils import set_random_seed
+
+from ecomodrl.algorithms.post_decision import PDDDPG, PDPPO, PDSAC, PDTD3
 
 from ecomodrl.analysis.accuracy_metrics import make_evaluation_sample
 from ecomodrl.envs.setup_envs import build_envs
@@ -22,12 +23,15 @@ from ecomodrl.algorithms.action_noise import make_action_noise
 # -------------------------------------------------------
 # Build deep RL algorithm
 # -------------------------------------------------------
+# All four algorithms use the post-decision critic with quadrature targets
+# (see ecomodrl/algorithms/post_decision). The critic needs the model's
+# `post_decision_spec`, which build_model() injects into policy_kwargs.
 
 ALGO_REGISTRY = {
-    "ppo":  PPO,
-    "td3":  TD3,
-    "ddpg": DDPG,
-    "sac":  SAC,
+    "ppo":  PDPPO,
+    "td3":  PDTD3,
+    "ddpg": PDDDPG,
+    "sac":  PDSAC,
 }
 
 @dataclass
@@ -60,10 +64,18 @@ def build_model(
     seed: int,
     tensorboard_log: Path,
     verbose: int = 0,
+    pd_spec: Optional[dict] = None,
 ):
+    """Instantiate the SB3 model. `pd_spec` is the economic model's
+    `post_decision_spec()`; it is stored in policy_kwargs so that saved
+    checkpoints reload without the environment."""
     AlgoCls = ALGO_REGISTRY[algo_cfg.name.lower()]
     algo_params = dict(algo_cfg.algo_params or {})
     policy_kwargs = dict(algo_cfg.policy_kwargs or {})
+
+    if pd_spec is None:
+        raise ValueError("build_model() needs pd_spec (EconomicModel.post_decision_spec).")
+    policy_kwargs["pd_spec"] = pd_spec
 
     algo_params.setdefault("verbose", verbose)
     algo_params.setdefault("seed", seed)
@@ -132,7 +144,6 @@ def train_single_seed(
     out_dir = cfg.out_dir / f"seed_{seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
     best_model_path = out_dir / f"best_model_{algo_cfg.name.lower()}.zip"
-    vecnorm_path = out_dir / "best_vecnormalize.pkl"
 
     envs = model = None
     clock = TrainingClock()
@@ -141,6 +152,11 @@ def train_single_seed(
         algo_cfg.algo_params.update({"gamma": beta_eff}) # pass effective RL discount factor for Buffer Stock with normalization by prices
 
         eco_model = envs.get_attr("model")[0]
+        # Post-decision critic: constants + quadrature nodes; the utility clamp
+        # mirrors the reward floor applied in the environment.
+        pd_spec = eco_model.post_decision_spec(
+            cfg.reward_floor if cfg.reward_floor is not None else float("inf")
+        )
         evaluation_sample = make_evaluation_sample(
             eco_model,
             seed + cfg.eval_seed_offset,
@@ -151,7 +167,7 @@ def train_single_seed(
         _set_lr_schedule(algo_cfg.algo_params, cfg, clock)
         
         
-        model = build_model(algo_cfg, envs, seed, tensorboard_log=out_dir, verbose=0)
+        model = build_model(algo_cfg, envs, seed, tensorboard_log=out_dir, verbose=0, pd_spec=pd_spec)
         
         max_grad_norm = algo_cfg.algo_params.get('max_grad_norm', None) if algo_cfg.algo_params else None
         
@@ -179,7 +195,6 @@ def train_single_seed(
             "best_eval_return": float(eval_cb.best_U),
             "last_eval_return": float(eval_cb.eval_returns[-1]) if eval_cb.eval_returns[-1] is not None else None,
             "best_model_path": str(best_model_path),
-            "vecnorm_path": str(vecnorm_path),
             "cfg": asdict(cfg),
             "algo_cfg": asdict(algo_cfg),
             "params": vars(params) if hasattr(params, "__dict__") else dict(params),

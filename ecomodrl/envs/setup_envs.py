@@ -5,7 +5,7 @@ from typing import Callable, Any, Union, Mapping
 
 from gymnasium.wrappers import TimeLimit, TransformReward
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 def make_env(
     env_class: Callable[..., Any],
@@ -39,15 +39,18 @@ def build_envs(
     reward_floor: float | None = 100,
     vec_env_type: str = "dummy",
     ):
-    """ 
-    Creates vectorized training env and eval env with normalization and explicit seeding.
-    
+    """
+    Creates the vectorized training env with explicit seeding.
+
+    Observations are not normalized: the post-decision critics invert the
+    observation transform obs = log(m / m_ref) and need the raw values.
+
     env_class: Gym environment
     params: model-specific parameters,
     cfg: Run configs
     seed: seed
     reward_floor: In training mode, reward is clipped from below (at -reward_floor) to stabilize training
-    
+
     Returns: vectorized training env, effective RL discount (beta_eff)
     """
     
@@ -75,15 +78,6 @@ def build_envs(
         seed=seed,
         vec_env_cls=vec_cls,
         vec_env_kwargs=vec_env_kwargs,
-    )
-
-    envs = VecNormalize(
-        envs,
-        norm_obs=cfg.normalize_obs,
-        norm_reward=False,
-        clip_obs=10.0,
-        clip_reward=reward_floor,
-        gamma=beta_eff,
     )
 
     return envs, beta_eff

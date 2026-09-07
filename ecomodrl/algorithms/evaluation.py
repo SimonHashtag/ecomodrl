@@ -23,7 +23,6 @@ class BestValueEvalCallback(BaseCallback):
 
     The callback saves:
         - model.zip
-        - vecnormalize.pkl, if the policy uses VecNormalize
         - best_info.npz
         - eval_history.npz
     """
@@ -38,7 +37,6 @@ class BestValueEvalCallback(BaseCallback):
         out_dir: Union[str, Path],
         seed: int,
         verbose: bool = True,
-        vecnormalize=None,
         eval_on_training_end: bool = True,
     ):
         super().__init__(verbose=0)
@@ -56,7 +54,6 @@ class BestValueEvalCallback(BaseCallback):
         self.eval_interval_seconds = float(cfg.eval_interval_seconds)
 
         self.print_progress = bool(verbose)
-        self.vecnormalize = vecnormalize
         self.eval_on_training_end = bool(eval_on_training_end)
 
         self.eval_times: list[float] = []
@@ -115,7 +112,7 @@ class BestValueEvalCallback(BaseCallback):
         self.clock.pause()
 
         try:
-            value, vecnormalize, error = self._evaluate_current_policy()
+            value, error = self._evaluate_current_policy()
             elapsed = self.clock.now()
 
             self.eval_times.append(float(elapsed))
@@ -129,7 +126,7 @@ class BestValueEvalCallback(BaseCallback):
             if improved:
                 self.best_U = float(value)
                 self.improved_at_least_once = True
-                self._save_best(vecnormalize)
+                self._save_best()
 
             if self.print_progress:
                 self._print_evaluation_result(
@@ -149,7 +146,6 @@ class BestValueEvalCallback(BaseCallback):
             policy = RLPolicy(
                 sb3_model=self.model,
                 model=self.economic_model,
-                vecnormalize=self.vecnormalize,
             )
 
             value = eval_return_grid(
@@ -158,10 +154,10 @@ class BestValueEvalCallback(BaseCallback):
                 self.evaluation_sample,
             )
 
-            return float(value), policy.vecnormalize, None
+            return float(value), None
 
         except Exception as exc:
-            return float("nan"), None, exc
+            return float("nan"), exc
 
     def _print_evaluation_result(
         self,
@@ -206,14 +202,11 @@ class BestValueEvalCallback(BaseCallback):
             "improved_at_least_once": np.asarray(self.improved_at_least_once),
         }
 
-    def _save_best(self, vecnormalize) -> None:
-        """Save best SB3 model, VecNormalize stats, and best-evaluation info."""
+    def _save_best(self) -> None:
+        """Save best SB3 model and best-evaluation info."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         self.model.save(str(self.out_dir / "model.zip"))
-
-        if vecnormalize is not None:
-            vecnormalize.save(str(self.out_dir / "vecnormalize.pkl"))
 
         self._save_history()
 

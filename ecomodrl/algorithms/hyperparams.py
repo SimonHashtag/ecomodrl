@@ -11,9 +11,13 @@ from ecomodrl.algorithms.training import AlgoConfig
 AdapterFn = Callable[[Dict[str, Any], Mapping[str, Any] | Any, AlgoConfig], AlgoConfig]
 
 # ---------------------------------------------------------------------------
+# All algorithms use the post-decision critic with quadrature targets
+# (ecomodrl/algorithms/post_decision). PPO's advantage is the one-step
+# post-decision advantage, so there is no gae_lambda hyperparameter.
+#
 # Approximate SB3 defaults:
 #   PPO:  lr=3e-4, n_steps=2048, batch_size=64, n_epochs=10,
-#         clip=0.2, gae_λ=0.95, ent_coef=0, vf_coef=0.5
+#         clip=0.2, ent_coef=0, vf_coef=0.5
 #         → num_minibatches≈32, sample_reuse=10
 #   TD3:  lr=1e-3, batch_size=100, tau=0.005, gradient_steps=-1 (UTD≈1),
 #         σ_explore=0.1, σ_target=0.2, clip_target=0.5
@@ -27,7 +31,6 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
         "batch_size": 64,
         "sample_reuse": 10,          # = n_epochs
         "clip_range": 0.2,
-        "gae_lambda": 0.95,
         "ent_coef": 0.0,
         "vf_coef": 0.5,
         "drop": 1.0,
@@ -112,7 +115,6 @@ def _ppo_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
 
         # PPO-specific
         "clip_range": float(hp["clip_range"]),
-        "gae_lambda": float(hp["gae_lambda"]),
         "ent_coef": float(hp["ent_coef"]),
         "vf_coef": float(hp["vf_coef"]),
     })

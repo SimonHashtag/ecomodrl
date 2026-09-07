@@ -278,33 +278,11 @@ def load_rl_policy(
     if not model_path.exists():
         raise FileNotFoundError(model_path)
 
-    normalize_obs = bool(getattr(cfg, "normalize_obs", True))
-
-    vecnormalize = None
-
-    if normalize_obs:
-        vecnorm_path = seed_dir / "vecnormalize.pkl"
-
-        if not vecnorm_path.exists():
-            raise FileNotFoundError(
-                f"Missing VecNormalize statistics: {vecnorm_path}. "
-                "Set --normalize_obs False only if this checkpoint was trained "
-                "with norm_obs=False."
-            )
-
-        vecnormalize = cfg.load_vecnormalize(vecnorm_path, seed=train_seed)
-        sb3_model = ALGO_REGISTRY[algo].load(
-            str(model_path),
-            env=vecnormalize,
-        )
-
-    else:
-        sb3_model = ALGO_REGISTRY[algo].load(str(model_path))
+    sb3_model = ALGO_REGISTRY[algo].load(str(model_path))
 
     return RLPolicy(
         sb3_model=sb3_model,
         model=economic_model,
-        vecnormalize=vecnormalize,
     )
     
 

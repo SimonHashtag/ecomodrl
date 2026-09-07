@@ -21,32 +21,6 @@ import numpy as np
 from ecomodrl.envs.envs import obs_from_state
 
 # ==============================================================================
-# Vecnormalize utilities
-# ==============================================================================
-
-def is_vecnormalize(obj) -> bool:
-    """Return True if `obj` looks like an SB3 VecNormalize wrapper."""
-    return (
-        obj is not None
-        and hasattr(obj, "normalize_obs")
-        and hasattr(obj, "obs_rms")
-    )
-
-
-def get_attached_vecnormalize(sb3_model):
-    """Return the top-level VecNormalize attached to an SB3 model, if present.
-
-    In this project, build_envs() returns VecNormalize as the top-level vectorized
-    environment, so no recursive wrapper search is needed.
-    """
-    try:
-        env = sb3_model.get_env()
-    except Exception:
-        return None
-
-    return env if is_vecnormalize(env) else None
-
-# ==============================================================================
 # Batch state helper
 # ==============================================================================
 
@@ -115,25 +89,17 @@ class RLPolicy:
 
     model: Economic model instance.
 
-    vecnormalize:
-        VecNormalize object containing observation-normalization statistics.
-        If None, this class tries to use `sb3_model.get_env()` if it is a
-        top-level VecNormalize.
+    Observations are fed to the SB3 model exactly as `obs_from_state` produces
+    them; the training environments apply no observation normalization.
     """
 
     def __init__(
         self,
         sb3_model,
         model,
-        vecnormalize=None,
     ):
         self.sb3_model = sb3_model
         self.model = model
-
-        if vecnormalize is None:
-            vecnormalize = get_attached_vecnormalize(sb3_model)
-
-        self.vecnormalize = vecnormalize
 
     def share(self, state):
         controls, single = self._controls(state)
@@ -191,7 +157,6 @@ class RLPolicy:
         state_flat = state_arr.reshape(-1, state_arr.shape[-1])
 
         obs = obs_from_state(state_flat, self.model)
-        obs = self._normalize_obs(obs)
 
         actions, _ = self.sb3_model.predict(obs, deterministic=True)
         actions = np.asarray(actions, dtype=np.float64)
@@ -209,15 +174,3 @@ class RLPolicy:
         )
 
         return controls, single
-
-    def _normalize_obs(self, obs):
-        """Apply VecNormalize observation statistics if available."""
-        obs = np.asarray(obs, dtype=np.float64)
-
-        if self.vecnormalize is None:
-            return obs
-
-        return np.asarray(
-            self.vecnormalize.normalize_obs(obs.copy()),
-            dtype=np.float64,
-        )

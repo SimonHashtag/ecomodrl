@@ -51,7 +51,7 @@ def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
     cs = _common_space(seed)
     cs.add([
         CSH.UniformFloatHyperparameter("clip_range", 0.05, 0.30),
-        CSH.UniformFloatHyperparameter("gae_lambda", 0.85, 0.995),
+        # no gae_lambda: PPO uses the one-step post-decision advantage
         CSH.CategoricalHyperparameter("ent_coef", [0.0, 1e-5, 1e-4, 1e-3, 1e-2]),
         CSH.UniformFloatHyperparameter("vf_coef", 0.25, 1.0),
     ])

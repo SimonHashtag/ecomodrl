@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 from ecomodrl.envs.setup_envs import make_env
 from ecomodrl.configs.runconfigs import (
@@ -85,11 +85,10 @@ class BaseAnalysisConfig:
         raise NotImplementedError
 
     def make_unnormalized_vecenv(self, seed: int):
-        """Create a dummy VecEnv for loading VecNormalize statistics.
+        """Create a single-env DummyVecEnv matching the training spaces.
 
-        VecNormalize.load(path, venv) requires an underlying VecEnv. The
-        returned VecEnv must match the training observation/action spaces, but
-        it should not itself already be wrapped in VecNormalize.
+        Used to attach an environment to a loaded checkpoint for the offline
+        FLOPs measurement (complexity metrics).
         """
         vec_cls = DummyVecEnv
 
@@ -104,14 +103,6 @@ class BaseAnalysisConfig:
             seed=int(seed),
             vec_env_cls=vec_cls,
         )
-
-    def load_vecnormalize(self, path: Path, seed: int):
-        """Load saved VecNormalize statistics for offline policy evaluation."""
-        dummy_vecenv = self.make_unnormalized_vecenv(seed=seed)
-        vecnorm = VecNormalize.load(str(path), dummy_vecenv)
-        vecnorm.training = False
-        vecnorm.norm_reward = False
-        return vecnorm
 
 @dataclass
 class CassKoopmansAnalysisConfig(CassKoopmansRunConfig, BaseAnalysisConfig):
@@ -204,12 +195,6 @@ def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig, argv=None) -> argpar
     p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)
     p.add_argument("--max_wallclock_seconds", type=int, default=argparse.SUPPRESS)
     p.add_argument("--eval_interval_seconds", type=int, default=argparse.SUPPRESS)
-    p.add_argument(
-        "--normalize_obs",
-        action=argparse.BooleanOptionalAction,
-        default=argparse.SUPPRESS,
-        help="Whether to use VecNormalize observation normalization.",
-    )
     p.add_argument("--n_seeds", type=int, default=argparse.SUPPRESS)
 
     p.add_argument("--n_test_seeds", type=int, default=argparse.SUPPRESS)
