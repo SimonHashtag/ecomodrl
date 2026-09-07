@@ -16,6 +16,16 @@ Four dynamic economic models are solved with deep RL and evaluated against high-
 
 Each model in [ecomodrl/models](ecomodrl/models/) is translated into a [Gymnasium](https://gymnasium.farama.org/) environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) - the API standard for reinforcement learning. All models are solved in [ecomodrl/experiments](ecomodrl/experiments) with four algorithms: PPO, DDPG, TD3, and SAC (the implementation of the core algorithms is based on the [stable-baselines3](https://stable-baselines3.readthedocs.io/en/master/#) package). Benchmark solutions come from (nested) endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py).
 
+### Structure-exploiting critics
+
+All four algorithms use a *post-decision* critic ([ecomodrl/algorithms/post_decision](ecomodrl/algorithms/post_decision/)) instead of the generic state-action critic: the critic knows the utility function and the deterministic part of the budget identity and learns only the continuation value over the post-decision state,
+
+```
+Q(s, a) = u(c(s, a)) + W(a_pd),        a_pd = m - c   (plus exogenous states)
+```
+
+Its target integrates over the model's own shock nodes (Gauss-Hermite for Brock–Mirman and buffer-stock, a subset of the scrambled-Sobol nodes for portfolio choice) instead of using the single sampled next state. DDPG, TD3 and SAC keep their training loops with the critic target replaced; PPO uses the same value head and the one-step post-decision advantage in place of GAE (so there is no `gae_lambda`). Observations are not normalized, because the critic inverts the observation transform.
+
 ## Repository structure
 
 ```
@@ -75,7 +85,7 @@ python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_nam
 
 `--n_seeds` must match between the two calls. Outputs land under `./runs` (override with the `RUNRESULTS_PATH` environment variable, see instructions in `/configs/runconfigs.py`):
 
-- **Checkpoints:** `./runs/CassKoopmans/PPO/seed_<n>/` — best model (`model.zip`), normalization stats (`vecnormalize.pkl`), evaluation history (`eval_history.npz`), TensorBoard event files — plus run metadata in `train_cfgs.json`.
+- **Checkpoints:** `./runs/CassKoopmans/PPO/seed_<n>/` — best model (`model.zip`), evaluation history (`eval_history.npz`), TensorBoard event files — plus run metadata in `train_cfgs.json`.
 - **Metrics:** `runs/CassKoopmans/PPO/analysis_summary.json` — aggregated accuracy and welfare statistics.
 - **Figures and tables:** `runs/CassKoopmans/figures/` — `policy.png`, `cev.png`, `euler_errors.png`, `convergence.png`, `table.tex`, `CassKoopmans_comparison_table.tex`.
 
@@ -98,8 +108,9 @@ The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipel
 ## Extending to new models
 
 1. Implement the model as an `EconomicModel` subclass in [ecomodrl/models/](ecomodrl/models/) (see [base_model.py](ecomodrl/models/base_model.py)) and add a Gymnasium environment in [ecomodrl/envs/envs.py](ecomodrl/envs/envs.py).
-2. Add a calibration dataclass in [ecomodrl/configs/parameters.py](ecomodrl/configs/parameters.py) and run/tune/analysis configs in [ecomodrl/configs/](ecomodrl/configs/).
-3. Add entry points mirroring [experiments/casskoopmans.py](ecomodrl/experiments/casskoopmans.py) and [tune/casskoopmans.py](ecomodrl/tune/casskoopmans.py) (each ~7 lines), and register the model in [analyze_experiments.py](ecomodrl/experiments/analyze_experiments.py).
+2. Implement `post_decision_spec(reward_floor)` on the model: plain floats/lists with the action map, utility parameters and the quadrature nodes of the RL transition (see the four existing models). If the model does not fit an existing family in [post_decision/economics.py](ecomodrl/algorithms/post_decision/economics.py), add a torch `PDEconomics` subclass there (`controls` and `next_obs`) and register it in `FAMILIES`.
+3. Add a calibration dataclass in [ecomodrl/configs/parameters.py](ecomodrl/configs/parameters.py) and run/tune/analysis configs in [ecomodrl/configs/](ecomodrl/configs/).
+4. Add entry points mirroring [experiments/casskoopmans.py](ecomodrl/experiments/casskoopmans.py) and [tune/casskoopmans.py](ecomodrl/tune/casskoopmans.py) (each ~7 lines), and register the model in [analyze_experiments.py](ecomodrl/experiments/analyze_experiments.py).
 
 ## Citation
 
