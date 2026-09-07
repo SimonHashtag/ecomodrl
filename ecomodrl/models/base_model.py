@@ -274,3 +274,40 @@ class EconomicModel(ABC):
     @abstractmethod
     def eval_start_states(self, M: int) -> np.ndarray:
         ...
+
+    # ------------------------------------------------------------------
+    # Post-decision critic hook
+    # ------------------------------------------------------------------
+
+    def post_decision_spec(self, reward_floor: float) -> dict:
+        """Constants and quadrature nodes for the post-decision critic.
+
+        The RL algorithms in `ecomodrl/algorithms/post_decision` use a critic
+        Q(s, a) = u(c(s, a)) + W(post-decision state) whose target integrates
+        over the model's shock distribution. This hook hands them everything
+        they need as plain Python floats/ints/lists (no arrays, no torch), so
+        the spec can be stored in SB3's `policy_kwargs` and reloaded.
+
+        Implementations call `_post_decision_common` and add the family-specific
+        constants and node arrays (see README, "Extending to new models").
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement post_decision_spec(); "
+            "see README 'Extending to new models'."
+        )
+
+    def _post_decision_common(self, reward_floor: float, family: str, pd_dim: int) -> dict:
+        """Keys shared by every post-decision spec."""
+        return {
+            "family": str(family),
+            "m_ref": float(self.m_ref),
+            "smin": float(self.min_action_share),
+            "smax": float(self.max_action_share),
+            "crra": float(self.params.gamma),
+            "reward_floor": float(reward_floor),
+            "beta_eff": float(self.beta_eff),
+            "obs_dim": int(self.state_dim),
+            "exo_dim": int(self.exogenous_dim),
+            "action_dim": int(self.action_dim),
+            "pd_dim": int(pd_dim),
+        }

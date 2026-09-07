@@ -194,11 +194,18 @@ class PortfolioChoiceParams:
 
     n_risky: Optional[int] = 1
 
+    # ---- post-decision critic ----
+    # Number of scrambled-Sobol nodes (plus their antithetic partners) used for
+    # the quadrature target of the post-decision critic; see PortfolioChoice.post_decision_spec.
+    pd_rqmc_nodes: int = 128
+
     # -------- Validation & coercion --------
     def __post_init__(self):
         # --- scalar checks ---
         if not (self.gamma > 0):
             raise ValueError("gamma must be > 0")
+        if not (isinstance(self.pd_rqmc_nodes, int) and self.pd_rqmc_nodes > 0):
+            raise ValueError("pd_rqmc_nodes must be a positive integer")
         if not (0 < self.beta < 1):
             raise ValueError("beta must be in (0, 1)")
         if not (self.r > -1.0):

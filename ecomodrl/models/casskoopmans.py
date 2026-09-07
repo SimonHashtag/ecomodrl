@@ -86,3 +86,21 @@ class CassKoopmans(EconomicModel):
 
     def eval_start_states(self, M):
         return self.log_grid(self.m_grid[0], self.m_grid[-1], M)[:, None]
+
+    def post_decision_spec(self, reward_floor: float) -> dict:
+        """Deterministic growth: one node, post-decision state a = m - c.
+
+        m' = A a^alpha + (1 - delta) a. Brock-Mirman overrides the node set
+        and the persistence `rho` (here z is fixed at 1, so rho and eps are 0).
+        """
+        p = self.params
+        spec = self._post_decision_common(reward_floor, family="growth", pd_dim=1)
+        spec.update({
+            "A": float(p.A),
+            "alpha": float(p.alpha),
+            "delta": float(p.delta),
+            "rho": 0.0,
+            "eps_nodes": [0.0],
+            "weights": [1.0],
+        })
+        return spec

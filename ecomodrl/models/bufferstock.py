@@ -216,3 +216,35 @@ class BufferStock(EconomicModel):
     def eval_start_states(self, M):
         positive = self.m_grid[self.m_grid > 0.0]
         return self.log_grid(positive[0], positive[-1], M)[:, None]
+
+    def post_decision_spec(self, reward_floor: float) -> dict:
+        """Buffer stock: the model's own 56 quadrature nodes under the tilted
+        permanent-shock mean used by `transition()`, so that the critic target
+        matches the RL transition and the `beta_eff` discount exactly.
+
+        Node order mirrors `_build_shocks`: unemployed nodes first, then the
+        employed tensor product with the permanent shock varying slowest.
+        Post-decision state a = m - c; m'_k = R / (G psi_k) a + theta_k.
+        """
+        p = self.params
+        x, w = gauss_hermite_nodes(self.n_gh_nodes)
+
+        psi_tilt = np.exp(self._mean_perm_tilt + p.sigma_perm * x)
+        theta_emp = np.exp(self._mean_tran + p.sigma_tran * x)
+
+        psi_mesh, theta_mesh = np.meshgrid(psi_tilt, theta_emp, indexing="ij")
+
+        psi_nodes = np.concatenate([psi_tilt, psi_mesh.ravel()])
+        theta_nodes = np.concatenate([np.full_like(psi_tilt, p.theta_low), theta_mesh.ravel()])
+        weights = np.concatenate([p.unemp_prob * w, (1.0 - p.unemp_prob) * np.outer(w, w).ravel()])
+        weights = weights / weights.sum()
+
+        spec = self._post_decision_common(reward_floor, family="bufferstock", pd_dim=1)
+        spec.update({
+            "R": float(self.R),
+            "G": float(self.G),
+            "psi_nodes": [float(v) for v in psi_nodes],
+            "theta_nodes": [float(v) for v in theta_nodes],
+            "weights": [float(v) for v in weights],
+        })
+        return spec

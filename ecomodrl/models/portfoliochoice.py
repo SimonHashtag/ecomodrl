@@ -487,3 +487,50 @@ class PortfolioChoice(EconomicModel):
         m = self.log_grid(self.m_grid[0], self.m_grid[-1], int(M))
         z = np.zeros((len(m), self.n_risky), dtype=np.float64)
         return np.concatenate([m[:, None], z], axis=1)
+
+    # ------------------------------------------------------------------
+    # Post-decision critic hook
+    # ------------------------------------------------------------------
+
+    def post_decision_spec(self, reward_floor: float) -> dict:
+        """Portfolio choice: a subset of the model's scrambled-Sobol nodes.
+
+        The first `params.pd_rqmc_nodes` nodes and their antithetic partners
+        are used (2 * pd_rqmc_nodes nodes, uniform weights). The permanent
+        shock is tilted like in `transition()`. Unemployment is not part of the
+        node set; the torch side expands every node into an employed and an
+        unemployed branch with weights (1 - p) and p.
+
+        Post-decision state (rs, w, z); W takes (log1p(rs), w_risky, z).
+        """
+        n = int(getattr(self.params, "pd_rqmc_nodes", 128))
+        half = int(self._M_rqmc) // 2
+        if not (0 < n <= half):
+            raise ValueError(f"pd_rqmc_nodes must lie in (0, {half}], got {n}.")
+
+        idx = np.concatenate([np.arange(n), half + np.arange(n)])
+        tilt = np.exp((1.0 - self.params.gamma) * self.sigma_perm ** 2)
+
+        n_nodes = len(idx)
+        spec = self._post_decision_common(
+            reward_floor, family="portfolio", pd_dim=1 + 2 * self.n_risky
+        )
+        spec.update({
+            "R": float(self.R),
+            "G": float(self.G),
+            "n_risky": int(self.n_risky),
+            "rho_z": [float(v) for v in self.rho_z],
+            "sigma_z": [float(v) for v in self.sigma_z],
+            "kappa_R": [float(v) for v in self.kappa_R],
+            "xi_R": [float(v) for v in self.xi_R],
+            "sigma_R": [float(v) for v in self.sigma_R],
+            "logit_cap": float(self.logit_cap),
+            "unemp_prob": float(self.unemp_prob),
+            "theta_low": float(self.theta_low),
+            "eps_nodes": self._eps_nodes[idx].tolist(),
+            "eta_nodes": self._eta_nodes[idx].tolist(),
+            "psi_nodes": (self._psi_vals[idx] * tilt).tolist(),
+            "theta_nodes": self._theta_vals[idx].tolist(),
+            "weights": [1.0 / n_nodes] * n_nodes,
+        })
+        return spec

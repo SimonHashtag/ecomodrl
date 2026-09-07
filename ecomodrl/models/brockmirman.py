@@ -147,3 +147,18 @@ class BrockMirman(CassKoopmans):
         m_mesh, z_mesh = np.meshgrid(m_anchors, z_anchors, indexing="ij")
 
         return np.stack([m_mesh.ravel(), z_mesh.ravel()], axis=-1)
+
+    def post_decision_spec(self, reward_floor: float) -> dict:
+        """Stochastic growth: Gauss-Hermite nodes of the technology innovation.
+
+        Post-decision state (a, z); z' = exp(rho log z + eps_k),
+        m' = z' A a^alpha + (1 - delta) a. W takes (log a, log z).
+        """
+        spec = super().post_decision_spec(reward_floor)
+        spec.update({
+            "pd_dim": 2,
+            "rho": float(self.params.rho),
+            "eps_nodes": [float(v) for v in self.shock_nodes],
+            "weights": [float(v) for v in self.weights],
+        })
+        return spec
