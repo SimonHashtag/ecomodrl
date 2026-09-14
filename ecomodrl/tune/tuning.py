@@ -5,6 +5,7 @@ import time
 from dataclasses import replace
 from typing import Type
 
+import dask
 from dehb import DEHB
 
 from ecomodrl.configs.tuneconfigs import parse_tune_args
@@ -55,6 +56,14 @@ def run_tuning(tune_config_cls: Type, train_verbose: int = 0):
     max_fidelity = cfg.max_wallclock_seconds
 
     n_workers = max(1, (os.cpu_count() or 2) - 1)
+
+    # Disable the per-worker thresholds and let the job's total memory (e.g. SLURM --mem) be the only bound.
+    dask.config.set({
+        "distributed.worker.memory.target": False,
+        "distributed.worker.memory.spill": False,
+        "distributed.worker.memory.pause": False,
+        "distributed.worker.memory.terminate": False,
+    })
 
     dehb = DEHB(
         f=target_function,
