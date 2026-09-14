@@ -69,8 +69,12 @@ def _offpolicy_common_space(seed: int | None = None) -> CS.ConfigurationSpace:
 
 def _sac_space(seed: int | None = None) -> CS.ConfigurationSpace:
     cs = _offpolicy_common_space(seed)
-    # SAC has no extra tuned HPs beyond the off-policy common ones
-    # (ent_coef is fixed to "auto" in the adapter)
+    cs.add([
+        CSH.CategoricalHyperparameter(
+            "ent_coef",
+            choices=["auto", "0.0", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0"],
+        ),
+    ])
     return cs
 
 

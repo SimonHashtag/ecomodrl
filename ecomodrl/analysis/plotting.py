@@ -694,7 +694,7 @@ def plot_cev_distribution(
 
                 positive_values_for_limits.append(q1)
                 positive_values_for_limits.append(q3)
-                positive_values_for_limits.append(iqm)
+                positive_values_for_limits.append(iqm_values)
 
         # State distribution (drawn behind the CEV curves).
         if visited_m is not None and algo in visited_m:

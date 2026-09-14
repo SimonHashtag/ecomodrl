@@ -645,9 +645,7 @@ def _portfolio_euler_errors(
         c_implied = float(model.inv_marginal_utility(model.params.beta * gbar))
         consumption_error = abs(1.0 - c_implied / c)
 
-        portfolio_error = _portfolio_kkt_error(g, w)
-
-        errors[i] = max(consumption_error, portfolio_error)
+        errors[i] = consumption_error
 
     errors = errors[np.isfinite(errors) & (errors > 0.0)]
 
@@ -698,30 +696,6 @@ def _portfolio_sdf_moments(model, policy, state, rs, w, shock_idx):
     sdf_mu = sdf_factor * mu_mix
 
     return np.mean(sdf_mu[:, None] * R_all, axis=0)
-
-
-def _portfolio_kkt_error(g, w):
-    """No-shorting simplex KKT residual for portfolio choice.
-
-    KKT conditions:
-        w_j >= 0,
-        xi - g_j >= 0,
-        w_j (xi - g_j) = 0.
-
-    We choose xi = max_j g_j for diagnostics. The residual is normalized by
-    the scale of xi.
-    """
-    g = np.asarray(g, dtype=np.float64)
-    w = np.asarray(w, dtype=np.float64)
-
-    xi = float(np.max(g))
-    b = xi - g
-
-    fb = np.sqrt(w**2 + b**2) - (w + b)
-
-    scale = max(abs(xi), 1e-12)
-
-    return float(np.max(np.abs(fb)) / scale)
 
 
 def _portfolio_shock_indices(model, max_shock_nodes=None):

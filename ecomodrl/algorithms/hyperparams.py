@@ -59,7 +59,7 @@ DEFAULT_HP_BY_ALGO: Dict[str, Dict[str, Any]] = {
         "sample_reuse": 1,
         "tau": 0.005,
         "drop": 1.0,
-        # ent_coef fixed to "auto" in adapter
+        "ent_coef": "auto",
     },
 }
 
@@ -156,7 +156,14 @@ def _ddpg_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
 
 def _sac_adapter(hp: Dict[str, Any], cfg: Any, base: AlgoConfig) -> AlgoConfig:
     params = _offpolicy_adapter_common(hp, cfg, base)
-    params.setdefault("ent_coef", "auto")
+    ent_coef = hp.get("ent_coef", "auto")
+    if ent_coef == "auto":
+        params["ent_coef"] = "auto"
+    else:
+        try:
+            params["ent_coef"] = float(ent_coef)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid SAC ent_coef value: {ent_coef!r}") from exc
     return replace(base, algo_params=params)
 
 

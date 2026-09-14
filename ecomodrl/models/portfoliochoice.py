@@ -132,9 +132,6 @@ class PortfolioChoice(EconomicModel):
         # `a_grid` is not used by BaseEGM here, but some generic code expects it.
         self.a_grid = self.rs_grid
 
-        # Useful observation scale.
-        self.m_ref = min(max(5.0, self.m_grid[0]), self.m_grid[-1])
-
         self.build_rqmc(self.rqmc_nodes, self.rqmc_seed)
 
         # True-distribution permanent growth used by solver and true Bellman.

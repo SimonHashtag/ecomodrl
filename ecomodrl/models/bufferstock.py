@@ -24,7 +24,7 @@ class BufferStock(EconomicModel):
 
     n_gh_nodes = 7
 
-    min_m_max = 5.0
+    M_MAX = 10.0
     grid_upper_factor = 2.5
     impatience_gap_floor = 1e-3
 
@@ -47,10 +47,7 @@ class BufferStock(EconomicModel):
         self._build_tilted_discount()
 
         if m_max is None:
-            self.m_ref, m_max = self._buffer_stock_grid_scale()
-        else:
-            m_max = float(m_max)
-            self.m_ref = max(1.0, m_max / self.grid_upper_factor)
+            m_max = self.M_MAX
 
         self.m_grid = self.log_grid_from_zero(m_max, self.m_grid_size)
         self.a_grid = self.m_grid.copy()
@@ -105,46 +102,6 @@ class BufferStock(EconomicModel):
         )
 
         self._beta_eff = self.params.beta * self.G ** theta * M_psi
-    
-    def _buffer_stock_grid_scale(self) -> tuple[float, float]:
-        """Theory-anchored heuristic for choosing the pre-solution m-grid scale.
-
-        It does not compute the exact stochastic target m*. Instead it builds a
-        deterministic proxy using the buffer-stock comparative statics:
-
-            - more patience              -> larger grid
-            - higher income risk         -> larger grid
-            - higher prudence            -> larger grid
-            - smaller GIC gap            -> larger grid
-
-        Main object (perfect-foresight consumption growth factor implied by the
-        Euler equation):
-            thorn = C_{t+1} / C_t = (beta * R) ** (1 / gamma)
-        The Growth Impatience Condition is: thorn / G < 1.
-
-        The precautionary motive is increasing in patience, prudence and income risk.
-        """
-        p = self.params
-
-        thorn = (p.beta * self.R) ** (1.0 / p.gamma)
-
-        growth_impatience_gap = max(np.log(self.G) - np.log(thorn), self.impatience_gap_floor)
-        unemployment_risk = p.unemp_prob * (1.0 - p.unemp_prob) * (1.0 - p.theta_low) ** 2
-        income_risk = p.sigma_perm ** 2 + p.sigma_tran ** 2 + unemployment_risk
-        prudence_risk_term = 0.5 * p.gamma * (p.gamma + 1.0) * income_risk
-
-        # Dimensionless risk pressure relative to impatience.
-        risk_index = prudence_risk_term / growth_impatience_gap
-
-        # Damp the risk index via a square-root transformation to avoid overshooting the target m*. Heuristic m_ref!
-        m_ref = 1.0 + np.sqrt(max(risk_index, 0.0))
-
-        m_max = max(
-            self.min_m_max,
-            self.grid_upper_factor * m_ref,
-        )
-
-        return float(m_ref), float(m_max)
 
     def interpolation_kink(self):
         return 0.0, 0.0
