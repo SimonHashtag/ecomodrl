@@ -44,7 +44,7 @@ class PortfolioChoice(EconomicModel):
 
     min_action_share = 1e-6
     max_action_share = 1.0
-    logit_cap = 3.0
+    simplex_scale = 1.5
 
     def __init__(
         self,
@@ -160,7 +160,7 @@ class PortfolioChoice(EconomicModel):
 
     @property
     def action_dim(self) -> int:
-        # Consumption share action + one ALR logit for each risky asset.
+        # Consumption share action + one simplex score for each risky asset.
         return 1 + self.n_risky
 
     @property
@@ -311,10 +311,7 @@ class PortfolioChoice(EconomicModel):
         coords, scalar = self._policy_coords(state)
         interp = self.make_multilinear(self.portfolio_policy_grid)
         w = np.asarray(interp(coords), dtype=np.float64)
-
-        w = np.clip(w, 0.0, None)
-        denom = np.maximum(w.sum(axis=-1, keepdims=True), 1e-14)
-        w = w / denom
+        w = self.project_simplex(w)
 
         return w[0] if scalar else w
 
@@ -329,8 +326,8 @@ class PortfolioChoice(EconomicModel):
             self.max_action_share - self.min_action_share
         ) * (action[..., 0] + 1.0)
 
-        logits = self.logit_cap * action[..., 1 : 1 + self.n_risky]
-        weights = self.alr_safe_pivot_to_weights(logits)
+        scores = self.simplex_scale * action[..., 1 : 1 + self.n_risky]
+        weights = self.simplex_safe_pivot_to_weights(scores)
 
         out = {
             "share": share,
@@ -344,21 +341,47 @@ class PortfolioChoice(EconomicModel):
         return out
 
     @staticmethod
-    def alr_safe_pivot_to_weights(logits: np.ndarray) -> np.ndarray:
-        """Map risky-asset ALR logits to weights [safe, risky_1, ..., risky_N]."""
-        x = np.asarray(logits, dtype=np.float64)
-        x = np.clip(x, -PortfolioChoice.logit_cap, PortfolioChoice.logit_cap)
+    def project_simplex(v: np.ndarray) -> np.ndarray:
+        """Euclidean projection of the last axis of `v` onto the unit simplex.
 
-        m = np.maximum(0.0, np.max(x, axis=-1, keepdims=True))
-        e = np.exp(x - m)
-        pivot = np.exp(-m)
+        Solves   argmin_w ||w - v||_2   s.t.   w >= 0,  sum(w) = 1.
 
-        denom = pivot + np.sum(e, axis=-1, keepdims=True)
+        This is the sparsemax operator (Martins & Astudillo 2016), equivalently
+        the simplex projection of Duchi et al. (2008).
+        """
+        v = np.atleast_1d(np.asarray(v, dtype=np.float64))
+        K = v.shape[-1]
 
-        w_safe = pivot / denom
-        w_risky = e / denom
+        # Sort descending and accumulate.
+        u = np.sort(v, axis=-1)[..., ::-1]
+        css = np.cumsum(u, axis=-1)
 
-        return np.concatenate([w_safe, w_risky], axis=-1)
+        # Support size rho = max{k : 1 + k * u_k > cumsum_k}.
+        # k = 1 always satisfies the condition, so rho >= 1.
+        k = np.arange(1, K + 1)
+        cond = (1.0 + k * u) > css
+        rho = np.asarray(np.max(np.where(cond, k, 0), axis=-1))
+
+        # Common threshold, chosen so that the surviving mass sums to one.
+        idx = rho[..., None] - 1
+        tau = (np.take_along_axis(css, idx, axis=-1) - 1.0) / rho[..., None]
+
+        w = np.maximum(v - tau, 0.0)
+
+        # Mathematically a no-op; removes accumulated float error in the sum.
+        w = w / np.maximum(w.sum(axis=-1, keepdims=True), 1e-300)
+
+        return w
+
+    @staticmethod
+    def simplex_safe_pivot_to_weights(scores: np.ndarray) -> np.ndarray:
+        """Map risky-asset scores to weights [safe, risky_1, ..., risky_N].
+        """
+        s = np.asarray(scores, dtype=np.float64)
+        pivot = np.zeros(s.shape[:-1] + (1,), dtype=np.float64)
+        z = np.concatenate([pivot, s], axis=-1)
+
+        return PortfolioChoice.project_simplex(z)
 
     # ------------------------------------------------------------------
     # Shock simulation and transitions
