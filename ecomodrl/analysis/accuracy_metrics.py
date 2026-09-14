@@ -1,8 +1,14 @@
-# -----------------------------------------------------------------------------
-# Formerly analysis.py
+# =============================================================================
+# Policy accuracy metrics (Euler errors, CEV, Bellman values, policy comparison)
 #
-# Model-agnostic analysis routines.
-# -----------------------------------------------------------------------------
+# Evaluates learned RL policies against analytical/numerical benchmarks across
+# multiple dimensions: Euler equation errors, consumption-equivalent variation,
+# and value function agreement. Supports standard economic models and
+# portfolio-choice environments with occasionaly binding constraints.
+#
+# Metrics are computed per training seed on fixed evaluation samples,
+# then aggregated with the IQM and bootstrap confidence intervals.
+# =============================================================================
 
 from __future__ import annotations
 from dataclasses import dataclass
