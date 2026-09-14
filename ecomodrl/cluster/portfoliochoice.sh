@@ -19,7 +19,7 @@
 #SBATCH --output=logs/PC_ALL_%j.out
 #SBATCH --error=logs/PC_ALL_%j.err
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=ruven.micheel@uni-muenster.de
+#SBATCH --mail-user=simonhaastert@uni-muenster.de
 
 set -euo pipefail
 

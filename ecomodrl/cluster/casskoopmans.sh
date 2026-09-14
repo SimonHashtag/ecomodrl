@@ -19,7 +19,7 @@
 #SBATCH --output=logs/CK_ALL_%j.out
 #SBATCH --error=logs/CK_ALL_%j.err
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=ruven.micheel@uni-muenster.de
+#SBATCH --mail-user=simonhaastert@uni-muenster.de
 
 set -euo pipefail
 
@@ -84,7 +84,7 @@ echo "================================================"
 echo " PHASE 1: TUNING "
 echo "================================================"
 
-BUDGET_PER_ALGO=14400 # 4 hours
+BUDGET_PER_ALGO=3600 # 1 hours
 
 for algo in "${ALGOS[@]}"; do
     echo "--- Tuning: $algo ---"
