@@ -16,15 +16,23 @@ Four dynamic economic models are solved with deep RL and evaluated against high-
 
 Each model in [ecomodrl/models](ecomodrl/models/) is translated into a [Gymnasium](https://gymnasium.farama.org/) environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) - the API standard for reinforcement learning. All models are solved in [ecomodrl/experiments](ecomodrl/experiments) with four algorithms: PPO, DDPG, TD3, and SAC (the implementation of the core algorithms is based on the [stable-baselines3](https://stable-baselines3.readthedocs.io/en/master/#) package). Benchmark solutions come from (nested) endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py).
 
-### Structure-exploiting critics
+### Structure-exploiting critics and bootstraps
 
-All four algorithms use a *post-decision* critic ([ecomodrl/algorithms/post_decision](ecomodrl/algorithms/post_decision/)) instead of the generic state-action critic: the critic knows the utility function and the deterministic part of the budget identity and learns only the continuation value over the post-decision state,
+All four algorithms integrate over the model's own shock nodes (Gauss-Hermite for Brock–Mirman and buffer-stock, a subset of the scrambled-Sobol nodes for portfolio choice) instead of using the single sampled next state ([ecomodrl/algorithms/post_decision](ecomodrl/algorithms/post_decision/)).
+
+DDPG, TD3 and SAC use a *post-decision* critic instead of the generic state-action critic: the critic knows the utility function and the deterministic part of the budget identity and learns only the continuation value over the post-decision state,
 
 ```
 Q(s, a) = u(c(s, a)) + W(a_pd),        a_pd = m - c   (plus exogenous states)
 ```
 
-Its target integrates over the model's own shock nodes (Gauss-Hermite for Brock–Mirman and buffer-stock, a subset of the scrambled-Sobol nodes for portfolio choice) instead of using the single sampled next state. DDPG, TD3 and SAC keep their training loops with the critic target replaced; PPO uses the same value head and the one-step post-decision advantage in place of GAE (so there is no `gae_lambda`). Observations are not normalized, because the critic inverts the observation transform.
+with the critic target computed by quadrature over the shock nodes; their training loops are otherwise unchanged. PPO keeps a single standard value network V(s) and standard GAE, but the one-step bootstrap V(s') in its TD error is replaced by the quadrature expectation of V at the visited post-decision state,
+
+```
+delta_t = r_t + beta * sum_k w_k V(s'_k(s_t, a_t)) - V(s_t)
+```
+
+computed once at the end of each rollout with the detached value network (time-limit truncations only cut the GAE recursion; `gae_lambda` is a tuned hyperparameter). Observations are not normalized, because the critics and the quadrature transition invert the observation transform.
 
 ## Repository structure
 

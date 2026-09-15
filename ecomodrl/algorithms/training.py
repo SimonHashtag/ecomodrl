@@ -23,8 +23,9 @@ from ecomodrl.algorithms.action_noise import make_action_noise
 # -------------------------------------------------------
 # Build deep RL algorithm
 # -------------------------------------------------------
-# All four algorithms use the post-decision critic with quadrature targets
-# (see ecomodrl/algorithms/post_decision). The critic needs the model's
+# DDPG/TD3/SAC use the post-decision critic with quadrature targets; PPO uses
+# the standard value net with the quadrature bootstrap in its GAE TD error
+# (see ecomodrl/algorithms/post_decision). Both need the model's
 # `post_decision_spec`, which build_model() injects into policy_kwargs.
 
 ALGO_REGISTRY = {

@@ -68,6 +68,7 @@ def load_tuned_hp(
 
     Returns:
         Dict[str, Any]: A dictionary of hyperparameters loaded from the incumbent.json file, or default hyperparameters if no file is found or an error occurs.
+        A loaded config is merged over the defaults, so hyperparameters added after the tuning run fall back to their default value.
     """
     logger = logger or logging.getLogger(__name__)
     algo_key = algo_name.strip().lower()
@@ -108,7 +109,7 @@ def load_tuned_hp(
                 algo_key,
                 path,
             )
-            return dict(config)
+            return {**defaults, **dict(config)}
 
     logger.warning(
         "incumbent.json at %s does not contain a config mapping. Using defaults.",

@@ -5,31 +5,36 @@
 #                 quadrature target (twin W networks for TD3, one for DDPG).
 # PDSAC         : SB3 SAC training step with the target replaced (entropy term
 #                 evaluated per node).
-# PDPPO         : value head V(s) = u(c(s, mu(s))) + W(post-decision features)
-#                 with the policy mean detached; before each update the rollout
-#                 buffer's returns and advantages are replaced by the quadrature
-#                 target V_tgt(s_t) = u(c_t) + gamma * sum_k w_k V(s'_k) and the
-#                 one-step post-decision advantage A_t = V_tgt(s_t) - V(s_t).
-#                 GAE / gae_lambda are not used; clipping and entropy unchanged.
+# PDPPO         : standard SB3 PPO with the ordinary pre-decision value net V(s).
+#                 The one-step bootstrap V(s_{t+1}) in the GAE TD error is
+#                 replaced by its quadrature expectation over the model's shock
+#                 nodes at the visited post-decision state,
+#                     y_t     = sum_k w_k V(s'_k(s_t, a_t)),
+#                     delta_t = r_t + gamma * y_t - V(s_t),
+#                     A_t     = sum_l (gamma lambda)^l delta_{t+l},
+#                 computed once at rollout end with the detached value net.
+#                 SB3's time-limit reward bootstrap is disabled (every step
+#                 already bootstraps through y_t); clipping, entropy and the
+#                 value regression on A_t + V(s_t) are unchanged.
 #
 # All classes take `pd_spec` (EconomicModel.post_decision_spec) in policy_kwargs.
-# Observation normalization (VecNormalize) is not supported: the critics invert
-# the observation transform obs = log(m / m_ref).
+# Observation normalization (VecNormalize) is not supported: the critics and the
+# quadrature transition invert the observation transform obs = log(m / m_ref).
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
 
-from functools import partial
-
 import numpy as np
 import torch as th
-from torch import nn
+from gymnasium import spaces
 from torch.nn import functional as F
 
 from stable_baselines3 import DDPG, PPO, SAC, TD3
+from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.torch_layers import create_mlp
-from stable_baselines3.common.utils import polyak_update
+from stable_baselines3.common.utils import obs_as_tensor, polyak_update
+from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.td3.policies import TD3Policy
 
@@ -224,131 +229,181 @@ class PDSAC(SAC):
 
 
 # =============================================================================
-# PPO: post-decision value head + quadrature returns / advantages
+# PPO: standard actor-critic policy + quadrature bootstrap in the GAE TD error
 # =============================================================================
-def _split_net_arch(net_arch):
-    """(actor arch, W arch) from an SB3 net_arch spec (None, list, or dict)."""
-    if net_arch is None:
-        pi_arch, w_arch = [64, 64], [64, 64]
-    elif isinstance(net_arch, dict):
-        pi_arch = list(net_arch.get("pi", []))
-        w_arch = list(net_arch.get("vf", []))
-    else:
-        pi_arch = list(net_arch)
-        w_arch = list(net_arch)
-    if not w_arch:
-        w_arch = list(pi_arch)
-    return pi_arch, w_arch
-
-
 class PDPPOPolicy(ActorCriticPolicy):
-    """ActorCriticPolicy whose value is V(s) = u(c(s, mu(s))) + W(post-decision features).
-
-    The policy mean mu(s) is detached, so the value loss trains only W. The
-    network arch given as `net_arch` is interpreted as {"pi": actor, "vf": W};
-    the parent's value branch is built empty and left unused.
+    """SB3's ActorCriticPolicy (ordinary pre-decision value net V(s)) that carries
+    the post-decision spec. `econ` provides the torch transition over the
+    model's quadrature nodes that PDPPO uses for the bootstrap; the spec is
+    stored in the constructor parameters so checkpoints reload without an env.
     """
 
-    def __init__(self, observation_space, action_space, lr_schedule, net_arch=None, pd_spec=None, **kwargs):
+    def __init__(self, *args, pd_spec=None, **kwargs):
         if pd_spec is None:
             raise ValueError("PDPPOPolicy needs pd_spec (EconomicModel.post_decision_spec).")
         self.pd_spec = dict(pd_spec)
         self.econ = make_economics(pd_spec)
-        self._pd_net_arch = net_arch
-        pi_arch, self.w_arch = _split_net_arch(net_arch)
-        super().__init__(
-            observation_space, action_space, lr_schedule,
-            net_arch={"pi": pi_arch, "vf": []},
-            **kwargs,
-        )
-
-    def _build(self, lr_schedule) -> None:
-        super()._build(lr_schedule)
-        self.w_net = nn.Sequential(*create_mlp(self.econ.pd_dim, 1, self.w_arch, self.activation_fn))
-        if self.ortho_init:
-            self.w_net.apply(partial(self.init_weights, gain=np.sqrt(2)))
-            last_linear = [m for m in self.w_net if isinstance(m, nn.Linear)][-1]
-            self.init_weights(last_linear, gain=1)
-        # Re-create the optimizer so it covers w_net as well.
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        super().__init__(*args, **kwargs)
 
     def _get_constructor_parameters(self):
         data = super()._get_constructor_parameters()
-        data.update(net_arch=self._pd_net_arch, pd_spec=self.pd_spec)
+        data["pd_spec"] = self.pd_spec
         return data
-
-    # --- value head -------------------------------------------------------------
-    def _pd_values(self, obs: th.Tensor, latent_pi: th.Tensor) -> th.Tensor:
-        mean_actions = self.action_net(latent_pi).detach()
-        c, feats = self.econ.controls(obs, mean_actions)
-        return self.econ.utility(c) + self.w_net(feats)
-
-    def _latent_pi(self, obs: th.Tensor) -> th.Tensor:
-        features = self.extract_features(obs)
-        if self.share_features_extractor:
-            latent_pi, _ = self.mlp_extractor(features)
-        else:
-            latent_pi = self.mlp_extractor.forward_actor(features[0])
-        return latent_pi
-
-    # --- overrides ----------------------------------------------------------------
-    def forward(self, obs: th.Tensor, deterministic: bool = False):
-        latent_pi = self._latent_pi(obs)
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        actions = distribution.get_actions(deterministic=deterministic)
-        log_prob = distribution.log_prob(actions)
-        values = self._pd_values(obs, latent_pi)
-        actions = actions.reshape((-1, *self.action_space.shape))
-        return actions, values, log_prob
-
-    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor):
-        latent_pi = self._latent_pi(obs)
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        log_prob = distribution.log_prob(actions)
-        entropy = distribution.entropy()
-        values = self._pd_values(obs, latent_pi)
-        return values, log_prob, entropy
-
-    def predict_values(self, obs: th.Tensor) -> th.Tensor:
-        features = super(ActorCriticPolicy, self).extract_features(obs, self.pi_features_extractor)
-        latent_pi = self.mlp_extractor.forward_actor(features)
-        return self._pd_values(obs, latent_pi)
 
 
 class PDPPO(PPO):
-    """PPO with the post-decision value head; returns and advantages from quadrature.
+    """PPO whose GAE TD error bootstraps through the quadrature expectation of V.
 
-    Before each update, with the current network on the whole rollout buffer:
-    V_tgt(s_t) = u(c_t) + gamma * sum_k w_k V(s'_k(s_t, a_t)), A_t = V_tgt(s_t) - V(s_t).
-    The GAE values written by collect_rollouts are overwritten; rewards are unused.
+    For every stored transition (s_t, a_t) the post-decision state is rebuilt
+    from the executed (clipped) action and the next observations at the model's
+    shock nodes are evaluated with the detached value net:
+
+        y_t     = sum_k w_k V(s'_k(s_t, a_t))
+        delta_t = r_t + gamma * y_t * (1 - terminated_t) - V(s_t)
+        A_t     = delta_t + gamma * lambda * (1 - episode_start_{t+1}) * A_{t+1}
+
+    with r_t the rollout-buffer reward, and returns A_t + V(s_t) as in SB3.
+    `collect_rollouts` is SB3's with the time-limit reward bootstrap removed
+    (delta_t already bootstraps at every step, so truncations only cut the GAE
+    recursion) and true terminations recorded. The B*K next states are
+    evaluated in chunks of at most `pd_max_rows` rows.
     """
 
     policy_aliases = {"MlpPolicy": PDPPOPolicy}
 
-    def train(self) -> None:
-        buf = self.rollout_buffer
+    def __init__(self, *args, pd_max_rows: int = 65_536, **kwargs):
+        self.pd_max_rows = int(pd_max_rows)  # restored by load() through __dict__.update
+        super().__init__(*args, **kwargs)
+
+    # --- rollout: copy of OnPolicyAlgorithm.collect_rollouts (SB3 2.6 / 2.7) --------
+    def collect_rollouts(
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        rollout_buffer: RolloutBuffer,
+        n_rollout_steps: int,
+    ) -> bool:
+        assert self._last_obs is not None, "No previous observation was provided"
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        # True terminations (done without TimeLimit truncation); none of the
+        # economic models terminate, so this is normally all zeros.
+        terminated = np.zeros((n_rollout_steps, env.num_envs), dtype=np.float32)
+        # Sample new weights for the state dependent exploration
+        if self.use_sde:
+            self.policy.reset_noise(env.num_envs)
+
+        callback.on_rollout_start()
+
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                actions, values, log_probs = self.policy(obs_tensor)
+            actions = actions.cpu().numpy()
+
+            # Rescale and perform action
+            clipped_actions = actions
+
+            if isinstance(self.action_space, spaces.Box):
+                if self.policy.squash_output:
+                    # Unscale the actions to match env bounds
+                    # if they were previously squashed (scaled in [-1, 1])
+                    clipped_actions = self.policy.unscale_action(clipped_actions)
+                else:
+                    # Otherwise, clip the actions to avoid out of bound error
+                    # as we are sampling from an unbounded Gaussian distribution
+                    clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+            new_obs, rewards, dones, infos = env.step(clipped_actions)
+
+            self.num_timesteps += env.num_envs
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if not callback.on_step():
+                return False
+
+            self._update_info_buffer(infos, dones)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+
+            # No time-limit reward bootstrap here (SB3 adds gamma * V(terminal_obs)
+            # to the reward): the quadrature bootstrap covers every step, so a
+            # truncation only cuts the GAE recursion. Record true terminations.
+            for idx, done in enumerate(dones):
+                if done and not infos[idx].get("TimeLimit.truncated", False):
+                    terminated[n_steps - 1, idx] = 1.0
+
+            rollout_buffer.add(
+                self._last_obs,  # type: ignore[arg-type]
+                actions,
+                rewards,
+                self._last_episode_starts,  # type: ignore[arg-type]
+                values,
+                log_probs,
+            )
+            self._last_obs = new_obs  # type: ignore[assignment]
+            self._last_episode_starts = dones
+
+        # Quadrature bootstrap + GAE replace compute_returns_and_advantage; the
+        # value of the final observation is not needed.
+        self._pd_returns_and_advantages(rollout_buffer, terminated)
+
+        callback.update_locals(locals())
+
+        callback.on_rollout_end()
+
+        return True
+
+    # --- quadrature bootstrap -----------------------------------------------------
+    @th.no_grad()
+    def _pd_bootstrap(self, obs: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        """y = sum_k w_k V(s'_k) for flat (B, obs_dim) observations and (B, action_dim)
+        buffer actions (unclipped; `econ` clamps them like the env does), evaluated
+        in chunks of at most `pd_max_rows` next states."""
         econ = self.policy.econ
+        obs_t = th.as_tensor(obs, device=self.device)
+        act_t = th.as_tensor(actions, device=self.device)
+        n = obs_t.shape[0]
 
-        with th.no_grad():
-            obs = th.as_tensor(buf.observations, device=self.device)
-            act = th.as_tensor(buf.actions, device=self.device)
-            n_steps, n_envs = obs.shape[0], obs.shape[1]
-            obs_f = obs.reshape(n_steps * n_envs, -1)
-            act_f = act.reshape(n_steps * n_envs, -1)
+        _, weights = econ.next_obs(obs_t[:1], act_t[:1])
+        n_nodes = int(weights.numel())
+        rows = max(1, self.pd_max_rows // n_nodes)
 
-            c, _ = econ.controls(obs_f, act_f)
-            u = econ.utility(c)
+        out = th.empty(n, device=self.device)
+        for start in range(0, n, rows):
+            nxt, weights = econ.next_obs(obs_t[start:start + rows], act_t[start:start + rows])  # (b, K, D), (K,)
+            b, K, D = nxt.shape
+            v_next = self.policy.predict_values(nxt.reshape(b * K, D)).reshape(b, K)
+            out[start:start + b] = (v_next * weights[None, :]).sum(dim=1)
+        return out.cpu().numpy().astype(np.float32)
 
-            nxt, weights = econ.next_obs(obs_f, act_f)
-            B, K, D = nxt.shape
-            v_next = self.policy.predict_values(nxt.reshape(B * K, D)).reshape(B, K)
-            ev = (v_next * weights[None, :]).sum(dim=1, keepdim=True)
+    def _pd_returns_and_advantages(self, buf: RolloutBuffer, terminated: np.ndarray) -> None:
+        """Write GAE advantages and returns into `buf` using the quadrature bootstrap."""
+        n_steps, n_envs = buf.rewards.shape
+        obs = buf.observations.reshape(n_steps * n_envs, -1)
+        act = buf.actions.reshape(n_steps * n_envs, -1)
+        y = self._pd_bootstrap(obs, act).reshape(n_steps, n_envs)
 
-            v_tgt = u + self.gamma * ev
-            v_now = self.policy.predict_values(obs_f)
+        deltas = buf.rewards + self.gamma * y * (1.0 - terminated) - buf.values
 
-        buf.returns = v_tgt.reshape(n_steps, n_envs).cpu().numpy().astype(np.float32)
-        buf.values = v_now.reshape(n_steps, n_envs).cpu().numpy().astype(np.float32)
-        buf.advantages = (buf.returns - buf.values).astype(np.float32)
-
-        super().train()
+        last_gae = np.zeros(n_envs, dtype=np.float32)
+        for step in reversed(range(n_steps)):
+            if step == n_steps - 1:
+                next_non_terminal = 0.0  # the last row already bootstraps through y
+            else:
+                next_non_terminal = 1.0 - buf.episode_starts[step + 1]
+            last_gae = deltas[step] + self.gamma * self.gae_lambda * next_non_terminal * last_gae
+            buf.advantages[step] = last_gae
+        buf.returns = buf.advantages + buf.values
