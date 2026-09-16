@@ -18,6 +18,8 @@ from typing import Any
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
+from ecomodrl.models.backend import ops as _ops
+
 
 
 # =============================================================================
@@ -129,9 +131,11 @@ class EconomicModel(ABC):
     # ------------------------------------------------------------------
 
     def utility(self, c):
-        c = np.asarray(c)
+        """CRRA utility. Accepts numpy arrays or torch tensors (see backend.py)."""
+        xp = _ops(c)
+        c = xp.asarray(c)
         if self.params.gamma == 1.0:
-            return np.log(c)
+            return xp.log(c)
         return c ** (1.0 - self.params.gamma) / (1.0 - self.params.gamma)
 
     def marginal_utility(self, c):
@@ -244,8 +248,12 @@ class EconomicModel(ABC):
 
     def controls_from_action(self, action, state=None) -> dict[str, np.ndarray]:
         """Map Gym action in [-1, 1] to consumption.
+
+        Accepts numpy arrays or torch tensors (see backend.py); the torch path
+        is differentiable in `action`.
         """
-        action = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
+        xp = _ops(action)
+        action = xp.clip(xp.asarray(action, dtype=float), -1.0, 1.0)
 
         share = self.min_action_share + 0.5 * (
             self.max_action_share - self.min_action_share
@@ -254,10 +262,82 @@ class EconomicModel(ABC):
         out = {"share": share}
 
         if state is not None:
-            m = np.asarray(state)[..., 0]
+            m = xp.asarray(state)[..., 0]
             out["consumption"] = share * m
 
         return out
+
+    def state_from_obs(self, obs):
+        """Inverse of `ecomodrl.envs.envs.obs_from_state` (numpy or torch).
+
+        obs = (log(m / m_ref), log(x1), ..., log(xd)); the 1e-8 floor is the
+        environment's EPS.
+        """
+        xp = _ops(obs)
+        obs = xp.asarray(obs, dtype=np.float64)
+
+        m = xp.exp(obs[..., 0]) * max(float(self.m_ref), 1e-8)
+
+        if self.exogenous_dim == 0:
+            return m[..., None]
+
+        return xp.concatenate([m[..., None], xp.exp(obs[..., 1:])], axis=-1)
+
+    # ------------------------------------------------------------------
+    # Post-decision hooks (ecomodrl/algorithms/post_decision)
+    #
+    # The post-decision critic Q(s, a) = u(c(s, a)) + W(post_decision_features)
+    # learns only the continuation value W over the post-decision state; its
+    # target integrates over the model's quadrature nodes with the model's own
+    # `transition()`.
+    # ------------------------------------------------------------------
+
+    @property
+    def post_decision_dim(self) -> int:
+        """Dimension of `post_decision_features`."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement post_decision_dim.")
+
+    def post_decision_features(self, state, controls: dict[str, Any]):
+        """Features the continuation network W is evaluated on, shape (..., post_decision_dim).
+
+        Accepts numpy arrays or torch tensors; the torch path is differentiable
+        in `controls`.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement post_decision_features.")
+
+    def quadrature_shocks(self) -> tuple[np.ndarray | None, np.ndarray]:
+        """Quadrature nodes `(shocks, weights)` of the RL transition.
+
+        `shocks` has shape (K, ...) with the same last-axis layout that
+        `sample_shocks()` produces, so `transition()` can be reused verbatim;
+        None for deterministic models. `weights` has shape (K,) and sums to one.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement quadrature_shocks.")
+
+    def quadrature_next_states(self, state, controls: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """Next states at every quadrature node via `transition()`. numpy only.
+
+        state: (B, state_dim); controls: values with leading dimension B.
+        Returns next states of shape (B, K, state_dim) and weights of shape (K,).
+        """
+        shocks, weights = self.quadrature_shocks()
+        weights = np.asarray(weights, dtype=np.float64)
+
+        state = np.asarray(state, dtype=np.float64)
+        if state.ndim != 2:
+            raise ValueError(f"state must have shape (B, state_dim), got {state.shape}.")
+        B, D = state.shape
+        K = int(weights.shape[0])
+
+        controls_b = {
+            k: np.asarray(v, dtype=np.float64)[:, None, ...] for k, v in controls.items()
+        }
+        shocks_b = None if shocks is None else np.asarray(shocks, dtype=np.float64)[None, ...]
+
+        next_state = np.asarray(
+            self.transition(state[:, None, :], controls_b, shocks_b), dtype=np.float64
+        )
+        return np.broadcast_to(next_state, (B, K, D)).copy(), weights
 
     @abstractmethod
     def sample_shocks(self, rng, shape):

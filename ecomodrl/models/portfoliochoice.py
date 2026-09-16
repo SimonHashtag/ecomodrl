@@ -5,6 +5,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.stats import qmc, norm
 
 from ecomodrl.models.base_model import EconomicModel
+from ecomodrl.models.backend import ops as _ops
 from ecomodrl.configs.parameters import PortfolioChoiceParams
 
 
@@ -45,6 +46,10 @@ class PortfolioChoice(EconomicModel):
     min_action_share = 1e-6
     max_action_share = 1.0
     simplex_scale = 1.5
+
+    # Number of scrambled-Sobol nodes (plus their antithetic partners) used by
+    # the post-decision quadrature; see `quadrature_shocks`.
+    pd_rqmc_nodes = 128
 
     def __init__(
         self,
@@ -248,6 +253,10 @@ class PortfolioChoice(EconomicModel):
         nu_nodes = X[:, 2 * n]
         zeta_nodes = X[:, 2 * n + 1]
 
+        # Raw normal nodes, reused by the post-decision quadrature.
+        self._nu_nodes = nu_nodes.astype(np.float64)
+        self._zeta_nodes = zeta_nodes.astype(np.float64)
+
         self._psi_vals = np.exp(
             self._mean_perm + self.sigma_perm * nu_nodes
         ).astype(np.float64)
@@ -271,6 +280,13 @@ class PortfolioChoice(EconomicModel):
         m_obs = np.log(m / max(self.m_ref, 1e-8))
         z_obs = state[..., 1:]
         return np.concatenate([m_obs[..., None], z_obs], axis=-1).astype(np.float64)
+
+    def state_from_obs(self, obs):
+        """Inverse of `obs_from_state` (numpy or torch): z is not log-transformed."""
+        xp = _ops(obs)
+        obs = xp.asarray(obs, dtype=np.float64)
+        m = xp.exp(obs[..., 0]) * max(self.m_ref, 1e-8)
+        return xp.concatenate([m[..., None], obs[..., 1:]], axis=-1)
 
     # ------------------------------------------------------------------
     # Policy interpolation
@@ -317,7 +333,13 @@ class PortfolioChoice(EconomicModel):
     # ------------------------------------------------------------------
 
     def controls_from_action(self, action, state=None) -> dict[str, np.ndarray]:
-        action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
+        """Map Gym action in [-1, 1] to consumption share and portfolio weights.
+
+        Accepts numpy arrays or torch tensors (see backend.py); the torch path
+        is differentiable in `action`.
+        """
+        xp = _ops(action)
+        action = xp.clip(xp.asarray(action, dtype=np.float64), -1.0, 1.0)
 
         share = self.min_action_share + 0.5 * (
             self.max_action_share - self.min_action_share
@@ -332,51 +354,54 @@ class PortfolioChoice(EconomicModel):
         }
 
         if state is not None:
-            m = np.asarray(state, dtype=np.float64)[..., 0]
+            m = xp.asarray(state, dtype=np.float64)[..., 0]
             out["consumption"] = share * m
 
         return out
 
     @staticmethod
-    def project_simplex(v: np.ndarray) -> np.ndarray:
+    def project_simplex(v):
         """Euclidean projection of the last axis of `v` onto the unit simplex.
 
         Solves   argmin_w ||w - v||_2   s.t.   w >= 0,  sum(w) = 1.
 
         This is the sparsemax operator (Martins & Astudillo 2016), equivalently
-        the simplex projection of Duchi et al. (2008).
+        the simplex projection of Duchi et al. (2008). Accepts numpy arrays or
+        torch tensors (see backend.py); the torch path is differentiable.
         """
-        v = np.atleast_1d(np.asarray(v, dtype=np.float64))
+        xp = _ops(v)
+        v = xp.atleast_1d(xp.asarray(v, dtype=np.float64))
         K = v.shape[-1]
 
         # Sort descending and accumulate.
-        u = np.sort(v, axis=-1)[..., ::-1]
-        css = np.cumsum(u, axis=-1)
+        u = xp.sort_descending(v)
+        css = xp.cumsum(u)
 
         # Support size rho = max{k : 1 + k * u_k > cumsum_k}.
         # k = 1 always satisfies the condition, so rho >= 1.
-        k = np.arange(1, K + 1)
+        k = xp.arange(1, K + 1, like=v)
         cond = (1.0 + k * u) > css
-        rho = np.asarray(np.max(np.where(cond, k, 0), axis=-1))
+        rho = xp.amax(xp.where(cond, k, 0))
 
         # Common threshold, chosen so that the surviving mass sums to one.
         idx = rho[..., None] - 1
-        tau = (np.take_along_axis(css, idx, axis=-1) - 1.0) / rho[..., None]
+        tau = (xp.take_along_axis(css, idx) - 1.0) / rho[..., None]
 
-        w = np.maximum(v - tau, 0.0)
+        w = xp.maximum(v - tau, 0.0)
 
         # Mathematically a no-op; removes accumulated float error in the sum.
-        w = w / np.maximum(w.sum(axis=-1, keepdims=True), 1e-300)
+        w = w / xp.maximum(xp.sum_keepdims(w), 1e-300)
 
         return w
 
     @staticmethod
-    def simplex_safe_pivot_to_weights(scores: np.ndarray) -> np.ndarray:
+    def simplex_safe_pivot_to_weights(scores):
         """Map risky-asset scores to weights [safe, risky_1, ..., risky_N].
         """
-        s = np.asarray(scores, dtype=np.float64)
-        pivot = np.zeros(s.shape[:-1] + (1,), dtype=np.float64)
-        z = np.concatenate([pivot, s], axis=-1)
+        xp = _ops(scores)
+        s = xp.asarray(scores, dtype=np.float64)
+        pivot = xp.zeros(s.shape[:-1] + (1,), like=s)
+        z = xp.concatenate([pivot, s], axis=-1)
 
         return PortfolioChoice.project_simplex(z)
 
@@ -507,3 +532,56 @@ class PortfolioChoice(EconomicModel):
         m = self.log_grid(self.m_grid[0], self.m_grid[-1], int(M))
         z = np.zeros((len(m), self.n_risky), dtype=np.float64)
         return np.concatenate([m[:, None], z], axis=1)
+
+    # ------------------------------------------------------------------
+    # Post-decision hooks
+    # ------------------------------------------------------------------
+
+    @property
+    def post_decision_dim(self) -> int:
+        return 1 + 2 * self.n_risky
+
+    def post_decision_features(self, state, controls):
+        """W takes (log(1 + rs), w_risky, z) with the post-decision state rs = m - c >= 0."""
+        xp = _ops(state)
+        state = xp.asarray(state, dtype=np.float64)
+        c = xp.asarray(controls["consumption"], dtype=np.float64)
+        w = xp.asarray(controls["portfolio_weights"], dtype=np.float64)
+
+        rs = xp.log1p(xp.maximum(state[..., 0] - c, 0.0))
+
+        return xp.concatenate([rs[..., None], w[..., 1:], state[..., 1:]], axis=-1)
+
+    def quadrature_shocks(self):
+        """A subset of the model's scrambled-Sobol nodes in the raw-shock layout
+        of `sample_shocks`: (eps_z[0:N], eta_R[0:N], nu, zeta, unemployment).
+
+        The first `pd_rqmc_nodes` nodes and their antithetic partners are used
+        (uniform weights); every node is expanded into an employed branch
+        (weight (1 - p) / K0) and an unemployed branch (weight p / K0).
+        `transition()` applies the tilted permanent-shock mean itself.
+        """
+        n = int(self.pd_rqmc_nodes)
+        half = int(self._M_rqmc) // 2
+        if not (0 < n <= half):
+            raise ValueError(f"pd_rqmc_nodes must lie in (0, {half}], got {n}.")
+
+        idx = np.concatenate([np.arange(n), half + np.arange(n)])
+        base = np.concatenate(
+            [
+                self._eps_nodes[idx],
+                self._eta_nodes[idx],
+                self._nu_nodes[idx, None],
+                self._zeta_nodes[idx, None],
+            ],
+            axis=1,
+        )
+        K0 = base.shape[0]
+
+        employed = np.concatenate([base, np.zeros((K0, 1))], axis=1)
+        unemployed = np.concatenate([base, np.ones((K0, 1))], axis=1)
+
+        w = np.full(K0, 1.0 / K0)
+        weights = np.concatenate([(1.0 - self.unemp_prob) * w, self.unemp_prob * w])
+
+        return np.concatenate([employed, unemployed], axis=0), weights

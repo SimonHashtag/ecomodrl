@@ -6,8 +6,11 @@ import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
 
 from ecomodrl.algorithms.hyperparams import ADAPTER_REGISTRY
+from ecomodrl.configs.variants import DEFAULT_VARIANT
 
-SearchSpaceFn = Callable[[Any, int | None], CS.ConfigurationSpace]
+# Search space functions take (seed, variant); `variant` ("mf" | "pd") only
+# changes the PPO gae_lambda range (see _ppo_space).
+SearchSpaceFn = Callable[[int | None, str], CS.ConfigurationSpace]
 
 
 def _common_space(seed: int | None = None) -> CS.ConfigurationSpace:
@@ -47,11 +50,14 @@ def _common_space(seed: int | None = None) -> CS.ConfigurationSpace:
     return cs
 
 
-def _ppo_space(seed: int | None = None) -> CS.ConfigurationSpace:
+def _ppo_space(seed: int | None = None, variant: str = DEFAULT_VARIANT) -> CS.ConfigurationSpace:
     cs = _common_space(seed)
+    # Post-decision PPO bootstraps through the quadrature expectation of V, so
+    # lambda = 0 is the pure one-step quadrature advantage (no shock noise).
+    gae_lambda_lower = 0.0 if variant == "pd" else 0.85
     cs.add([
         CSH.UniformFloatHyperparameter("clip_range", 0.05, 0.30),
-        CSH.UniformFloatHyperparameter("gae_lambda", 0.85, 0.995),
+        CSH.UniformFloatHyperparameter("gae_lambda", gae_lambda_lower, 0.995),
         CSH.CategoricalHyperparameter("ent_coef", [0.0, 1e-5, 1e-4, 1e-3, 1e-2]),
         CSH.UniformFloatHyperparameter("vf_coef", 0.25, 1.0),
     ])
@@ -67,7 +73,7 @@ def _offpolicy_common_space(seed: int | None = None) -> CS.ConfigurationSpace:
     return cs
 
 
-def _sac_space(seed: int | None = None) -> CS.ConfigurationSpace:
+def _sac_space(seed: int | None = None, variant: str = DEFAULT_VARIANT) -> CS.ConfigurationSpace:
     cs = _offpolicy_common_space(seed)
     cs.add([
         CSH.CategoricalHyperparameter(
@@ -78,7 +84,7 @@ def _sac_space(seed: int | None = None) -> CS.ConfigurationSpace:
     return cs
 
 
-def _td3_space(seed: int | None = None) -> CS.ConfigurationSpace:
+def _td3_space(seed: int | None = None, variant: str = DEFAULT_VARIANT) -> CS.ConfigurationSpace:
     cs = _offpolicy_common_space(seed)
     cs.add([
         CSH.UniformFloatHyperparameter("exploration_sigma", 0.02, 0.50),
@@ -88,7 +94,7 @@ def _td3_space(seed: int | None = None) -> CS.ConfigurationSpace:
     return cs
 
 
-def _ddpg_space(seed: int | None = None) -> CS.ConfigurationSpace:
+def _ddpg_space(seed: int | None = None, variant: str = DEFAULT_VARIANT) -> CS.ConfigurationSpace:
     cs = _offpolicy_common_space(seed)
     cs.add([
         CSH.UniformFloatHyperparameter("exploration_sigma", 0.02, 0.50),

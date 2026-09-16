@@ -13,7 +13,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=36
 #SBATCH --mem=92G
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --export=NONE
 
 #SBATCH --output=logs/PC_ALL_%j.out
@@ -64,6 +64,9 @@ export PYTHONPATH=$(pwd):$PYTHONPATH
 # 1. Define list of algorithms
 ALGOS=("ppo" "ddpg" "sac" "td3")
 
+# 1b. Define list of algorithm variants: mf (model-free), pd (post-decision)
+VARIANTS=("mf" "pd")
+
 # 2. Define and Export Paths 
 # (Exporting makes them available to Python via os.environ)
 export TUNERESULTS_PATH="$WORKDIR/tune_results"
@@ -86,15 +89,18 @@ echo "================================================"
 
 BUDGET_PER_ALGO=14400 # 4 hours
 
-for algo in "${ALGOS[@]}"; do
-    echo "--- Tuning: $algo ---"
-    
-    python ecomodrl/tune/portfoliochoice.py \
-        --algo_name="$algo" \
-        --total_cost=$BUDGET_PER_ALGO \
-        --hidden_nodes=128
+for variant in "${VARIANTS[@]}"; do
+    for algo in "${ALGOS[@]}"; do
+        echo "--- Tuning: $algo ($variant) ---"
 
-    echo "Finished tuning for $algo"
+        python ecomodrl/tune/portfoliochoice.py \
+            --algo_name="$algo" \
+            --variant="$variant" \
+            --total_cost=$BUDGET_PER_ALGO \
+            --hidden_nodes=128
+
+        echo "Finished tuning for $algo ($variant)"
+    done
 done
 
 echo
@@ -112,14 +118,17 @@ echo "================================================"
 # Note: Because TUNERESULTS_PATH is exported, your python training script 
 # can fetch the incumbent hyperparameters directly from that folder!
 
-for algo in "${ALGOS[@]}"; do
-    echo "--- Training: $algo ---"
-    
-    python ecomodrl/experiments/portfoliochoice.py \
-        --algo_name="$algo" \
-        --hidden_nodes=128
+for variant in "${VARIANTS[@]}"; do
+    for algo in "${ALGOS[@]}"; do
+        echo "--- Training: $algo ($variant) ---"
 
-    echo "Finished training for $algo"
+        python ecomodrl/experiments/portfoliochoice.py \
+            --algo_name="$algo" \
+            --variant="$variant" \
+            --hidden_nodes=128
+
+        echo "Finished training for $algo ($variant)"
+    done
 done
 
 echo
@@ -136,7 +145,9 @@ echo " PHASE 3: ANALYSIS "
 echo "================================================"
 
 echo "Generating unified comparison plots and tables..."
-python ecomodrl/experiments/analyze_experiments.py --env portfoliochoice
+for variant in "${VARIANTS[@]}"; do
+    python ecomodrl/experiments/analyze_experiments.py --env portfoliochoice --variant "$variant"
+done
 
 ############################
 #       Finalize           #

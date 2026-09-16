@@ -6,6 +6,7 @@ from ecomodrl.configs.parameters import (
     CassKoopmansParams,
 )
 from ecomodrl.models.base_model import EconomicModel
+from ecomodrl.models.backend import ops as _ops
 
 class CassKoopmans(EconomicModel):
     """Deterministic Cass-Koopmans growth model."""
@@ -86,3 +87,22 @@ class CassKoopmans(EconomicModel):
 
     def eval_start_states(self, M):
         return self.log_grid(self.m_grid[0], self.m_grid[-1], M)[:, None]
+
+    # ------------------------------------------------------------------
+    # Post-decision hooks
+    # ------------------------------------------------------------------
+
+    @property
+    def post_decision_dim(self) -> int:
+        return 1
+
+    def post_decision_features(self, state, controls):
+        """W takes log a with the post-decision state a = m - c."""
+        xp = _ops(state)
+        m = xp.asarray(state, dtype=np.float64)[..., 0]
+        c = xp.asarray(controls["consumption"], dtype=np.float64)
+        return xp.log(xp.maximum(m - c, 1e-12))[..., None]
+
+    def quadrature_shocks(self):
+        """Deterministic growth: one node (transition ignores shocks)."""
+        return None, np.ones(1)

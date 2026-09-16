@@ -9,6 +9,7 @@ from ecomodrl.configs.analysisconfigs import (
     PortfolioChoiceAnalysisConfig,
 )
 from ecomodrl.configs.analysisconfigs import parse_analysis_args
+from ecomodrl.configs.variants import enforce_variant_constraints
 from ecomodrl.analysis.analysis import run_analysis
 
 
@@ -42,7 +43,7 @@ def main() -> None:
     cfg_cls = ANALYSIS_CONFIGS[env_name]
     base_cfg = cfg_cls()
 
-    cfg = parse_analysis_args(base_cfg, argv=remaining_args)
+    cfg = enforce_variant_constraints(parse_analysis_args(base_cfg, argv=remaining_args))
 
     run_analysis(cfg)
 

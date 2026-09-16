@@ -11,8 +11,11 @@ import torch as th
 from stable_baselines3 import PPO, TD3, DDPG, SAC
 from stable_baselines3.common.utils import set_random_seed
 
+from ecomodrl.algorithms.post_decision import PDDDPG, PDPPO, PDSAC, PDTD3
 from ecomodrl.analysis.accuracy_metrics import make_evaluation_sample
+from ecomodrl.configs.variants import DEFAULT_VARIANT, VARIANTS
 from ecomodrl.envs.setup_envs import build_envs
+from ecomodrl.models import make_pd_spec
 from ecomodrl.algorithms.learning_schedule import WallClockCosineLR
 from ecomodrl.algorithms.stopper import TrainingClock, WallClockBudgetCallback
 from ecomodrl.algorithms.evaluation import BestValueEvalCallback
@@ -22,6 +25,9 @@ from ecomodrl.algorithms.action_noise import make_action_noise
 # -------------------------------------------------------
 # Build deep RL algorithm
 # -------------------------------------------------------
+# Two design axes: the algorithm family (ppo/td3/ddpg/sac) and the variant
+# ("mf": model-free SB3 classes; "pd": post-decision classes with
+# model-informed critics / bootstraps, see ecomodrl/algorithms/post_decision).
 
 ALGO_REGISTRY = {
     "ppo":  PPO,
@@ -30,12 +36,47 @@ ALGO_REGISTRY = {
     "sac":  SAC,
 }
 
+PD_ALGO_REGISTRY = {
+    "ppo":  PDPPO,
+    "td3":  PDTD3,
+    "ddpg": PDDDPG,
+    "sac":  PDSAC,
+}
+
+VARIANT_REGISTRIES = {
+    "mf": ALGO_REGISTRY,
+    "pd": PD_ALGO_REGISTRY,
+}
+
+
+def resolve_algo_class(name: str, variant: str = DEFAULT_VARIANT):
+    """SB3 algorithm class for one (algorithm family, variant) pair."""
+    try:
+        registry = VARIANT_REGISTRIES[variant]
+    except KeyError as exc:
+        raise ValueError(f"Unknown variant {variant!r}; expected one of {VARIANTS}.") from exc
+    try:
+        return registry[name.lower()]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported algo_name: {name!r}") from exc
+
+
+def loaded_model_variant(model) -> str:
+    """Variant a loaded SB3 model was trained with ("pd" iff its policy carries a pd_spec).
+
+    SB3's `load()` restores the saved policy class, so loading a checkpoint with
+    the class of the other variant does not fail by itself; use this to check.
+    """
+    return "pd" if getattr(model.policy, "pd_spec", None) is not None else "mf"
+
+
 @dataclass
 class AlgoConfig:
     name: str                    # "ppo" | "td3" | "ddpg" | "sac"
     policy: str = "MlpPolicy"
     algo_params: Optional[dict] = None
     policy_kwargs: Optional[dict] = None
+    variant: str = DEFAULT_VARIANT   # "mf" | "pd"
 
 
 def _set_lr_schedule(
@@ -60,10 +101,23 @@ def build_model(
     seed: int,
     tensorboard_log: Path,
     verbose: int = 0,
+    pd_spec: Optional[dict] = None,
 ):
-    AlgoCls = ALGO_REGISTRY[algo_cfg.name.lower()]
+    """Instantiate the SB3 model for `algo_cfg.name` and `algo_cfg.variant`.
+
+    For the post-decision variant, `pd_spec` (ecomodrl.models.make_pd_spec) is
+    stored in policy_kwargs so that saved checkpoints reload without the env.
+    """
+    AlgoCls = resolve_algo_class(algo_cfg.name, algo_cfg.variant)
     algo_params = dict(algo_cfg.algo_params or {})
     policy_kwargs = dict(algo_cfg.policy_kwargs or {})
+
+    if algo_cfg.variant == "pd":
+        if pd_spec is None:
+            raise ValueError("build_model() needs pd_spec for variant 'pd' (ecomodrl.models.make_pd_spec).")
+        if getattr(env, "norm_obs", False):
+            raise ValueError("variant 'pd' does not support VecNormalize observation normalization.")
+        policy_kwargs["pd_spec"] = pd_spec
 
     algo_params.setdefault("verbose", verbose)
     algo_params.setdefault("seed", seed)
@@ -149,9 +203,17 @@ def train_single_seed(
         )
 
         _set_lr_schedule(algo_cfg.algo_params, cfg, clock)
-        
-        
-        model = build_model(algo_cfg, envs, seed, tensorboard_log=out_dir, verbose=0)
+
+        # Post-decision variant: the critic rebuilds the economic model from
+        # this spec; the utility floor mirrors the reward floor of the env.
+        pd_spec = None
+        if algo_cfg.variant == "pd":
+            pd_spec = make_pd_spec(
+                eco_model,
+                cfg.reward_floor if cfg.reward_floor is not None else float("inf"),
+            )
+
+        model = build_model(algo_cfg, envs, seed, tensorboard_log=out_dir, verbose=0, pd_spec=pd_spec)
         
         max_grad_norm = algo_cfg.algo_params.get('max_grad_norm', None) if algo_cfg.algo_params else None
         

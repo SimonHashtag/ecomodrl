@@ -22,7 +22,8 @@ from typing import Any, Mapping, Union
 
 import numpy as np
 
-from ecomodrl.algorithms.training import ALGO_REGISTRY
+from ecomodrl.algorithms.training import loaded_model_variant, resolve_algo_class
+from ecomodrl.configs.variants import DEFAULT_VARIANT, algo_dir_name, figure_dir_name
 from ecomodrl.analysis.policy_interface import EGMPolicy, RLPolicy
 from ecomodrl.analysis import accuracy_metrics
 from ecomodrl.analysis.efficiency_metrics import (
@@ -55,9 +56,26 @@ def model_results_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
     return Path(cfg.out_dir) / cfg.model_name
 
 
+def _variant(cfg: Union[Mapping[str, Any], Any]) -> str:
+    """Algorithm variant of the analysis ("mf" | "pd"); selects the *_PD directories."""
+    return getattr(cfg, "variant", DEFAULT_VARIANT)
+
+
+def _load_checkpoint(cfg: Union[Mapping[str, Any], Any], algo: str, model_path: Path, **load_kwargs):
+    """Load one SB3 checkpoint with the class of the configured variant and verify the variant."""
+    sb3_model = resolve_algo_class(algo, _variant(cfg)).load(str(model_path), **load_kwargs)
+    found = loaded_model_variant(sb3_model)
+    if found != _variant(cfg):
+        raise RuntimeError(
+            f"{model_path} was trained with variant {found!r} but the analysis runs with "
+            f"variant {_variant(cfg)!r}; pass --variant {found}."
+        )
+    return sb3_model
+
+
 def figure_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
-    """Directory for figures and tables."""
-    return model_results_dir(cfg) / "figures"
+    """Directory for figures and tables ("figures" or "figures_PD")."""
+    return model_results_dir(cfg) / figure_dir_name(_variant(cfg))
 
 
 def egm_analysis_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
@@ -80,9 +98,10 @@ def checkpoint_dir(
 ) -> Path:
     """Directory containing one trained RL checkpoint.
 
-    Training code writes algorithm names in uppercase directories.
+    Training code writes algorithm names in uppercase directories, with a
+    "_PD" suffix for the post-decision variant.
     """
-    return model_results_dir(cfg) / algo.upper() / f"seed_{int(train_seed)}"
+    return model_results_dir(cfg) / algo_dir_name(algo, _variant(cfg)) / f"seed_{int(train_seed)}"
 
 
 def analysis_result_dir(
@@ -130,8 +149,8 @@ def algorithm_summary_path(
     cfg: Union[Mapping[str, Any], Any], 
     algo: str,
 ) -> Path:
-    """Summary path for one algorithm and one economic model."""
-    return model_results_dir(cfg) / algo.upper() / "analysis_summary.json"
+    """Summary path for one algorithm (and variant) and one economic model."""
+    return model_results_dir(cfg) / algo_dir_name(algo, _variant(cfg)) / "analysis_summary.json"
 
 
 # =============================================================================
@@ -293,13 +312,10 @@ def load_rl_policy(
             )
 
         vecnormalize = cfg.load_vecnormalize(vecnorm_path, seed=train_seed)
-        sb3_model = ALGO_REGISTRY[algo].load(
-            str(model_path),
-            env=vecnormalize,
-        )
+        sb3_model = _load_checkpoint(cfg, algo, model_path, env=vecnormalize)
 
     else:
-        sb3_model = ALGO_REGISTRY[algo].load(str(model_path))
+        sb3_model = _load_checkpoint(cfg, algo, model_path)
 
     return RLPolicy(
         sb3_model=sb3_model,
@@ -316,8 +332,7 @@ def _make_FLOPs_measurement_model(cfg: Union[Mapping[str, Any], Any], algo: str)
         model_path = checkpoint_dir(cfg, algo, seed) / "model.zip"
         if model_path.exists():
             env = cfg.make_unnormalized_vecenv(seed)
-            model = ALGO_REGISTRY[algo].load(str(model_path), env=env)
-            return model
+            return _load_checkpoint(cfg, algo, model_path, env=env)
 
     raise FileNotFoundError(f"No checkpoint found to measure FLOPs for algo={algo!r}")
 
@@ -725,6 +740,7 @@ def summarize_algorithm(
     summary = {
         "model": cfg.model_name,
         "algorithm": algo,
+        "variant": _variant(cfg),
         "n_cells": int(n_cells),
     }
 
@@ -863,7 +879,7 @@ def complexity_summary(
 
 def run_testing(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Run numerical post-training analysis."""
-    print(f"\n========== Analysis: {cfg.model_name} ==========")
+    print(f"\n========== Analysis: {cfg.model_name} ({_variant(cfg)}) ==========")
     print(f"Algorithms: {', '.join(cfg.algorithms)}")
 
     check_required_checkpoints(cfg)
@@ -954,7 +970,7 @@ def load_training_history(seed_dir: Path):
 
 def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Create figures and LaTeX tables from saved analysis output."""
-    print(f"\n========== Figures: {cfg.model_name} ==========")
+    print(f"\n========== Figures: {cfg.model_name} ({_variant(cfg)}) ==========")
 
     economic_model, _ = solve_egm_model(cfg)
     egm_policy = EGMPolicy(economic_model)
