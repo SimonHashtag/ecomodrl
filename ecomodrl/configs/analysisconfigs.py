@@ -20,7 +20,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from ecomodrl.envs.setup_envs import make_env
-from ecomodrl.configs.variants import VARIANTS
+from ecomodrl.configs.variants import ANALYSIS_VARIANT_CHOICES
 from ecomodrl.configs.runconfigs import (
     CassKoopmansRunConfig,
     BrockMirmanRunConfig,
@@ -190,6 +190,9 @@ def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig, argv=None) -> argpar
 
     Only run numerical analysis without plotting:
         python analyze_brockmirman.py --skip_plots
+
+    Overlay both variants (from existing per-variant output):
+        python analyze_brockmirman.py --variant both
     """
     p = argparse.ArgumentParser()
 
@@ -204,9 +207,13 @@ def parse_analysis_args(AnalysisConfig: BaseAnalysisConfig, argv=None) -> argpar
     p.add_argument(
         "--variant",
         type=str,
-        choices=list(VARIANTS),
+        choices=list(ANALYSIS_VARIANT_CHOICES),
         default=argparse.SUPPRESS,
-        help="Algorithm variant to analyze: 'mf' (model-free, default) or 'pd' (post-decision).",
+        help=(
+            "Algorithm variant to analyze: 'mf' (model-free, default), 'pd' (post-decision), "
+            "or 'both' (only writes the combined mf-vs-pd figures from existing per-variant "
+            "analysis output; no testing, --skip_testing/--skip_plots are ignored)."
+        ),
     )
 
     p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)

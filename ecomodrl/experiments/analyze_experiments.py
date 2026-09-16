@@ -9,7 +9,7 @@ from ecomodrl.configs.analysisconfigs import (
     PortfolioChoiceAnalysisConfig,
 )
 from ecomodrl.configs.analysisconfigs import parse_analysis_args
-from ecomodrl.configs.variants import enforce_variant_constraints
+from ecomodrl.configs.variants import COMBINED_VARIANT, enforce_variant_constraints
 from ecomodrl.analysis.analysis import run_analysis
 
 
@@ -43,7 +43,12 @@ def main() -> None:
     cfg_cls = ANALYSIS_CONFIGS[env_name]
     base_cfg = cfg_cls()
 
-    cfg = enforce_variant_constraints(parse_analysis_args(base_cfg, argv=remaining_args))
+    cfg = parse_analysis_args(base_cfg, argv=remaining_args)
+
+    # "both" only overlays existing per-variant output; the per-variant
+    # constraints are applied to each derived config inside the combined stage.
+    if cfg.variant != COMBINED_VARIANT:
+        cfg = enforce_variant_constraints(cfg)
 
     run_analysis(cfg)
 

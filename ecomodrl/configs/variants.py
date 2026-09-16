@@ -9,6 +9,7 @@
 #     <Env>/<ALGO>/         ->  <Env>/<ALGO>_PD/
 #     <Env>/figures/        ->  <Env>/figures_PD/
 #     <Env>/<ALGO>/incumbent.json  ->  <Env>/<ALGO>_PD/incumbent.json
+#     <Env>/figures_combined/      (analysis --variant both: mf and pd overlaid)
 #
 # This module imports nothing project-internal so every layer can use it.
 # -----------------------------------------------------------------------------
@@ -20,6 +21,15 @@ from dataclasses import replace
 
 VARIANTS = ("mf", "pd")
 DEFAULT_VARIANT = "mf"
+
+VARIANT_LABELS = {"mf": "model-free", "pd": "post-decision"}
+
+# Analysis-only pseudo-variant: overlay "mf" and "pd" results in one figure set.
+# Deliberately NOT in VARIANTS, so check_variant()/variant_suffix() keep
+# rejecting it: no training/tuning path and no *_PD directory derive from it.
+COMBINED_VARIANT = "both"
+ANALYSIS_VARIANT_CHOICES = (*VARIANTS, COMBINED_VARIANT)
+COMBINED_FIGURE_DIR_NAME = "figures_combined"
 
 
 def check_variant(variant: str) -> str:

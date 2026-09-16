@@ -149,6 +149,9 @@ for variant in "${VARIANTS[@]}"; do
     python ecomodrl/experiments/analyze_experiments.py --env portfoliochoice --variant "$variant"
 done
 
+# Combined figures overlaying both variants (reads the per-variant analysis output above).
+python ecomodrl/experiments/analyze_experiments.py --env portfoliochoice --variant both
+
 ############################
 #       Finalize           #
 ############################

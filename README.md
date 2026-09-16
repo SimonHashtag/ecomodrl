@@ -110,6 +110,12 @@ python -m ecomodrl.experiments.casskoopmans --algo_name ppo --variant pd --n_see
 python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_name ppo --variant pd --n_seeds 4
 ```
 
+To compare both variants in one figure, run the analysis a third time with `--variant both`. This stage runs no testing and loads no checkpoints; it reads the existing per-variant outputs (`eval_history.npz`, `analysis/euler_errors.npz`) and the shared `egm_analysis/` cache and writes `runs/CassKoopmans/figures_combined/euler_errors.pdf` and `convergence.pdf` (post-decision in colour / solid, model-free in grey / dashed). Missing seeds or a missing variant are skipped with a warning.
+
+```
+python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_name ppo --variant both --n_seeds 4
+```
+
 ## Hyperparameter tuning (optional)
 
 Hyperparameters are tuned with DEHB, using wall-clock training time as the multi-fidelity budget (in seconds):
@@ -124,7 +130,7 @@ This writes `./tune_results/<Model>/<ALGO>/incumbent.json` (override the root wi
 
 The CLI defaults are the paper settings: `--n_seeds 100`, `--hidden_nodes 128`, `--n_envs 10`, with wall-clock budgets of 300 s (Cass–Koopmans), 600 s (Brock–Mirman, buffer-stock), and 1200 s (portfolio choice) per seed. To replicate a model's results, run tune, train, and analyze for each algorithm (`ppo`, `ddpg`, `td3`, `sac`) and each variant (`mf`, `pd`), substituting the model's CLI name in the commands above.
 
-The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipeline: DEHB tuning (up to 4 h per algorithm and variant), training, and analysis for all four algorithms and both variants as a single job per model on a HPC cluster.
+The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipeline: DEHB tuning (up to 4 h per algorithm and variant), training, and analysis for all four algorithms and both variants, plus the combined mf-vs-pd figures, as a single job per model on a HPC cluster.
 
 ## Extending to new models
 
