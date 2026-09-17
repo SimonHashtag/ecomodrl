@@ -340,12 +340,11 @@ def policy_value_on_grid(
         EV = model.integrate(model.value_kernel() * V_next)
 
         V_new = u + beta * EV
+        error = np.max(np.abs(V_new - V))
+        V = V_new.copy()
 
-        if np.max(np.abs(V_new - V)) < tol:
-            V = V_new
+        if error < tol:
             break
-
-        V = V_new
 
     display_grid = axes[0] if len(axes) == 1 else axes
     return display_grid, V
@@ -708,7 +707,9 @@ def _portfolio_shock_indices(model, max_shock_nodes=None):
     """Select RQMC nodes for portfolio diagnostics.
 
     Full RQMC integration can be expensive for RL policies. By default, use at
-    most `model.analysis_rqmc_nodes` if present, otherwise 1024.
+    most `model.analysis_rqmc_nodes` if present, otherwise 1024. Use a prefix
+    of the Sobol sequence so power-of-two sample sizes retain their nested
+    low-discrepancy balance.
     """
     M = int(model._M_rqmc)
 
@@ -720,7 +721,7 @@ def _portfolio_shock_indices(model, max_shock_nodes=None):
     if max_shock_nodes >= M:
         return np.arange(M)
 
-    return np.linspace(0, M - 1, max_shock_nodes, dtype=np.int64)
+    return np.arange(max_shock_nodes)
 
 
 def _portfolio_next_shock_arrays(model, z, shock_idx):
@@ -867,12 +868,11 @@ def _portfolio_policy_value_on_grid(
             V_new_flat[i] = u_flat[i] + beta * EV
 
         V_new = V_new_flat.reshape(grid_shape)
+        error = np.max(np.abs(V_new - V))
+        V = V_new.copy()
 
-        if np.max(np.abs(V_new - V)) < tol:
-            V = V_new
+        if error < tol:
             break
-
-        V = V_new
 
     display_grid = axes[0] if len(axes) == 1 else axes
     return display_grid, V
