@@ -178,11 +178,17 @@ ADAPTER_REGISTRY: Dict[str, AdapterFn] = {
 # ---------------------------------------------------------------------------
 # Fixed (non-tuned) config builder
 # ---------------------------------------------------------------------------
-def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoConfig:
+def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int, variant: str = "mf") -> AlgoConfig:
+    """Fixed (non-tuned) part of the algorithm config.
+
+    `variant` selects the model-free ("mf") or post-decision ("pd") classes in
+    `build_model`; the fixed settings are shared by both variants.
+    """
     algo_name = algo_name.lower()
     if algo_name == "ppo":
         return AlgoConfig(
             name="ppo",
+            variant=variant,
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
@@ -204,6 +210,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
     if algo_name in {"td3", "ddpg"}:
         return AlgoConfig(
             name=algo_name,
+            variant=variant,
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,
@@ -219,6 +226,7 @@ def get_algo_fixedcfgs(algo_name: str, params: Any, hidden_nodes: int) -> AlgoCo
     if algo_name == "sac":
         return AlgoConfig(
             name="sac",
+            variant=variant,
             policy="MlpPolicy",
             algo_params={
                 "gamma": params.beta,

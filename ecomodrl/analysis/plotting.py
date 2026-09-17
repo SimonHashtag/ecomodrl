@@ -18,14 +18,16 @@ import warnings
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
 from ecomodrl.analysis.efficiency_metrics import (
-    last_value_carried_forward, 
+    last_value_carried_forward,
     normalized_regret,
 )
 from ecomodrl.analysis.accuracy_metrics import iqm
+from ecomodrl.configs.variants import VARIANTS, VARIANT_LABELS
 
 
 DEFAULT_ALGORITHMS = tuple(ALGO_REGISTRY.keys())
@@ -47,6 +49,11 @@ MODEL_LABELS = {
 }
 
 EGM_COLOR = "0.45"
+
+# Combined mf-vs-pd figures: model-free layer in grey, post-decision in the
+# algorithm colour; line styles distinguish the variants in single-axis plots.
+MF_COLOR = "0.55"
+VARIANT_LINESTYLES = {"pd": "-", "mf": "--"}
 
 PORTFOLIO_LEVEL_CMAP = "viridis"
 PORTFOLIO_DIFF_CMAP = "RdBu_r"
@@ -1054,6 +1061,66 @@ def plot_cev_distribution(
 
 
 # =============================================================================
+# Shared curve / histogram statistics (per-variant and combined figures)
+# =============================================================================
+
+def _wallclock_grid(wallclock_seconds, grid_step):
+    """Common evaluation-time grid for convergence curves."""
+    return np.arange(0.0, float(wallclock_seconds) + 1e-9, float(grid_step))
+
+
+def _regret_curve_stats(histories, egm_returns, t_grid):
+    """IQM and IQR band (q1, q3) of the EGM-normalized regret over `t_grid` across seeds."""
+    rl_returns = np.stack(
+        [last_value_carried_forward(hist["t"], hist["u"], t_grid) for hist in histories],
+        axis=0,
+    )
+
+    reg_norm = normalized_regret(egm_returns, rl_returns)
+    iqm_values = iqm(reg_norm, axis=0)
+    q1, q3 = np.nanpercentile(reg_norm, [25, 75], axis=0)
+    return iqm_values, q1, q3
+
+
+def _deterministic_euler_curve(model, arrays):
+    """Grid, IQM and IQR band (q1, q3) of Euler errors over the deterministic test grid."""
+    min_len = min(len(a) for a in arrays)
+    stack = np.stack([np.asarray(a[:min_len], dtype=np.float64) for a in arrays], axis=0)
+    iqm_values = iqm(stack, axis=0)
+    q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
+
+    x = model.log_grid(model.m_grid[0], model.m_grid[-1], min_len)
+    return x, iqm_values, q1, q3
+
+
+def _euler_histogram_bins(euler_dicts, algorithms, n_bins=80, quantiles=(0.5, 99.5)):
+    """Shared histogram bins from the pooled finite Euler errors of all dicts and algorithms."""
+    all_values = []
+    for euler_by_algo in euler_dicts:
+        for algo in algorithms:
+            for arr in euler_by_algo.get(algo, []):
+                x = np.asarray(arr, dtype=np.float64).ravel()
+                x = x[np.isfinite(x)]
+                if x.size:
+                    all_values.append(x)
+
+    if all_values:
+        pooled_all = np.concatenate(all_values)
+        lo, hi = np.nanpercentile(pooled_all, list(quantiles))
+        return np.linspace(lo, hi, n_bins)
+    return n_bins
+
+
+def _relative_frequency_hist(arrays):
+    """Pooled finite values and relative-frequency weights for one histogram layer."""
+    pooled = np.concatenate([np.asarray(a).ravel() for a in arrays])
+    pooled = pooled[np.isfinite(pooled)]
+
+    weights = np.ones_like(pooled) / max(pooled.size, 1)
+    return pooled, weights
+
+
+# =============================================================================
 # Euler-error distribution
 # =============================================================================
 
@@ -1074,11 +1141,7 @@ def plot_euler_error_distribution(
             if not arrays:
                 continue
 
-            min_len = min(len(a) for a in arrays)
-            stack = np.stack([np.asarray(a[:min_len], dtype=np.float64) for a in arrays], axis=0)
-            iqm_values, q1, q3 = iqm_and_iqr(stack)
-
-            x = model.log_grid(model.m_grid[0], model.m_grid[-1], min_len)
+            x, iqm_values, q1, q3 = _deterministic_euler_curve(model, arrays)
             color = ALGO_COLORS.get(algo, "tab:blue")
 
             ax.fill_between(x, q1, q3, color=color, alpha=0.22)
@@ -1095,20 +1158,7 @@ def plot_euler_error_distribution(
         fig, axes = plt.subplots(rows, 1, figsize=(9, 2.5 * rows), sharex=True)
         axes = np.atleast_1d(axes)
 
-        all_values = []
-        for algo in algorithms:
-            for arr in euler_by_algo.get(algo, []):
-                x = np.asarray(arr, dtype=np.float64).ravel()
-                x = x[np.isfinite(x)]
-                if x.size:
-                    all_values.append(x)
-
-        if all_values:
-            pooled_all = np.concatenate(all_values)
-            lo, hi = np.nanpercentile(pooled_all, [0.5, 99.5])
-            bins = np.linspace(lo, hi, 80)
-        else:
-            bins = 80
+        bins = _euler_histogram_bins([euler_by_algo], algorithms)
 
         for ax, algo in zip(axes, algorithms):
             arrays = euler_by_algo.get(algo, [])
@@ -1116,10 +1166,7 @@ def plot_euler_error_distribution(
             if not arrays:
                 ax.text(0.5, 0.5, "no Euler errors", ha="center", va="center", transform=ax.transAxes, color="0.5")
             else:
-                pooled = np.concatenate([np.asarray(a).ravel() for a in arrays])
-                pooled = pooled[np.isfinite(pooled)]
-
-                weights = np.ones_like(pooled) / max(pooled.size, 1)
+                pooled, weights = _relative_frequency_hist(arrays)
                 ax.hist(
                     pooled,
                     bins=bins,
@@ -1136,6 +1183,111 @@ def plot_euler_error_distribution(
         axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
         fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center")
         fig.suptitle("Euler-error distributions across policies and test seeds")
+
+    plt.tight_layout()
+    ensure_parent(save_path)
+    fig.savefig(save_path, dpi=140)
+    plt.close(fig)
+
+
+def _combined_layer_color(variant, algo):
+    return MF_COLOR if variant == "mf" else ALGO_COLORS.get(algo, "tab:blue")
+
+
+def plot_euler_error_distribution_combined(
+    model,
+    euler_by_variant,
+    save_path,
+    deterministic=False,
+    *,
+    algorithms=DEFAULT_ALGORITHMS,
+):
+    """Overlay the model-free and post-decision Euler-error distributions.
+
+    `euler_by_variant` maps "mf" / "pd" to `{algo: [arrays]}`; a variant may be
+    absent or empty. Model-free is drawn first in grey, post-decision on top in
+    the algorithm colour. Deterministic models get one panel per algorithm
+    (IQM line + IQR band over cash-on-hand); stochastic models one histogram
+    row per algorithm with bins shared across variants and algorithms.
+    """
+    title = (
+        f"Euler-error distributions: {VARIANT_LABELS['pd']} (colour) "
+        f"vs {VARIANT_LABELS['mf']} (grey)"
+    )
+
+    if deterministic:
+        rows, cols = subplot_grid(len(algorithms))
+        fig, axes = plt.subplots(
+            rows, cols, figsize=(4.5 * cols, 3.5 * rows), sharex=True, sharey=True
+        )
+        axes = np.atleast_1d(axes).ravel()
+
+        for ax, algo in zip(axes, algorithms):
+            drawn = False
+            for variant in VARIANTS:  # ("mf", "pd"): grey first, colour on top
+                arrays = euler_by_variant.get(variant, {}).get(algo, [])
+                if not arrays:
+                    continue
+
+                x, iqm_values, q1, q3 = _deterministic_euler_curve(model, arrays)
+                color = _combined_layer_color(variant, algo)
+
+                ax.fill_between(x, q1, q3, color=color, alpha=0.22)
+                ax.plot(x, iqm_values, color=color, linewidth=1.3)
+                drawn = True
+
+            if not drawn:
+                ax.text(0.5, 0.5, "no Euler errors", ha="center", va="center", transform=ax.transAxes, color="0.5")
+
+            ax.set_title(algo.upper())
+            ax.grid(alpha=0.3, which="both")
+
+        for ax in axes[len(algorithms):]:
+            ax.axis("off")
+
+        fig.supxlabel("Cash-on-hand $m$")
+        fig.supylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
+        fig.suptitle(title)
+
+    else:
+        rows = len(algorithms)
+        fig, axes = plt.subplots(rows, 1, figsize=(9, 2.5 * rows), sharex=True)
+        axes = np.atleast_1d(axes)
+
+        bins = _euler_histogram_bins(
+            [euler_by_variant.get(variant, {}) for variant in VARIANTS], algorithms
+        )
+
+        for ax, algo in zip(axes, algorithms):
+            drawn = False
+            for zorder, variant in enumerate(VARIANTS, start=1):  # grey first, colour on top
+                arrays = euler_by_variant.get(variant, {}).get(algo, [])
+                if not arrays:
+                    continue
+
+                pooled, weights = _relative_frequency_hist(arrays)
+                ax.hist(
+                    pooled,
+                    bins=bins,
+                    weights=weights,
+                    histtype="stepfilled",
+                    color=_combined_layer_color(variant, algo),
+                    alpha=0.7,
+                    edgecolor="none",
+                    linewidth=0.0,
+                    zorder=zorder,
+                )
+                drawn = True
+
+            if not drawn:
+                ax.text(0.5, 0.5, "no Euler errors", ha="center", va="center", transform=ax.transAxes, color="0.5")
+
+            ax.set_ylabel(algo.upper())
+            ax.grid(alpha=0.3)
+
+        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
+        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center")
+        fig.suptitle(title)
 
     plt.tight_layout()
     ensure_parent(save_path)
@@ -1162,7 +1314,7 @@ def plot_training_convergence(
 
     If `efficiency` is passed, each algorithm's AULC is added to the legend.
     """
-    t_grid = np.arange(0.0, float(wallclock_seconds) + 1e-9, float(grid_step))
+    t_grid = _wallclock_grid(wallclock_seconds, grid_step)
 
     fig, ax = plt.subplots(figsize=(9, 5))
 
@@ -1173,13 +1325,7 @@ def plot_training_convergence(
         if not histories or len(histories) != len(egm_returns):
             continue
 
-        rl_returns = np.stack(
-            [last_value_carried_forward(hist["t"], hist["u"], t_grid) for hist in histories],
-            axis=0,
-        )
-
-        reg_norm = normalized_regret(egm_returns, rl_returns)
-        iqm_values, q1, q3 = iqm_and_iqr(reg_norm)
+        iqm_values, q1, q3 = _regret_curve_stats(histories, egm_returns, t_grid)
 
         color = ALGO_COLORS.get(algo, "tab:blue")
 
@@ -1197,6 +1343,136 @@ def plot_training_convergence(
     ax.set_yscale("log")
     ax.set_title("Convergence of RL policies relative to EGM")
     ax.legend(fontsize=9)
+
+    plt.tight_layout()
+    ensure_parent(save_path)
+    fig.savefig(save_path, dpi=140)
+    plt.close(fig)
+
+
+def plot_training_convergence_combined(
+    histories_by_variant,
+    egm_returns_by_variant,
+    wallclock_seconds,
+    save_path,
+    *,
+    algorithms=DEFAULT_ALGORITHMS,
+    grid_step=5.0,
+):
+    """Overlay model-free (dashed) and post-decision (solid) convergence curves.
+
+    Same statistics as `plot_training_convergence` (IQM line and IQR band of the
+    EGM-normalized regret) for every algorithm and variant in one axis. Both
+    inputs map "mf" / "pd" to `{algo: [...]}`; a variant may be absent or empty.
+    """
+    t_grid = _wallclock_grid(wallclock_seconds, grid_step)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    drawn_algos, drawn_variants = [], []
+
+    for algo in algorithms:
+        color = ALGO_COLORS.get(algo, "tab:blue")
+
+        for variant in VARIANTS:  # ("mf", "pd"): dashed first, solid on top
+            histories = histories_by_variant.get(variant, {}).get(algo, [])
+            egm_returns = egm_returns_by_variant.get(variant, {}).get(algo, [])
+
+            if not histories or len(histories) != len(egm_returns):
+                continue
+
+            iqm_values, q1, q3 = _regret_curve_stats(histories, egm_returns, t_grid)
+
+            ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
+            ax.plot(t_grid, iqm_values, color=color, linewidth=1.6, linestyle=VARIANT_LINESTYLES[variant])
+
+            if algo not in drawn_algos:
+                drawn_algos.append(algo)
+            if variant not in drawn_variants:
+                drawn_variants.append(variant)
+
+    # Split legend: colours identify algorithms, line styles identify variants.
+    handles = [Line2D([0], [0], color=ALGO_COLORS.get(a, "tab:blue"), linewidth=1.6) for a in drawn_algos]
+    labels = [a.upper() for a in drawn_algos]
+    for variant in ("pd", "mf"):
+        if variant in drawn_variants:
+            handles.append(Line2D([0], [0], color="black", linewidth=1.6, linestyle=VARIANT_LINESTYLES[variant]))
+            labels.append(VARIANT_LABELS[variant])
+    if handles:
+        ax.legend(handles, labels, fontsize=9)
+
+    ax.set_xlabel("Wall-clock seconds")
+    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$", fontsize="large")
+    ax.set_yscale("log")
+    ax.set_title(
+        f"Convergence of RL policies relative to EGM: {VARIANT_LABELS['pd']} (solid) "
+        f"vs {VARIANT_LABELS['mf']} (dashed)"
+    )
+
+    plt.tight_layout()
+    ensure_parent(save_path)
+    fig.savefig(save_path, dpi=140)
+    plt.close(fig)
+
+
+def plot_training_convergence_combined(
+    histories_by_variant,
+    egm_returns_by_variant,
+    wallclock_seconds,
+    save_path,
+    *,
+    algorithms=DEFAULT_ALGORITHMS,
+    grid_step=5.0,
+):
+    """Overlay model-free (dashed) and post-decision (solid) convergence curves.
+
+    Same statistics as `plot_training_convergence` (IQM line and IQR band of the
+    EGM-normalized regret) for every algorithm and variant in one axis. Both
+    inputs map "mf" / "pd" to `{algo: [...]}`; a variant may be absent or empty.
+    """
+    t_grid = _wallclock_grid(wallclock_seconds, grid_step)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    drawn_algos, drawn_variants = [], []
+
+    for algo in algorithms:
+        color = ALGO_COLORS.get(algo, "tab:blue")
+
+        for variant in VARIANTS:  # ("mf", "pd"): dashed first, solid on top
+            histories = histories_by_variant.get(variant, {}).get(algo, [])
+            egm_returns = egm_returns_by_variant.get(variant, {}).get(algo, [])
+
+            if not histories or len(histories) != len(egm_returns):
+                continue
+
+            iqm_values, q1, q3 = _regret_curve_stats(histories, egm_returns, t_grid)
+
+            ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
+            ax.plot(t_grid, iqm_values, color=color, linewidth=1.6, linestyle=VARIANT_LINESTYLES[variant])
+
+            if algo not in drawn_algos:
+                drawn_algos.append(algo)
+            if variant not in drawn_variants:
+                drawn_variants.append(variant)
+
+    # Split legend: colours identify algorithms, line styles identify variants.
+    handles = [Line2D([0], [0], color=ALGO_COLORS.get(a, "tab:blue"), linewidth=1.6) for a in drawn_algos]
+    labels = [a.upper() for a in drawn_algos]
+    for variant in ("pd", "mf"):
+        if variant in drawn_variants:
+            handles.append(Line2D([0], [0], color="black", linewidth=1.6, linestyle=VARIANT_LINESTYLES[variant]))
+            labels.append(VARIANT_LABELS[variant])
+    if handles:
+        ax.legend(handles, labels, fontsize=9)
+
+    ax.set_xlabel("Wall-clock seconds")
+    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$", fontsize="large")
+    ax.set_yscale("log")
+    ax.set_title(
+        f"Convergence of RL policies relative to EGM: {VARIANT_LABELS['pd']} (solid) "
+        f"vs {VARIANT_LABELS['mf']} (dashed)"
+    )
 
     plt.tight_layout()
     ensure_parent(save_path)

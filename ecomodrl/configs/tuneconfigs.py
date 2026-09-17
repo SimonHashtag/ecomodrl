@@ -4,11 +4,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ecomodrl.configs.runconfigs import (
-    CassKoopmansRunConfig, 
-    BrockMirmanRunConfig, 
-    BufferStockRunConfig, 
+    CassKoopmansRunConfig,
+    BrockMirmanRunConfig,
+    BufferStockRunConfig,
     PortfolioChoiceRunConfig
 )
+from ecomodrl.configs.variants import VARIANTS
 
 # ----------------------------
 # Tune configuration
@@ -63,6 +64,9 @@ def parse_tune_args(TuneConfig: BaseTuneConfig) -> argparse.Namespace:
     p.add_argument("--algo_name", type=str, required=True,
                    choices=["ppo", "ddpg", "td3", "sac"],
                    help="RL algorithm to tune.")
+    p.add_argument("--variant", type=str, default=argparse.SUPPRESS,
+                   choices=list(VARIANTS),
+                   help="Algorithm variant: 'mf' (model-free, default) or 'pd' (post-decision).")
     p.add_argument("--total_cost", type=int, default=argparse.SUPPRESS,
                    help="DEHB total cost budget (seconds).")
     p.add_argument("--hidden_nodes", type=int, default=argparse.SUPPRESS, 

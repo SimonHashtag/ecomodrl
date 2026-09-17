@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from ecomodrl.algorithms.hyperparams import DEFAULT_HP_BY_ALGO
+from ecomodrl.configs.variants import DEFAULT_VARIANT, algo_dir_name
 
 
 def _candidate_incumbents(
     env_name: str,
     algo_name: str,
     tune_results_dir: Optional[Path],
+    variant: str = DEFAULT_VARIANT,
 ) -> Iterable[Path]:
     """Generate candidate paths for incumbent.json files to load tuned hyperparameters from.
     First, a custom tune_results_dir path is checked, then the TUNERESULTS_PATH environment variable, and finally a default relative path.
@@ -21,6 +23,7 @@ def _candidate_incumbents(
         env_name (str): _environment name, e.g. "CassKoopmans". Used to construct candidate paths.
         algo_name (str): _algorithm name, e.g. "ddpg". Used to construct candidate paths.
         tune_results_dir (Optional[Path]): If provided, this path is checked first for incumbent.json files.
+        variant (str): Algorithm variant ("mf" or "pd"); post-decision incumbents live in "<ALGO>_PD".
 
     Returns:
         Iterable[Path]: An iterable of candidate paths to incumbent.json files, in order of preference.
@@ -44,7 +47,7 @@ def _candidate_incumbents(
         if key in seen:
             continue
         seen.add(key)
-        yield base / algo_name.upper() / "incumbent.json"
+        yield base / algo_dir_name(algo_name, variant) / "incumbent.json"
         yield base / "incumbent.json"
 
 
@@ -54,20 +57,23 @@ def load_tuned_hp(
     algo_name: str,
     tune_results_dir: Optional[Path] = None,
     logger: Optional[logging.Logger] = None,
+    variant: str = DEFAULT_VARIANT,
 ) -> Dict[str, Any]:
-    """Load a set of tuned hyperparameters. 
+    """Load a set of tuned hyperparameters.
 
     Args:
         env_name (str): _environment name, e.g. "CassKoopmans". Used to construct candidate paths.
         algo_name (str): _algorithm name, e.g. "ddpg". Used to construct candidate paths.
         tune_results_dir (Optional[Path], optional): If provided, this path is checked first for incumbent.json files. Defaults to None.
         logger (Optional[logging.Logger], optional): Logger instance for logging messages. Defaults to None.
+        variant (str): Algorithm variant ("mf" or "pd"); selects the "<ALGO>" or "<ALGO>_PD" incumbent.
 
     Raises:
         ValueError: If algo_name is not supported.
 
     Returns:
         Dict[str, Any]: A dictionary of hyperparameters loaded from the incumbent.json file, or default hyperparameters if no file is found or an error occurs.
+        A loaded config is merged over the defaults, so hyperparameters added after the tuning run fall back to their default value.
     """
     logger = logger or logging.getLogger(__name__)
     algo_key = algo_name.strip().lower()
@@ -76,7 +82,7 @@ def load_tuned_hp(
         raise ValueError(f"Unsupported algo_name: {algo_name}")
 
     path = next(
-        (p for p in _candidate_incumbents(env_name, algo_key, tune_results_dir) if p.exists()),
+        (p for p in _candidate_incumbents(env_name, algo_key, tune_results_dir, variant) if p.exists()),
         None,
     )
     if path is None:
@@ -105,10 +111,10 @@ def load_tuned_hp(
             logger.info(
                 "Loaded tuned hyperparameters for %s/%s from %s.",
                 env_name,
-                algo_key,
+                algo_dir_name(algo_key, variant),
                 path,
             )
-            return dict(config)
+            return {**defaults, **dict(config)}
 
     logger.warning(
         "incumbent.json at %s does not contain a config mapping. Using defaults.",

@@ -16,13 +16,24 @@ import json
 import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import replace
 import multiprocessing as mp
 from pathlib import Path
 from typing import Any, Mapping, Union
 
 import numpy as np
 
-from ecomodrl.algorithms.training import ALGO_REGISTRY
+from ecomodrl.algorithms.training import loaded_model_variant, resolve_algo_class
+from ecomodrl.configs.variants import (
+    COMBINED_FIGURE_DIR_NAME,
+    COMBINED_VARIANT,
+    DEFAULT_VARIANT,
+    VARIANTS,
+    VARIANT_LABELS,
+    algo_dir_name,
+    enforce_variant_constraints,
+    figure_dir_name,
+)
 from ecomodrl.analysis.policy_interface import EGMPolicy, RLPolicy
 from ecomodrl.analysis import accuracy_metrics
 from ecomodrl.analysis.efficiency_metrics import (
@@ -35,7 +46,9 @@ from ecomodrl.analysis.plotting import (
     plot_policy_distribution,
     plot_cev_distribution,
     plot_euler_error_distribution,
+    plot_euler_error_distribution_combined,
     plot_training_convergence,
+    plot_training_convergence_combined,
     plot_portfolio_share_heatmaps,
     plot_portfolio_share_diff_heatmaps,
     plot_portfolio_share_slices,
@@ -55,9 +68,31 @@ def model_results_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
     return Path(cfg.out_dir) / cfg.model_name
 
 
+def _variant(cfg: Union[Mapping[str, Any], Any]) -> str:
+    """Algorithm variant of the analysis ("mf" | "pd"); selects the *_PD directories."""
+    return getattr(cfg, "variant", DEFAULT_VARIANT)
+
+
+def _load_checkpoint(cfg: Union[Mapping[str, Any], Any], algo: str, model_path: Path, **load_kwargs):
+    """Load one SB3 checkpoint with the class of the configured variant and verify the variant."""
+    sb3_model = resolve_algo_class(algo, _variant(cfg)).load(str(model_path), **load_kwargs)
+    found = loaded_model_variant(sb3_model)
+    if found != _variant(cfg):
+        raise RuntimeError(
+            f"{model_path} was trained with variant {found!r} but the analysis runs with "
+            f"variant {_variant(cfg)!r}; pass --variant {found}."
+        )
+    return sb3_model
+
+
 def figure_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
-    """Directory for figures and tables."""
-    return model_results_dir(cfg) / "figures"
+    """Directory for figures and tables ("figures" or "figures_PD")."""
+    return model_results_dir(cfg) / figure_dir_name(_variant(cfg))
+
+
+def combined_figure_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
+    """Directory for figures overlaying both variants ("figures_combined"); variant-independent."""
+    return model_results_dir(cfg) / COMBINED_FIGURE_DIR_NAME
 
 
 def egm_analysis_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
@@ -80,9 +115,10 @@ def checkpoint_dir(
 ) -> Path:
     """Directory containing one trained RL checkpoint.
 
-    Training code writes algorithm names in uppercase directories.
+    Training code writes algorithm names in uppercase directories, with a
+    "_PD" suffix for the post-decision variant.
     """
-    return model_results_dir(cfg) / algo.upper() / f"seed_{int(train_seed)}"
+    return model_results_dir(cfg) / algo_dir_name(algo, _variant(cfg)) / f"seed_{int(train_seed)}"
 
 
 def analysis_result_dir(
@@ -130,8 +166,8 @@ def algorithm_summary_path(
     cfg: Union[Mapping[str, Any], Any], 
     algo: str,
 ) -> Path:
-    """Summary path for one algorithm and one economic model."""
-    return model_results_dir(cfg) / algo.upper() / "analysis_summary.json"
+    """Summary path for one algorithm (and variant) and one economic model."""
+    return model_results_dir(cfg) / algo_dir_name(algo, _variant(cfg)) / "analysis_summary.json"
 
 
 # =============================================================================
@@ -293,13 +329,10 @@ def load_rl_policy(
             )
 
         vecnormalize = cfg.load_vecnormalize(vecnorm_path, seed=train_seed)
-        sb3_model = ALGO_REGISTRY[algo].load(
-            str(model_path),
-            env=vecnormalize,
-        )
+        sb3_model = _load_checkpoint(cfg, algo, model_path, env=vecnormalize)
 
     else:
-        sb3_model = ALGO_REGISTRY[algo].load(str(model_path))
+        sb3_model = _load_checkpoint(cfg, algo, model_path)
 
     return RLPolicy(
         sb3_model=sb3_model,
@@ -316,8 +349,7 @@ def _make_FLOPs_measurement_model(cfg: Union[Mapping[str, Any], Any], algo: str)
         model_path = checkpoint_dir(cfg, algo, seed) / "model.zip"
         if model_path.exists():
             env = cfg.make_unnormalized_vecenv(seed)
-            model = ALGO_REGISTRY[algo].load(str(model_path), env=env)
-            return model
+            return _load_checkpoint(cfg, algo, model_path, env=env)
 
     raise FileNotFoundError(f"No checkpoint found to measure FLOPs for algo={algo!r}")
 
@@ -737,6 +769,7 @@ def summarize_algorithm(
     summary = {
         "model": cfg.model_name,
         "algorithm": algo,
+        "variant": _variant(cfg),
         "n_cells": int(n_cells),
     }
 
@@ -875,7 +908,7 @@ def complexity_summary(
 
 def run_testing(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Run numerical post-training analysis."""
-    print(f"\n========== Analysis: {cfg.model_name} ==========")
+    print(f"\n========== Analysis: {cfg.model_name} ({_variant(cfg)}) ==========")
     print(f"Algorithms: {', '.join(cfg.algorithms)}")
 
     check_required_checkpoints(cfg)
@@ -966,7 +999,7 @@ def load_training_history(seed_dir: Path):
 
 def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Create figures and LaTeX tables from saved analysis output."""
-    print(f"\n========== Figures: {cfg.model_name} ==========")
+    print(f"\n========== Figures: {cfg.model_name} ({_variant(cfg)}) ==========")
 
     economic_model, _ = solve_egm_model(cfg)
     egm_policy = EGMPolicy(economic_model)
@@ -1179,8 +1212,159 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     print(f"[figures] saved -> {out}")
 
 
+# =============================================================================
+# Combined mf-vs-pd figures
+# =============================================================================
+
+def load_variant_figure_inputs(
+    cfg: Union[Mapping[str, Any], Any],
+    economic_model: Any,
+) -> dict:
+    """Inputs of the combined figures for one variant, read from saved analysis output.
+
+    `cfg` must be the per-variant config (variant "mf" or "pd"). Loads no
+    checkpoints and never raises. Returns a dict with
+        histories   : {algo: [history dict]}      (load_training_history)
+        egm_returns : {algo: [float]}             aligned with histories via train_egm_returns.json
+        euler       : {algo: [1-D log10 arrays]}  same selection rule as run_plots_and_tables
+        skipped     : [(algo, seed, what)]        units that could not be read
+        n_units     : number of histories and Euler arrays found
+    """
+    deterministic = is_deterministic_one_state(economic_model)
+    active_test_seeds = effective_test_seeds(cfg, economic_model)
+
+    histories = {algo: [] for algo in cfg.algorithms}
+    history_seeds = {algo: [] for algo in cfg.algorithms}
+    euler = {algo: [] for algo in cfg.algorithms}
+    skipped: list[tuple[str, int, str]] = []
+
+    for algo in cfg.algorithms:
+        for seed in cfg.seeds:
+            seed_dir = checkpoint_dir(cfg, algo, seed)
+
+            # Same seed selection as run_plots_and_tables, which skips seeds
+            # whose checkpoint cannot be loaded.
+            if not (seed_dir / "model.zip").exists():
+                skipped.append((algo, seed, "model.zip"))
+                continue
+
+            hist = load_training_history(seed_dir)
+            if hist is not None:
+                histories[algo].append(hist)
+                history_seeds[algo].append(seed)
+            else:
+                skipped.append((algo, seed, "eval_history.npz"))
+
+            eulers = read_npz_dict(euler_errors_path(cfg, algo, seed))
+            n_found = 0
+            for test_seed in active_test_seeds:
+                key = f"seed_{test_seed}"
+                if key in eulers:
+                    euler[algo].append(eulers[key])
+                    n_found += 1
+                    if deterministic:
+                        break
+            if n_found == 0:
+                skipped.append((algo, seed, "analysis/euler_errors.npz"))
+
+    train_egm_returns = {
+        int(k): float(v)
+        for k, v in read_json(egm_analysis_dir(cfg) / "train_egm_returns.json", {}).items()
+    }
+
+    egm_returns = {
+        algo: [train_egm_returns.get(seed, np.nan) for seed in history_seeds[algo]]
+        for algo in cfg.algorithms
+    }
+
+    n_units = sum(len(v) for v in histories.values()) + sum(len(v) for v in euler.values())
+
+    return {
+        "histories": histories,
+        "egm_returns": egm_returns,
+        "euler": euler,
+        "skipped": skipped,
+        "n_units": n_units,
+    }
+
+
+def run_combined_figures(cfg: Union[Mapping[str, Any], Any]) -> None:
+    """Write <Env>/figures_combined/{euler_errors,convergence}.pdf overlaying mf and pd.
+
+    Reads the per-variant analysis output of both variants; runs no testing and
+    loads no checkpoints. Missing units are skipped with a message, a missing
+    variant is skipped with a warning.
+    """
+    labels = " vs ".join(VARIANT_LABELS[v] for v in VARIANTS)
+    print(f"\n========== Combined figures: {cfg.model_name} ({labels}) ==========")
+
+    economic_model = cfg.make_economic_model()
+    deterministic = is_deterministic_one_state(economic_model)
+
+    egm_returns_path = egm_analysis_dir(cfg) / "train_egm_returns.json"
+    if not egm_returns_path.exists():
+        print(
+            f"[combined] WARNING: {egm_returns_path} is missing; convergence curves will be "
+            "empty (run the per-variant analysis first)."
+        )
+
+    inputs = {}
+    for variant in VARIANTS:
+        cfg_v = enforce_variant_constraints(replace(cfg, variant=variant))
+        data = load_variant_figure_inputs(cfg_v, economic_model)
+        label = VARIANT_LABELS[variant]
+
+        for algo, seed, what in data["skipped"]:
+            print(f"[combined] {label}: skipped {algo.upper()} seed={seed} (missing {what})")
+
+        if data["n_units"] == 0:
+            print(
+                f"[combined] WARNING: no {label} results under {model_results_dir(cfg)} "
+                f"({algo_dir_name('<ALGO>', variant)}/seed_*/); drawing the other variant only."
+            )
+            continue
+
+        inputs[variant] = data
+
+    if not inputs:
+        print(
+            f"[combined] WARNING: nothing to plot for {cfg.model_name}; "
+            "run --variant mf and --variant pd first."
+        )
+        return
+
+    out = combined_figure_dir(cfg)
+
+    plot_euler_error_distribution_combined(
+        economic_model,
+        {variant: data["euler"] for variant, data in inputs.items()},
+        out / "euler_errors.pdf",
+        deterministic,
+        algorithms=cfg.algorithms,
+    )
+
+    plot_training_convergence_combined(
+        {variant: data["histories"] for variant, data in inputs.items()},
+        {variant: data["egm_returns"] for variant, data in inputs.items()},
+        cfg.max_wallclock_seconds,
+        out / "convergence.pdf",
+        algorithms=cfg.algorithms,
+        grid_step=cfg.eval_interval_seconds,
+    )
+
+    print(f"[figures] saved -> {out}")
+
+
+# =============================================================================
+# Entry point
+# =============================================================================
+
 def run_analysis(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Run requested analysis stages."""
+    if _variant(cfg) == COMBINED_VARIANT:
+        run_combined_figures(cfg)
+        return
+
     if cfg.run_testing:
         run_testing(cfg)
 
