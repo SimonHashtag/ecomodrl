@@ -123,7 +123,7 @@ def visited_states_path(
     algo: str, 
     train_seed: int,
 ) -> Path:
-    return analysis_result_dir(cfg, algo, train_seed) / "visited_m.npz"
+    return analysis_result_dir(cfg, algo, train_seed) / "visited_states.npz"
 
 
 def algorithm_summary_path(
@@ -402,6 +402,7 @@ def cache_egm_value_grid(
     grid, V = accuracy_metrics.policy_value_on_grid(
         economic_model, 
         egm_policy,
+        tol=1e-5,
     )
     save_value_grid(path, grid, V)
 
@@ -556,7 +557,7 @@ def analyze_policy_checkpoint(
     # 1. Grid Bellman value for CEV maps.
     vg_path = value_grid_path(cfg, algo, train_seed)
     if cfg.overwrite or not vg_path.exists():
-        grid, V = accuracy_metrics.policy_value_on_grid(economic_model, policy)
+        grid, V = accuracy_metrics.policy_value_on_grid(economic_model, policy, tol=1e-5)
         save_value_grid(vg_path, grid, V)
 
     rl_axes, V_rl_grid = load_value_grid(vg_path)
@@ -586,12 +587,23 @@ def analyze_policy_checkpoint(
 
         states_full = None
         if need_values or need_visited:
-            states_full = accuracy_metrics.simulate_states(
-                economic_model,
-                policy,
-                n_sim=cfg.euler_n_states,
-                seed=test_seed,
+            states_full = np.asarray(
+                accuracy_metrics.simulate_states(
+                    economic_model,
+                    policy,
+                    n_sim=cfg.euler_n_states,
+                    seed=test_seed,
+                ),
+                dtype=np.float64,
             )
+            if (
+                states_full.ndim != 2
+                or states_full.shape[1] != economic_model.state_dim
+            ):
+                raise ValueError(
+                    "Simulated visited states must have shape "
+                    f"(n, {economic_model.state_dim}); got {states_full.shape}."
+                )
 
         if need_values:
             u_rl = float(
@@ -625,7 +637,7 @@ def analyze_policy_checkpoint(
             changed_eulers = True
 
         if need_visited:
-            visited[array_key] = np.asarray(states_full, dtype=np.float64)
+            visited[array_key] = states_full
             changed_visited = True
 
     if changed_values:
@@ -1019,15 +1031,19 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         for algo in cfg.algorithms
     }
 
-    pooled_visited = {}
+    pooled_visited_states = {}
     for algo, arrays in visited_pools.items():
         if not arrays:
             continue
-        ms = [
-            (np.asarray(x)[..., 0] if np.asarray(x).ndim > 1 else np.asarray(x)).ravel()
-            for x in arrays
-        ]
-        pooled_visited[algo] = np.concatenate(ms)
+        pooled_visited_states[algo] = np.concatenate(
+            [np.asarray(x, dtype=np.float64) for x in arrays],
+            axis=0,
+        )
+
+    pooled_visited_m = {
+        algo: states[:, 0]
+        for algo, states in pooled_visited_states.items()
+    }
 
     out = figure_dir(cfg)
 
@@ -1046,7 +1062,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         rl_value_grids,
         out / "cev.pdf",
         algorithms=cfg.algorithms,
-        visited_m=pooled_visited,
+        visited_m=pooled_visited_m,
         support_quantiles=(0.1, 99.9),
     )
 
@@ -1075,6 +1091,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             rl_policies,
             out / "portfolio_share_diff.pdf",
             algorithms=cfg.algorithms,
+            states=pooled_visited_states,
         )
 
         plot_portfolio_share_slices(
