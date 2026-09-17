@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from ecomodrl.envs.envs import obs_from_state
 
 # ==============================================================================
 # Vecnormalize utilities
@@ -190,7 +189,7 @@ class RLPolicy:
         flat_shape = state_arr.shape[:-1]
         state_flat = state_arr.reshape(-1, state_arr.shape[-1])
 
-        obs = obs_from_state(state_flat, self.model)
+        obs = self.model.obs_from_state(state_flat)
         obs = self._normalize_obs(obs)
 
         actions, _ = self.sb3_model.predict(obs, deterministic=True)

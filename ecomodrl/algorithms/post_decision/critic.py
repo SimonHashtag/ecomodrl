@@ -11,9 +11,9 @@
 # so the stored reward, next observation and done flag of a transition are not
 # used (infinite horizon; TimeLimit truncations are not terminations).
 #
-# All economics come from the EconomicModel itself (`PDEconomics` is a thin
-# adapter): utility, action map and post-decision features run through the
-# model's backend-generic methods on torch tensors (differentiable in the
+# All economics come from the EconomicModel itself (PostDecisionAdapter is a
+# thin adapter): utility, action map and post-decision features run through the
+# model's array-operation methods on torch tensors (differentiable in the
 # action); the next states at the quadrature nodes are computed in numpy with
 # the model's own `transition()` (no autograd needed there).
 # -----------------------------------------------------------------------------
@@ -27,11 +27,20 @@ from torch import nn
 from stable_baselines3.common.policies import BaseModel
 from stable_baselines3.common.torch_layers import create_mlp
 
-from ecomodrl.envs.envs import EPS, obs_from_state
-from ecomodrl.models import model_from_pd_spec
+from ecomodrl.envs.envs import EPS
+from ecomodrl.models import ModelSpec, model_from_spec
+
+_MAX_EXPANDED_TARGET_ROWS = 2**16
 
 
-class PDEconomics:
+def quadrature_batch_size(n_nodes: int) -> int:
+    """Maximum source observations per bounded quadrature target pass."""
+    if n_nodes < 1:
+        raise ValueError("n_nodes must be at least one.")
+    return max(1, _MAX_EXPANDED_TARGET_ROWS // n_nodes)
+
+
+class PostDecisionAdapter:
     """Adapter between the torch critics and the economic model.
 
     Plain object (not an nn.Module): the policies assign it before
@@ -89,16 +98,17 @@ class PDEconomics:
         controls["consumption"] = np.maximum(controls["consumption"], EPS)
 
         next_state, _ = self.model.quadrature_next_states(state, controls)
-        next_obs = obs_from_state(next_state, self.model)
+        next_obs = self.model.obs_from_state(next_state)
 
         return th.as_tensor(next_obs, device=obs.device), self.weights(obs.device)
 
 
-def make_economics(pd_spec: dict) -> PDEconomics:
-    """Rebuild the economic model from `pd_spec` (see ecomodrl.models.make_pd_spec)."""
-    if pd_spec is None:
-        raise ValueError("A post-decision spec is required (ecomodrl.models.make_pd_spec).")
-    return PDEconomics(model_from_pd_spec(pd_spec), pd_spec["reward_floor"])
+def make_post_decision_adapter(
+    model_spec: ModelSpec,
+    reward_floor: float,
+) -> PostDecisionAdapter:
+    """Rebuild the economic model and wrap its post-decision operations."""
+    return PostDecisionAdapter(model_from_spec(model_spec), reward_floor)
 
 
 class PostDecisionCritic(BaseModel):
@@ -115,7 +125,7 @@ class PostDecisionCritic(BaseModel):
         normalize_images=True,
         n_critics=2,
         share_features_extractor=True,
-        econ: PDEconomics | None = None,
+        econ: PostDecisionAdapter | None = None,
     ):
         super().__init__(
             observation_space,
@@ -124,7 +134,7 @@ class PostDecisionCritic(BaseModel):
             normalize_images=normalize_images,
         )
         if econ is None:
-            raise ValueError("PostDecisionCritic needs `econ` (PDEconomics).")
+            raise ValueError("PostDecisionCritic needs a PostDecisionAdapter.")
         self.share_features_extractor = share_features_extractor
         self.n_critics = n_critics
         self.econ = econ
@@ -146,7 +156,7 @@ class PostDecisionCritic(BaseModel):
 
 
 def quadrature_target(
-    econ: PDEconomics,
+    econ: PostDecisionAdapter,
     critic_target,
     obs: th.Tensor,
     actions: th.Tensor,
@@ -163,16 +173,22 @@ def quadrature_target(
     c, _ = econ.controls(obs, actions)
     u = econ.utility(c)
 
-    next_obs, weights = econ.next_obs(obs, actions)  # (B, K, D), (K,)
-    B, K, D = next_obs.shape
-    flat = next_obs.reshape(B * K, D)
+    rows_per_chunk = quadrature_batch_size(econ.n_nodes)
+    expected_values = []
+    for start in range(0, obs.shape[0], rows_per_chunk):
+        stop = min(start + rows_per_chunk, obs.shape[0])
+        next_obs, weights = econ.next_obs(obs[start:stop], actions[start:stop])
+        B, K, D = next_obs.shape
+        flat = next_obs.reshape(B * K, D)
 
-    a_next, logp = next_action_fn(flat)
-    q_next = th.cat(critic_target(flat, a_next), dim=1)
-    q_next, _ = th.min(q_next, dim=1, keepdim=True)
-    if ent_coef is not None and logp is not None:
-        q_next = q_next - ent_coef * logp.reshape(-1, 1)
+        a_next, logp = next_action_fn(flat)
+        q_next = th.cat(critic_target(flat, a_next), dim=1)
+        q_next, _ = th.min(q_next, dim=1, keepdim=True)
+        if ent_coef is not None and logp is not None:
+            q_next = q_next - ent_coef * logp.reshape(-1, 1)
 
-    q_next = q_next.reshape(B, K)
-    ev = (q_next * weights[None, :]).sum(dim=1, keepdim=True)
+        q_next = q_next.reshape(B, K)
+        expected_values.append((q_next * weights[None, :]).sum(dim=1, keepdim=True))
+
+    ev = th.cat(expected_values, dim=0)
     return u + gamma * ev

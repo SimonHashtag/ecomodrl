@@ -1,8 +1,8 @@
 # -----------------------------------------------------------------------------
-# Minimal numpy / torch backend shim for the economic models.
+# Minimal NumPy / Torch operation adapter for the economic models.
 #
 # The post-decision critics (ecomodrl/algorithms/post_decision) need a few model
-# methods (utility, controls_from_action, state_from_obs, post_decision_features)
+# methods (utility, controls_from_action, state transforms, post-decision features)
 # to be differentiable in torch. Instead of re-implementing the economics in
 # torch, those methods are written once against the small op table below and
 # dispatch on the input type:
@@ -31,7 +31,7 @@ def is_tensor(x) -> bool:
 
 
 class _NumpyOps:
-    """Numpy backend: every entry is the exact numpy call the models use."""
+    """NumPy implementation of the shared operation table."""
 
     @staticmethod
     def asarray(x, dtype=None):
@@ -79,7 +79,7 @@ class _NumpyOps:
 
 
 class _TorchOps:
-    """Torch backend: float64 throughout, all ops differentiable."""
+    """Torch implementation of the shared operation table, using float64."""
 
     @staticmethod
     def asarray(x, dtype=None):

@@ -7,7 +7,7 @@ from ecomodrl.configs.parameters import (
 )
 from ecomodrl.models.casskoopmans import EconomicModel
 from ecomodrl.models.base_model import gauss_hermite_nodes
-from ecomodrl.models.backend import ops as _ops
+from ecomodrl.models.array_ops import ops as _ops
 
 
 class BufferStock(EconomicModel):
@@ -55,6 +55,12 @@ class BufferStock(EconomicModel):
 
         self.m_next, self.perm_next = self._transition_arrays(self.a_grid)
         self.x_next = None
+
+    def model_spec_kwargs(self):
+        return {
+            "m_grid_size": self.m_grid_size,
+            "m_max": float(self.m_grid[-1]),
+        }
 
     @property
     def beta_eff(self):

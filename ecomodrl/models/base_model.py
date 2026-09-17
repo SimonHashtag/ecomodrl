@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
-from ecomodrl.models.backend import ops as _ops
+from ecomodrl.models.array_ops import ops as _ops
 
 
 
@@ -83,6 +83,10 @@ class EconomicModel(ABC):
 
         self.m_ref: float = 1.0
 
+    def model_spec_kwargs(self) -> dict[str, Any]:
+        """Behavior-affecting constructor kwargs stored in ModelSpec."""
+        return {}
+
     @property
     def exogenous_grids(self) -> tuple[np.ndarray, ...]:
         """Tuple of exogenous state grids. Empty for one-state models."""
@@ -131,7 +135,7 @@ class EconomicModel(ABC):
     # ------------------------------------------------------------------
 
     def utility(self, c):
-        """CRRA utility. Accepts numpy arrays or torch tensors (see backend.py)."""
+        """CRRA utility. Accepts NumPy arrays or Torch tensors (see array_ops.py)."""
         xp = _ops(c)
         c = xp.asarray(c)
         if self.params.gamma == 1.0:
@@ -249,7 +253,7 @@ class EconomicModel(ABC):
     def controls_from_action(self, action, state=None) -> dict[str, np.ndarray]:
         """Map Gym action in [-1, 1] to consumption.
 
-        Accepts numpy arrays or torch tensors (see backend.py); the torch path
+        Accepts numpy arrays or torch tensors (see array_ops.py); the torch path
         is differentiable in `action`.
         """
         xp = _ops(action)
@@ -267,11 +271,29 @@ class EconomicModel(ABC):
 
         return out
 
+    def obs_from_state(self, state):
+        """Map raw state to the default log Gym observation.
+
+        Accepts NumPy arrays or Torch tensors. Models with non-positive
+        exogenous states override this together with state_from_obs.
+        """
+        xp = _ops(state)
+        state = xp.asarray(state, dtype=np.float64)
+
+        m = xp.maximum(state[..., 0], 1e-8)
+        m_obs = xp.log(m / max(float(self.m_ref), 1e-8))
+
+        if self.exogenous_dim == 0:
+            return m_obs[..., None]
+
+        x_obs = xp.log(xp.maximum(state[..., 1:], 1e-8))
+        return xp.concatenate([m_obs[..., None], x_obs], axis=-1)
+
     def state_from_obs(self, obs):
-        """Inverse of `ecomodrl.envs.envs.obs_from_state` (numpy or torch).
+        """Inverse of obs_from_state for NumPy arrays or Torch tensors.
 
         obs = (log(m / m_ref), log(x1), ..., log(xd)); the 1e-8 floor is the
-        environment's EPS.
+        model's observation floor.
         """
         xp = _ops(obs)
         obs = xp.asarray(obs, dtype=np.float64)

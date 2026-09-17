@@ -14,7 +14,7 @@ dependencies:
   - pip:
       - dehb
       - torch
-      - stable-baselines3
+      - stable-baselines3==2.7.0
 platforms:
   #- linux-64
   #- osx-64

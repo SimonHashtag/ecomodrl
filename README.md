@@ -50,7 +50,7 @@ ecomodrl/
   configs/       # model calibrations + run/tune/analysis configs (CLI), variants.py (mf/pd naming)
   envs/          # Gymnasium environments + vectorized env setup
   experiments/   # training entry points (one per model) + analyze_experiments.py
-  models/        # economic models (numpy/torch-generic core, backend.py), benchmark solvers, theory notebooks
+  models/        # economic models, NumPy/Torch array_ops.py, ModelSpec serialization, benchmark solvers
   tune/          # DEHB hyperparameter tuning CLI, target function, entry points, tuned-hyperparameter loading
 ```
 
@@ -110,7 +110,7 @@ python -m ecomodrl.experiments.casskoopmans --algo_name ppo --variant pd --n_see
 python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_name ppo --variant pd --n_seeds 4
 ```
 
-To compare both variants in one figure, run the analysis a third time with `--variant both`. This stage runs no testing and loads no checkpoints; it reads the existing per-variant outputs (`eval_history.npz`, `analysis/euler_errors.npz`) and the shared `egm_analysis/` cache and writes `runs/CassKoopmans/figures_combined/euler_errors.pdf` and `convergence.pdf` (post-decision in colour / solid, model-free in grey / dashed). Missing seeds or a missing variant are skipped with a warning.
+To compare both variants in one figure, run the analysis a third time with `--variant both`. This stage runs no testing and loads no checkpoints; it reads the existing per-variant outputs (`eval_history.npz`, `analysis/euler_errors.npz`) and the shared `egm_analysis/` cache and writes `runs/CassKoopmans/figures_combined/euler_errors.pdf` and `convergence.pdf` (post-decision in colour / solid, model-free in grey / dashed).
 
 ```
 python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_name ppo --variant both --n_seeds 4
@@ -134,8 +134,8 @@ The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipel
 
 ## Extending to new models
 
-1. Implement the model as an `EconomicModel` subclass in [ecomodrl/models/](ecomodrl/models/) (see [base_model.py](ecomodrl/models/base_model.py)) and add a Gymnasium environment in [ecomodrl/envs/envs.py](ecomodrl/envs/envs.py). Write `utility` and `controls_from_action` against the op table in [models/backend.py](ecomodrl/models/backend.py) (`xp = ops(x)`), so they accept numpy arrays and torch tensors alike.
-2. For the post-decision variant, implement `post_decision_dim`, `post_decision_features(state, controls)` (the inputs of the continuation network W) and `quadrature_shocks()` (nodes and weights in the same shock layout that `sample_shocks()` produces, so the base class can reuse `transition()`); override `state_from_obs` only if the model overrides `obs_from_state`. Register the class in [models/registry.py](ecomodrl/models/registry.py).
+1. Implement the model as an `EconomicModel` subclass in [ecomodrl/models/](ecomodrl/models/) (see [base_model.py](ecomodrl/models/base_model.py)) and add a Gymnasium environment in [ecomodrl/envs/envs.py](ecomodrl/envs/envs.py). Write `utility` and `controls_from_action` against the op table in [models/array_ops.py](ecomodrl/models/array_ops.py) (`xp = ops(x)`), so they accept NumPy arrays and Torch tensors alike. Override both `obs_from_state` and `state_from_obs` when the default log transform is unsuitable.
+2. For the post-decision variant, implement `post_decision_dim`, `post_decision_features(state, controls)` (the inputs of the continuation network W) and `quadrature_shocks()` (nodes and weights in the same shock layout that `sample_shocks()` produces, so the base class can reuse `transition()`). Implement `model_spec_kwargs()` for behavior-affecting constructor options that are not part of the calibration dataclass, and register the class in [models/model_spec.py](ecomodrl/models/model_spec.py).
 3. Add a calibration dataclass in [ecomodrl/configs/parameters.py](ecomodrl/configs/parameters.py) and run/tune/analysis configs in [ecomodrl/configs/](ecomodrl/configs/).
 4. Add entry points mirroring [experiments/casskoopmans.py](ecomodrl/experiments/casskoopmans.py) and [tune/casskoopmans.py](ecomodrl/tune/casskoopmans.py) (each ~7 lines), and register the model in [analyze_experiments.py](ecomodrl/experiments/analyze_experiments.py).
 

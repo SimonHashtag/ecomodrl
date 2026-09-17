@@ -4,6 +4,6 @@ numpy
 numba
 tensorboard
 torch
-stable_baselines3
+stable-baselines3==2.7.0
 ConfigSpace
 dehb

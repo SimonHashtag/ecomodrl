@@ -727,7 +727,8 @@ def plot_portfolio_share_diff_heatmaps(
         ax.set_xlabel(r"Cash-on-hand $m$")
         ax.set_ylabel(r"Predictor $x_{" + str(asset_index) + r"}$")
 
-        if states is not None:
+        algo_states = states.get(algo) if states else None
+        if algo_states is not None and len(algo_states):
             drawn_hdrs = _plot_state_hdr_contours(
                 ax,
                 states[algo],
@@ -1077,17 +1078,14 @@ def _regret_curve_stats(histories, egm_returns, t_grid):
     )
 
     reg_norm = normalized_regret(egm_returns, rl_returns)
-    iqm_values = iqm(reg_norm, axis=0)
-    q1, q3 = np.nanpercentile(reg_norm, [25, 75], axis=0)
-    return iqm_values, q1, q3
+    return iqm_and_iqr(reg_norm)
 
 
 def _deterministic_euler_curve(model, arrays):
     """Grid, IQM and IQR band (q1, q3) of Euler errors over the deterministic test grid."""
     min_len = min(len(a) for a in arrays)
     stack = np.stack([np.asarray(a[:min_len], dtype=np.float64) for a in arrays], axis=0)
-    iqm_values = iqm(stack, axis=0)
-    q1, q3 = np.nanpercentile(stack, [25, 75], axis=0)
+    iqm_values, q1, q3 = iqm_and_iqr(stack)
 
     x = model.log_grid(model.m_grid[0], model.m_grid[-1], min_len)
     return x, iqm_values, q1, q3
@@ -1343,71 +1341,6 @@ def plot_training_convergence(
     ax.set_yscale("log")
     ax.set_title("Convergence of RL policies relative to EGM")
     ax.legend(fontsize=9)
-
-    plt.tight_layout()
-    ensure_parent(save_path)
-    fig.savefig(save_path, dpi=140)
-    plt.close(fig)
-
-
-def plot_training_convergence_combined(
-    histories_by_variant,
-    egm_returns_by_variant,
-    wallclock_seconds,
-    save_path,
-    *,
-    algorithms=DEFAULT_ALGORITHMS,
-    grid_step=5.0,
-):
-    """Overlay model-free (dashed) and post-decision (solid) convergence curves.
-
-    Same statistics as `plot_training_convergence` (IQM line and IQR band of the
-    EGM-normalized regret) for every algorithm and variant in one axis. Both
-    inputs map "mf" / "pd" to `{algo: [...]}`; a variant may be absent or empty.
-    """
-    t_grid = _wallclock_grid(wallclock_seconds, grid_step)
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-
-    drawn_algos, drawn_variants = [], []
-
-    for algo in algorithms:
-        color = ALGO_COLORS.get(algo, "tab:blue")
-
-        for variant in VARIANTS:  # ("mf", "pd"): dashed first, solid on top
-            histories = histories_by_variant.get(variant, {}).get(algo, [])
-            egm_returns = egm_returns_by_variant.get(variant, {}).get(algo, [])
-
-            if not histories or len(histories) != len(egm_returns):
-                continue
-
-            iqm_values, q1, q3 = _regret_curve_stats(histories, egm_returns, t_grid)
-
-            ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
-            ax.plot(t_grid, iqm_values, color=color, linewidth=1.6, linestyle=VARIANT_LINESTYLES[variant])
-
-            if algo not in drawn_algos:
-                drawn_algos.append(algo)
-            if variant not in drawn_variants:
-                drawn_variants.append(variant)
-
-    # Split legend: colours identify algorithms, line styles identify variants.
-    handles = [Line2D([0], [0], color=ALGO_COLORS.get(a, "tab:blue"), linewidth=1.6) for a in drawn_algos]
-    labels = [a.upper() for a in drawn_algos]
-    for variant in ("pd", "mf"):
-        if variant in drawn_variants:
-            handles.append(Line2D([0], [0], color="black", linewidth=1.6, linestyle=VARIANT_LINESTYLES[variant]))
-            labels.append(VARIANT_LABELS[variant])
-    if handles:
-        ax.legend(handles, labels, fontsize=9)
-
-    ax.set_xlabel("Wall-clock seconds")
-    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$", fontsize="large")
-    ax.set_yscale("log")
-    ax.set_title(
-        f"Convergence of RL policies relative to EGM: {VARIANT_LABELS['pd']} (solid) "
-        f"vs {VARIANT_LABELS['mf']} (dashed)"
-    )
 
     plt.tight_layout()
     ensure_parent(save_path)

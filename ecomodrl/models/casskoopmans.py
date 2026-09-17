@@ -6,7 +6,7 @@ from ecomodrl.configs.parameters import (
     CassKoopmansParams,
 )
 from ecomodrl.models.base_model import EconomicModel
-from ecomodrl.models.backend import ops as _ops
+from ecomodrl.models.array_ops import ops as _ops
 
 class CassKoopmans(EconomicModel):
     """Deterministic Cass-Koopmans growth model."""
@@ -34,6 +34,9 @@ class CassKoopmans(EconomicModel):
         self.m_next = self.cash_on_hand(self.a_grid)
         self.x_next = None
         self.R_next = self.gross_interest_rate(self.a_grid)
+
+    def model_spec_kwargs(self):
+        return {"grid_size": self.grid_size}
 
     @property
     def k_steady(self):

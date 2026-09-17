@@ -12,8 +12,6 @@
 # State convention:
 #     state = (m, x1, ..., xd)
 #
-# Observation convention:
-#     obs = (log(m / m_ref), log(x1), ..., log(xd))
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -27,36 +25,6 @@ from ecomodrl.models import CassKoopmans, BrockMirman, BufferStock, PortfolioCho
 
 
 EPS = 1e-8
-
-
-def obs_from_state(state, model):
-    """Map raw economic state to Gym observation.
-
-    Arguments
-    ----------
-    state: Raw state with final dimension `model.state_dim`.
-    model: EconomicModel instance.
-
-    Returns
-    -------
-    obs: Gym observation with final dimension `model.state_dim`.
-    """
-    if hasattr(model, "obs_from_state"):
-        return model.obs_from_state(state)
-    state = np.asarray(state, dtype=np.float64)
-
-    m = np.maximum(state[..., 0], EPS)
-    m_ref = max(float(model.m_ref), EPS)
-
-    m_obs = np.log(m / m_ref)
-
-    if model.exogenous_dim == 0:
-        return m_obs[..., None].astype(np.float64)
-
-    x = np.maximum(state[..., 1:], EPS)
-    x_obs = np.log(x)
-
-    return np.concatenate([m_obs[..., None], x_obs], axis=-1).astype(np.float64)
 
 
 class BaseEconEnv(gym.Env, ABC):
@@ -93,7 +61,7 @@ class BaseEconEnv(gym.Env, ABC):
             dtype=np.float64,
         )
 
-        return obs_from_state(self.state, self.model), {}
+        return self.model.obs_from_state(self.state), {}
 
     def step(self, action):
         action = np.asarray(action, dtype=np.float64)
@@ -126,7 +94,7 @@ class BaseEconEnv(gym.Env, ABC):
             ).copy()
 
         return (
-            obs_from_state(self.state, self.model),
+            self.model.obs_from_state(self.state),
             reward,
             terminated,
             truncated,

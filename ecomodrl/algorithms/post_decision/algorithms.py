@@ -17,8 +17,8 @@
 #                 already bootstraps through y_t); clipping, entropy and the
 #                 value regression on A_t + V(s_t) are unchanged.
 #
-# All classes take `pd_spec` (ecomodrl.models.make_pd_spec) in policy_kwargs;
-# it is stored in the checkpoint so `load()` works without an environment.
+# All classes store a model_spec plus reward_floor in policy_kwargs,
+# so checkpoints reconstruct their economic model without an environment.
 # Observation normalization (VecNormalize with norm_obs=True) is not supported:
 # the critics and the quadrature transition invert the observation transform.
 # -----------------------------------------------------------------------------
@@ -39,48 +39,60 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.td3.policies import TD3Policy
 
-from ecomodrl.algorithms.post_decision.critic import PostDecisionCritic, make_economics, quadrature_target
+from ecomodrl.algorithms.post_decision.critic import (
+    PostDecisionCritic,
+    make_post_decision_adapter,
+    quadrature_batch_size,
+    quadrature_target,
+)
+from ecomodrl.models import ModelSpec
 
 
 # =============================================================================
-# Policies with the post-decision critic (TD3 / DDPG / SAC)
+# Shared policy construction and checkpoint contract
 # =============================================================================
-class PDTD3Policy(TD3Policy):
-    def __init__(self, *args, pd_spec=None, **kwargs):
-        if pd_spec is None:
-            raise ValueError("PDTD3Policy needs pd_spec (ecomodrl.models.make_pd_spec).")
-        # Plain attributes set before nn.Module.__init__: the economic model is
-        # built once here and shared by critic and critic_target.
-        self.pd_spec = dict(pd_spec)
-        self.econ = make_economics(self.pd_spec)
+class EconomicModelPolicyMixin:
+    """Give an SB3 policy its reconstructed post-decision economic model."""
+
+    def __init__(
+        self,
+        *args,
+        model_spec: ModelSpec | None = None,
+        reward_floor: float | None = None,
+        **kwargs,
+    ):
+        if model_spec is None or reward_floor is None:
+            raise ValueError(
+                f"{type(self).__name__} needs model_spec and reward_floor."
+            )
+        self.model_spec = model_spec
+        self.reward_floor = float(reward_floor)
+        self.econ = make_post_decision_adapter(
+            self.model_spec,
+            self.reward_floor,
+        )
         super().__init__(*args, **kwargs)
 
+    def _get_constructor_parameters(self):
+        data = super()._get_constructor_parameters()
+        data["model_spec"] = self.model_spec
+        data["reward_floor"] = self.reward_floor
+        return data
+
+
+class PostDecisionCriticMixin(EconomicModelPolicyMixin):
+    """Shared post-decision critic factory for TD3, DDPG and SAC."""
     def make_critic(self, features_extractor=None):
         critic_kwargs = self._update_features_extractor(self.critic_kwargs, features_extractor)
         return PostDecisionCritic(**critic_kwargs, econ=self.econ).to(self.device)
 
-    def _get_constructor_parameters(self):
-        data = super()._get_constructor_parameters()
-        data["pd_spec"] = self.pd_spec
-        return data
+
+class PDTD3Policy(PostDecisionCriticMixin, TD3Policy):
+    pass
 
 
-class PDSACPolicy(SACPolicy):
-    def __init__(self, *args, pd_spec=None, **kwargs):
-        if pd_spec is None:
-            raise ValueError("PDSACPolicy needs pd_spec (ecomodrl.models.make_pd_spec).")
-        self.pd_spec = dict(pd_spec)
-        self.econ = make_economics(self.pd_spec)
-        super().__init__(*args, **kwargs)
-
-    def make_critic(self, features_extractor=None):
-        critic_kwargs = self._update_features_extractor(self.critic_kwargs, features_extractor)
-        return PostDecisionCritic(**critic_kwargs, econ=self.econ).to(self.device)
-
-    def _get_constructor_parameters(self):
-        data = super()._get_constructor_parameters()
-        data["pd_spec"] = self.pd_spec
-        return data
+class PDSACPolicy(PostDecisionCriticMixin, SACPolicy):
+    pass
 
 
 # =============================================================================
@@ -239,24 +251,11 @@ class PDSAC(SAC):
 # =============================================================================
 # PPO: standard actor-critic policy + quadrature bootstrap in the GAE TD error
 # =============================================================================
-class PDPPOPolicy(ActorCriticPolicy):
+class PDPPOPolicy(EconomicModelPolicyMixin, ActorCriticPolicy):
     """SB3's ActorCriticPolicy (ordinary pre-decision value net V(s)) that carries
-    the post-decision spec. `econ` provides the quadrature transition over the
-    model's shock nodes that PDPPO uses for the bootstrap; the spec is stored in
-    the constructor parameters so checkpoints reload without an env.
+    a PostDecisionAdapter. It provides the quadrature transition over the
+    model's shock nodes that PDPPO uses for the bootstrap.
     """
-
-    def __init__(self, *args, pd_spec=None, **kwargs):
-        if pd_spec is None:
-            raise ValueError("PDPPOPolicy needs pd_spec (ecomodrl.models.make_pd_spec).")
-        self.pd_spec = dict(pd_spec)
-        self.econ = make_economics(self.pd_spec)
-        super().__init__(*args, **kwargs)
-
-    def _get_constructor_parameters(self):
-        data = super()._get_constructor_parameters()
-        data["pd_spec"] = self.pd_spec
-        return data
 
 
 class PDPPO(PPO):
@@ -274,14 +273,10 @@ class PDPPO(PPO):
     `collect_rollouts` is SB3's with the time-limit reward bootstrap removed
     (delta_t already bootstraps at every step, so truncations only cut the GAE
     recursion) and true terminations recorded. The B*K next states are
-    evaluated in chunks of at most `pd_max_rows` rows.
+    evaluated in bounded chunks.
     """
 
     policy_aliases = {"MlpPolicy": PDPPOPolicy}
-
-    def __init__(self, *args, pd_max_rows: int = 65_536, **kwargs):
-        self.pd_max_rows = int(pd_max_rows)  # restored by load() through __dict__.update
-        super().__init__(*args, **kwargs)
 
     # --- rollout: copy of OnPolicyAlgorithm.collect_rollouts (SB3 2.6 / 2.7) --------
     def collect_rollouts(
@@ -379,13 +374,13 @@ class PDPPO(PPO):
     def _pd_bootstrap(self, obs: np.ndarray, actions: np.ndarray) -> np.ndarray:
         """y = sum_k w_k V(s'_k) for flat (B, obs_dim) observations and (B, action_dim)
         buffer actions (unclipped; the model clips them like the env does), evaluated
-        in chunks of at most `pd_max_rows` next states."""
+        in bounded chunks of next states."""
         econ = self.policy.econ
         obs_t = th.as_tensor(obs, device=self.device)
         act_t = th.as_tensor(actions, device=self.device)
         n = obs_t.shape[0]
 
-        rows = max(1, self.pd_max_rows // econ.n_nodes)
+        rows = quadrature_batch_size(econ.n_nodes)
 
         out = th.empty(n, device=self.device)
         for start in range(0, n, rows):

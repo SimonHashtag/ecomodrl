@@ -5,7 +5,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.stats import qmc, norm
 
 from ecomodrl.models.base_model import EconomicModel
-from ecomodrl.models.backend import ops as _ops
+from ecomodrl.models.array_ops import ops as _ops
 from ecomodrl.configs.parameters import PortfolioChoiceParams
 
 
@@ -62,6 +62,7 @@ class PortfolioChoice(EconomicModel):
         z_width: float = 3.0,
         rqmc_nodes: int | None = None,
         rqmc_seed: int | None = None,
+        pd_rqmc_nodes: int | None = None,
     ):
         super().__init__(params)
 
@@ -112,6 +113,11 @@ class PortfolioChoice(EconomicModel):
         self.rqmc_seed = int(
             rqmc_seed if rqmc_seed is not None else getattr(p, "seed", 1996)
         )
+        self.pd_rqmc_nodes = int(
+            pd_rqmc_nodes
+            if pd_rqmc_nodes is not None
+            else type(self).pd_rqmc_nodes
+        )
 
         # Mean of employed transitory shock so unconditional E[theta] = 1.
         self.mu_theta = (
@@ -151,6 +157,19 @@ class PortfolioChoice(EconomicModel):
         # Portfolio weights have shape (n_m, n_z1, ..., n_zN, n_assets).
         self.share_policy_grid: np.ndarray | None = None
         self.portfolio_policy_grid: np.ndarray | None = None
+
+    def model_spec_kwargs(self):
+        return {
+            "m_grid_size": self.m_grid_size,
+            "rs_grid_size": self.rs_grid_size,
+            "z_grid_size": self.z_grid_size,
+            "m_span": self.m_span,
+            "rs_span": self.rs_span,
+            "z_width": self.z_width,
+            "rqmc_nodes": self.rqmc_nodes,
+            "rqmc_seed": self.rqmc_seed,
+            "pd_rqmc_nodes": self.pd_rqmc_nodes,
+        }
 
     # ------------------------------------------------------------------
     # Metadata
@@ -273,13 +292,15 @@ class PortfolioChoice(EconomicModel):
         """Model-specific observation transform.
 
         Unlike productivity states in Brock-Mirman, portfolio predictors z can
-        be negative. Therefore we do not log-transform z.
+        be negative. Therefore we do not log-transform z. Accepts NumPy arrays
+        or Torch tensors.
         """
-        state = np.asarray(state, dtype=np.float64)
-        m = np.maximum(state[..., 0], 1e-8)
-        m_obs = np.log(m / max(self.m_ref, 1e-8))
+        xp = _ops(state)
+        state = xp.asarray(state, dtype=np.float64)
+        m = xp.maximum(state[..., 0], 1e-8)
+        m_obs = xp.log(m / max(self.m_ref, 1e-8))
         z_obs = state[..., 1:]
-        return np.concatenate([m_obs[..., None], z_obs], axis=-1).astype(np.float64)
+        return xp.concatenate([m_obs[..., None], z_obs], axis=-1)
 
     def state_from_obs(self, obs):
         """Inverse of `obs_from_state` (numpy or torch): z is not log-transformed."""
@@ -335,7 +356,7 @@ class PortfolioChoice(EconomicModel):
     def controls_from_action(self, action, state=None) -> dict[str, np.ndarray]:
         """Map Gym action in [-1, 1] to consumption share and portfolio weights.
 
-        Accepts numpy arrays or torch tensors (see backend.py); the torch path
+        Accepts numpy arrays or torch tensors (see array_ops.py); the torch path
         is differentiable in `action`.
         """
         xp = _ops(action)
@@ -367,7 +388,7 @@ class PortfolioChoice(EconomicModel):
 
         This is the sparsemax operator (Martins & Astudillo 2016), equivalently
         the simplex projection of Duchi et al. (2008). Accepts numpy arrays or
-        torch tensors (see backend.py); the torch path is differentiable.
+        torch tensors (see array_ops.py); the torch path is differentiable.
         """
         xp = _ops(v)
         v = xp.atleast_1d(xp.asarray(v, dtype=np.float64))

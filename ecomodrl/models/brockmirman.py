@@ -6,7 +6,7 @@ from scipy.stats import norm
 from ecomodrl.configs.parameters import BrockMirmanParams
 from ecomodrl.models.casskoopmans import CassKoopmans
 from ecomodrl.models.base_model import EconomicModel, gauss_hermite_nodes
-from ecomodrl.models.backend import ops as _ops
+from ecomodrl.models.array_ops import ops as _ops
 
 class BrockMirman(CassKoopmans):
     """Stochastic Brock-Mirman growth model with one AR(1) technology shock.
@@ -50,6 +50,13 @@ class BrockMirman(CassKoopmans):
         self.a_grid = self._build_a_grid(self.a_grid_size)
 
         self._build_transition_arrays()
+
+    def model_spec_kwargs(self):
+        return {
+            "m_grid_size": self.m_grid_size,
+            "a_grid_size": self.a_grid_size,
+            "z_grid_size": self.z_grid_size,
+        }
 
     @property
     def exogenous_grids(self):

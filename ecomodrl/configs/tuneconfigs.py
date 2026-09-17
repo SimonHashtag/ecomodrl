@@ -33,6 +33,9 @@ class BaseTuneConfig:
     min_fidelity_seconds: int = 30
     crossover_prob: float = 0.5
     mutation_factor: float = 0.5
+
+    # Optional cap; by default tuning uses the CPUs available to this process.
+    max_tune_workers: int | None = None
     
     # Seeding different for tuning!
     base_seed: int = 100
@@ -81,6 +84,8 @@ def parse_tune_args(TuneConfig: BaseTuneConfig) -> argparse.Namespace:
                    help="Probability of crossover in DEHB.")
     p.add_argument("--mutation_factor", type=float, default=argparse.SUPPRESS, 
                    help="Mutation factor in DEHB.")
+    p.add_argument("--max_tune_workers", type=int, default=argparse.SUPPRESS,
+        help="Optional hard cap on concurrent DEHB worker processes.")
     p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)
     p.add_argument("--n_envs", type=int, default=argparse.SUPPRESS)
     p.add_argument("--max_wallclock_seconds", type=int, default=argparse.SUPPRESS)

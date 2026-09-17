@@ -15,7 +15,7 @@ from ecomodrl.algorithms.post_decision import PDDDPG, PDPPO, PDSAC, PDTD3
 from ecomodrl.analysis.accuracy_metrics import make_evaluation_sample
 from ecomodrl.configs.variants import DEFAULT_VARIANT, VARIANTS
 from ecomodrl.envs.setup_envs import build_envs
-from ecomodrl.models import make_pd_spec
+from ecomodrl.models import ModelSpec, make_model_spec
 from ecomodrl.algorithms.learning_schedule import WallClockCosineLR
 from ecomodrl.algorithms.stopper import TrainingClock, WallClockBudgetCallback
 from ecomodrl.algorithms.evaluation import BestValueEvalCallback
@@ -62,12 +62,13 @@ def resolve_algo_class(name: str, variant: str = DEFAULT_VARIANT):
 
 
 def loaded_model_variant(model) -> str:
-    """Variant a loaded SB3 model was trained with ("pd" iff its policy carries a pd_spec).
+    """Variant a loaded SB3 model was trained with.
 
     SB3's `load()` restores the saved policy class, so loading a checkpoint with
     the class of the other variant does not fail by itself; use this to check.
     """
-    return "pd" if getattr(model.policy, "pd_spec", None) is not None else "mf"
+    is_pd = getattr(model.policy, "model_spec", None) is not None
+    return "pd" if is_pd else "mf"
 
 
 @dataclass
@@ -101,23 +102,27 @@ def build_model(
     seed: int,
     tensorboard_log: Path,
     verbose: int = 0,
-    pd_spec: Optional[dict] = None,
+    model_spec: ModelSpec | None = None,
+    reward_floor: float | None = None,
 ):
     """Instantiate the SB3 model for `algo_cfg.name` and `algo_cfg.variant`.
 
-    For the post-decision variant, `pd_spec` (ecomodrl.models.make_pd_spec) is
-    stored in policy_kwargs so that saved checkpoints reload without the env.
+    For the post-decision variant, a model_spec is stored in
+    policy_kwargs so saved checkpoints reload without the environment.
     """
     AlgoCls = resolve_algo_class(algo_cfg.name, algo_cfg.variant)
     algo_params = dict(algo_cfg.algo_params or {})
     policy_kwargs = dict(algo_cfg.policy_kwargs or {})
 
     if algo_cfg.variant == "pd":
-        if pd_spec is None:
-            raise ValueError("build_model() needs pd_spec for variant 'pd' (ecomodrl.models.make_pd_spec).")
+        if model_spec is None or reward_floor is None:
+            raise ValueError(
+                "build_model() needs model_spec and reward_floor for variant 'pd'."
+            )
         if getattr(env, "norm_obs", False):
             raise ValueError("variant 'pd' does not support VecNormalize observation normalization.")
-        policy_kwargs["pd_spec"] = pd_spec
+        policy_kwargs["model_spec"] = model_spec
+        policy_kwargs["reward_floor"] = float(reward_floor)
 
     algo_params.setdefault("verbose", verbose)
     algo_params.setdefault("seed", seed)
@@ -204,16 +209,27 @@ def train_single_seed(
 
         _set_lr_schedule(algo_cfg.algo_params, cfg, clock)
 
-        # Post-decision variant: the critic rebuilds the economic model from
-        # this spec; the utility floor mirrors the reward floor of the env.
-        pd_spec = None
+        # Post-decision variant: the checkpoint stores a lightweight model
+        # constructor contract; the utility floor mirrors the environment.
+        model_spec = None
+        reward_floor = None
         if algo_cfg.variant == "pd":
-            pd_spec = make_pd_spec(
-                eco_model,
-                cfg.reward_floor if cfg.reward_floor is not None else float("inf"),
+            model_spec = make_model_spec(eco_model)
+            reward_floor = (
+                cfg.reward_floor
+                if cfg.reward_floor is not None
+                else float("inf")
             )
 
-        model = build_model(algo_cfg, envs, seed, tensorboard_log=out_dir, verbose=0, pd_spec=pd_spec)
+        model = build_model(
+            algo_cfg,
+            envs,
+            seed,
+            tensorboard_log=out_dir,
+            verbose=0,
+            model_spec=model_spec,
+            reward_floor=reward_floor,
+        )
         
         max_grad_norm = algo_cfg.algo_params.get('max_grad_norm', None) if algo_cfg.algo_params else None
         

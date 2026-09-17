@@ -19,9 +19,9 @@ from ecomodrl.algorithms.post_decision.algorithms import (
     PDTD3Policy,
 )
 from ecomodrl.algorithms.post_decision.critic import (
-    PDEconomics,
+    PostDecisionAdapter,
     PostDecisionCritic,
-    make_economics,
+    make_post_decision_adapter,
     quadrature_target,
 )
 
@@ -33,8 +33,8 @@ __all__ = [
     "PDSACPolicy",
     "PDTD3",
     "PDTD3Policy",
-    "PDEconomics",
+    "PostDecisionAdapter",
     "PostDecisionCritic",
-    "make_economics",
+    "make_post_decision_adapter",
     "quadrature_target",
 ]
