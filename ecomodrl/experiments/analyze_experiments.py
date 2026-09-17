@@ -45,8 +45,6 @@ def main() -> None:
 
     cfg = parse_analysis_args(base_cfg, argv=remaining_args)
 
-    # "both" only overlays existing per-variant output; the per-variant
-    # constraints are applied to each derived config inside the combined stage.
     if cfg.variant != COMBINED_VARIANT:
         cfg = enforce_variant_constraints(cfg)
 

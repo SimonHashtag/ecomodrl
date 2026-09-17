@@ -49,7 +49,7 @@ class PortfolioChoice(EconomicModel):
 
     # Number of scrambled-Sobol nodes (plus their antithetic partners) used by
     # the post-decision quadrature; see `quadrature_shocks`.
-    pd_rqmc_nodes = 128
+    pd_rqmc_nodes = 128     # TODO: Enough for higher dimensions?
 
     def __init__(
         self,
@@ -272,7 +272,6 @@ class PortfolioChoice(EconomicModel):
         nu_nodes = X[:, 2 * n]
         zeta_nodes = X[:, 2 * n + 1]
 
-        # Raw normal nodes, reused by the post-decision quadrature.
         self._nu_nodes = nu_nodes.astype(np.float64)
         self._zeta_nodes = zeta_nodes.astype(np.float64)
 

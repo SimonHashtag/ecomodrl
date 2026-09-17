@@ -9,12 +9,6 @@
 #
 #     xp = ops(x)          -> _NumpyOps if x is a numpy array / scalar
 #                          -> _TorchOps if x is a torch.Tensor
-#
-# The numpy side delegates 1:1 to the numpy calls the models used before, so the
-# environment path is unchanged. The torch side works in float64 and only uses
-# differentiable ops (sort/gather/where/clamp), so autograd flows through.
-#
-# torch is never imported eagerly here: the models stay importable without it.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations

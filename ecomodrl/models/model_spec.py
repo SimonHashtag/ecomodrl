@@ -1,10 +1,11 @@
-"""Stable, lightweight serialization contract for economic models.
-
-SB3 reconstructs a policy before loading its parameter state. Post-decision
-policies therefore need enough model information in their constructor data to
-rebuild economic transitions and features without serializing the model's
-large derived grids and shock arrays.
-"""
+# -----------------------------------------------------------------------------
+# Stable, lightweight serialization contract for economic models.
+#
+# SB3 reconstructs a policy before loading its parameter state. Post-decision
+# policies therefore need enough model information in their constructor data to
+# rebuild economic transitions and features without serializing the model's
+# large derived grids and shock arrays.
+# -----------------------------------------------------------------------------
 
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Post-decision ("structure-exploiting") versions of the four SB3 algorithms.
+# Post-decision versions of the four SB3 algorithms.
 #
 # PDDDPG, PDTD3 : SB3 TD3 training step with the critic target replaced by the
 #                 quadrature target (twin W networks for TD3, one for DDPG).
@@ -287,15 +287,11 @@ class PDPPO(PPO):
         n_rollout_steps: int,
     ) -> bool:
         assert self._last_obs is not None, "No previous observation was provided"
-        # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
 
         n_steps = 0
         rollout_buffer.reset()
-        # True terminations (done without TimeLimit truncation); none of the
-        # economic models terminate, so this is normally all zeros.
         terminated = np.zeros((n_rollout_steps, env.num_envs), dtype=np.float32)
-        # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
 
@@ -303,33 +299,25 @@ class PDPPO(PPO):
 
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
-                # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
-                # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 actions, values, log_probs = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
-            # Rescale and perform action
             clipped_actions = actions
 
             if isinstance(self.action_space, spaces.Box):
                 if self.policy.squash_output:
-                    # Unscale the actions to match env bounds
-                    # if they were previously squashed (scaled in [-1, 1])
                     clipped_actions = self.policy.unscale_action(clipped_actions)
                 else:
-                    # Otherwise, clip the actions to avoid out of bound error
-                    # as we are sampling from an unbounded Gaussian distribution
                     clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
             self.num_timesteps += env.num_envs
 
-            # Give access to local variables
             callback.update_locals(locals())
             if not callback.on_step():
                 return False
@@ -338,7 +326,6 @@ class PDPPO(PPO):
             n_steps += 1
 
             if isinstance(self.action_space, spaces.Discrete):
-                # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
 
             # No time-limit reward bootstrap here (SB3 adds gamma * V(terminal_obs)
@@ -349,14 +336,14 @@ class PDPPO(PPO):
                     terminated[n_steps - 1, idx] = 1.0
 
             rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
+                self._last_obs,
                 actions,
                 rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
+                self._last_episode_starts,
                 values,
                 log_probs,
             )
-            self._last_obs = new_obs  # type: ignore[assignment]
+            self._last_obs = new_obs
             self._last_episode_starts = dones
 
         # Quadrature bootstrap + GAE replace compute_returns_and_advantage; the

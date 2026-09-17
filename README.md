@@ -35,9 +35,9 @@ Every algorithm comes in two variants, selected with `--variant` on the tune, tr
   delta_t = r_t + beta * sum_k w_k V(s'_k(s_t, a_t)) - V(s_t)
   ```
 
-  computed once at the end of each rollout with the detached value network (time-limit truncations only cut the GAE recursion; `gae_lambda` is a tuned hyperparameter).
+  computed once at the end of each rollout with the detached value network.
 
-The economic model is the single source of truth for both variants: utility, the action map and the post-decision features are model methods that accept numpy arrays (environment) or torch tensors (critic, differentiable), and the quadrature next states are computed with the model's own `transition()`. Observation normalization (`--normalize_obs`) is switched off for `pd`, because the critics invert the observation transform.
+Observation normalization (`--normalize_obs`) is switched off for `pd`, because the critics invert the observation transform.
 
 ## Repository structure
 
@@ -128,15 +128,15 @@ This writes `./tune_results/<Model>/<ALGO>/incumbent.json` (override the root wi
 
 ## Full replication
 
-The CLI defaults are the paper settings: `--n_seeds 100`, `--hidden_nodes 128`, `--n_envs 10`, with wall-clock budgets of 300 s (Cass–Koopmans), 600 s (Brock–Mirman, buffer-stock), and 1200 s (portfolio choice) per seed. To replicate a model's results, run tune, train, and analyze for each algorithm (`ppo`, `ddpg`, `td3`, `sac`) and each variant (`mf`, `pd`), substituting the model's CLI name in the commands above.
+The CLI defaults are the paper settings: `--n_seeds 100`, `--hidden_nodes 128`, `--n_envs 10`, with wall-clock budgets of 300 s (Cass–Koopmans), 600 s (Brock–Mirman, Buffer Stock), and 1200 s (Portfolio Choice) per seed. To replicate a model's results, run tune, train, and analyze for each algorithm (`ppo`, `ddpg`, `td3`, `sac`) and each variant (`mf`, `pd`), substituting the model's CLI name in the commands above.
 
 The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipeline: DEHB tuning (up to 4 h per algorithm and variant), training, and analysis for all four algorithms and both variants, plus the combined mf-vs-pd figures, as a single job per model on a HPC cluster.
 
 ## Extending to new models
 
-1. Implement the model as an `EconomicModel` subclass in [ecomodrl/models/](ecomodrl/models/) (see [base_model.py](ecomodrl/models/base_model.py)) and add a Gymnasium environment in [ecomodrl/envs/envs.py](ecomodrl/envs/envs.py). Write `utility` and `controls_from_action` against the op table in [models/array_ops.py](ecomodrl/models/array_ops.py) (`xp = ops(x)`), so they accept NumPy arrays and Torch tensors alike. Override both `obs_from_state` and `state_from_obs` when the default log transform is unsuitable.
+1. Implement the model as an `EconomicModel` subclass in [ecomodrl/models/](ecomodrl/models/) (see [base_model.py](ecomodrl/models/base_model.py)) and add a Gymnasium environment in [ecomodrl/envs/envs.py](ecomodrl/envs/envs.py). For the post-decision variants: Write `utility` and `controls_from_action` against the op table in [models/array_ops.py](ecomodrl/models/array_ops.py) (`xp = ops(x)`), so they accept NumPy arrays and Torch tensors alike. Override both `obs_from_state` and `state_from_obs` when the default log transform is unsuitable.
 2. For the post-decision variant, implement `post_decision_dim`, `post_decision_features(state, controls)` (the inputs of the continuation network W) and `quadrature_shocks()` (nodes and weights in the same shock layout that `sample_shocks()` produces, so the base class can reuse `transition()`). Implement `model_spec_kwargs()` for behavior-affecting constructor options that are not part of the calibration dataclass, and register the class in [models/model_spec.py](ecomodrl/models/model_spec.py).
-3. Add a calibration dataclass in [ecomodrl/configs/parameters.py](ecomodrl/configs/parameters.py) and run/tune/analysis configs in [ecomodrl/configs/](ecomodrl/configs/).
+3. Add a economic parameter dataclass in [ecomodrl/configs/parameters.py](ecomodrl/configs/parameters.py) and run/tune/analysis configs in [ecomodrl/configs/](ecomodrl/configs/).
 4. Add entry points mirroring [experiments/casskoopmans.py](ecomodrl/experiments/casskoopmans.py) and [tune/casskoopmans.py](ecomodrl/tune/casskoopmans.py) (each ~7 lines), and register the model in [analyze_experiments.py](ecomodrl/experiments/analyze_experiments.py).
 
 ## Citation

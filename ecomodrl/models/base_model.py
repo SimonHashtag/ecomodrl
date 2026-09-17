@@ -307,11 +307,6 @@ class EconomicModel(ABC):
 
     # ------------------------------------------------------------------
     # Post-decision hooks (ecomodrl/algorithms/post_decision)
-    #
-    # The post-decision critic Q(s, a) = u(c(s, a)) + W(post_decision_features)
-    # learns only the continuation value W over the post-decision state; its
-    # target integrates over the model's quadrature nodes with the model's own
-    # `transition()`.
     # ------------------------------------------------------------------
 
     @property
