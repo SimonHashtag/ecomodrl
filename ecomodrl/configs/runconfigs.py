@@ -98,7 +98,7 @@ class BufferStockRunConfig(BaseRunConfig):
     """Static BufferStock run configuration for a sweep."""
     # Environment
     env_name: str = "BufferStock"
-    max_wallclock_seconds: int = 300
+    max_wallclock_seconds: int = 600
     
     def make_params(self):
         return BufferStockParams()

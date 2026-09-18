@@ -29,7 +29,7 @@ echo "Starting Pipeline at: $(date)"
 echo "================================================"
 
 ##########################
-# Load the PyTorch stack #
+# Load the module stack #
 ##########################
 
 module purge
@@ -37,7 +37,6 @@ module load palma/2023a
 module load GCC/12.3.0
 module load OpenMPI/4.1.5
 module load Python/3.11.3
-module load PyTorch/2.1.2-CUDA-12.1.1
 
 echo
 echo "Loaded modules:"

@@ -840,6 +840,7 @@ def complexity_summary(
     summary = {}
 
     for algo in algorithms:
+        print(f"[complexity] measuring {algo}...", flush=True)
         entry = {
             "flops_per_update": {"n": 0},
             "flops_to_conv": {"n": 0},
@@ -849,7 +850,7 @@ def complexity_summary(
         try:
             model = _make_FLOPs_measurement_model(cfg, algo)
         except Exception as exc:
-            print(f"[complexity] {algo}: no checkpoint to measure ({exc!r})")
+            print(f"[complexity] {algo}: no checkpoint to measure ({exc!r})", flush=True)
             summary[algo] = entry
             continue
 
@@ -863,7 +864,7 @@ def complexity_summary(
                 forward_env_steps=getattr(cfg, "flops_forward_steps", None),
             )
         except Exception as exc:
-            print(f"[complexity] {algo}: measurement failed ({exc!r})")
+            print(f"[complexity] {algo}: measurement failed ({exc!r})", flush=True)
             summary[algo] = entry
             try:
                 if env is not None:
@@ -882,6 +883,10 @@ def complexity_summary(
             "n": 1,
             "iqm": float(flops["f_per_update"]),
         }
+        print(
+            f"[complexity] {algo}: measured {flops['f_per_update']:.3e} FLOPs/update",
+            flush=True,
+        )
 
         histories = histories_by_algo.get(algo, [])
         egm = egm_returns_by_algo.get(algo, [])
@@ -1209,7 +1214,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         algorithms=cfg.algorithms,
     )
 
-    print(f"[figures] saved -> {out}")
+    print(f"[figures] saved -> {out}", flush=True)
 
 
 # =============================================================================
