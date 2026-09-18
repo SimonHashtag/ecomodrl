@@ -9,6 +9,7 @@ from ecomodrl.configs.analysisconfigs import (
     PortfolioChoiceAnalysisConfig,
 )
 from ecomodrl.configs.analysisconfigs import parse_analysis_args
+from ecomodrl.configs.variants import COMBINED_VARIANT, enforce_variant_constraints
 from ecomodrl.analysis.analysis import run_analysis
 
 
@@ -43,6 +44,9 @@ def main() -> None:
     base_cfg = cfg_cls()
 
     cfg = parse_analysis_args(base_cfg, argv=remaining_args)
+
+    if cfg.variant != COMBINED_VARIANT:
+        cfg = enforce_variant_constraints(cfg)
 
     run_analysis(cfg)
 

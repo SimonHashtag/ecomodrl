@@ -18,6 +18,8 @@ from typing import Any
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
+from ecomodrl.models.array_ops import ops as _ops
+
 
 
 # =============================================================================
@@ -81,6 +83,10 @@ class EconomicModel(ABC):
 
         self.m_ref: float = 1.0
 
+    def model_spec_kwargs(self) -> dict[str, Any]:
+        """Behavior-affecting constructor kwargs stored in ModelSpec."""
+        return {}
+
     @property
     def exogenous_grids(self) -> tuple[np.ndarray, ...]:
         """Tuple of exogenous state grids. Empty for one-state models."""
@@ -129,9 +135,11 @@ class EconomicModel(ABC):
     # ------------------------------------------------------------------
 
     def utility(self, c):
-        c = np.asarray(c)
+        """CRRA utility. Accepts NumPy arrays or Torch tensors (see array_ops.py)."""
+        xp = _ops(c)
+        c = xp.asarray(c)
         if self.params.gamma == 1.0:
-            return np.log(c)
+            return xp.log(c)
         return c ** (1.0 - self.params.gamma) / (1.0 - self.params.gamma)
 
     def marginal_utility(self, c):
@@ -244,8 +252,12 @@ class EconomicModel(ABC):
 
     def controls_from_action(self, action, state=None) -> dict[str, np.ndarray]:
         """Map Gym action in [-1, 1] to consumption.
+
+        Accepts numpy arrays or torch tensors (see array_ops.py); the torch path
+        is differentiable in `action`.
         """
-        action = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
+        xp = _ops(action)
+        action = xp.clip(xp.asarray(action, dtype=float), -1.0, 1.0)
 
         share = self.min_action_share + 0.5 * (
             self.max_action_share - self.min_action_share
@@ -254,10 +266,95 @@ class EconomicModel(ABC):
         out = {"share": share}
 
         if state is not None:
-            m = np.asarray(state)[..., 0]
+            m = xp.asarray(state)[..., 0]
             out["consumption"] = share * m
 
         return out
+
+    def obs_from_state(self, state):
+        """Map raw state to the default log Gym observation.
+
+        Accepts NumPy arrays or Torch tensors. Models with non-positive
+        exogenous states override this together with state_from_obs.
+        """
+        xp = _ops(state)
+        state = xp.asarray(state, dtype=np.float64)
+
+        m = xp.maximum(state[..., 0], 1e-8)
+        m_obs = xp.log(m / max(float(self.m_ref), 1e-8))
+
+        if self.exogenous_dim == 0:
+            return m_obs[..., None]
+
+        x_obs = xp.log(xp.maximum(state[..., 1:], 1e-8))
+        return xp.concatenate([m_obs[..., None], x_obs], axis=-1)
+
+    def state_from_obs(self, obs):
+        """Inverse of obs_from_state for NumPy arrays or Torch tensors.
+
+        obs = (log(m / m_ref), log(x1), ..., log(xd)); the 1e-8 floor is the
+        model's observation floor.
+        """
+        xp = _ops(obs)
+        obs = xp.asarray(obs, dtype=np.float64)
+
+        m = xp.exp(obs[..., 0]) * max(float(self.m_ref), 1e-8)
+
+        if self.exogenous_dim == 0:
+            return m[..., None]
+
+        return xp.concatenate([m[..., None], xp.exp(obs[..., 1:])], axis=-1)
+
+    # ------------------------------------------------------------------
+    # Post-decision hooks (ecomodrl/algorithms/post_decision)
+    # ------------------------------------------------------------------
+
+    @property
+    def post_decision_dim(self) -> int:
+        """Dimension of `post_decision_features`."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement post_decision_dim.")
+
+    def post_decision_features(self, state, controls: dict[str, Any]):
+        """Features the continuation network W is evaluated on, shape (..., post_decision_dim).
+
+        Accepts numpy arrays or torch tensors; the torch path is differentiable
+        in `controls`.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement post_decision_features.")
+
+    def quadrature_shocks(self) -> tuple[np.ndarray | None, np.ndarray]:
+        """Quadrature nodes `(shocks, weights)` of the RL transition.
+
+        `shocks` has shape (K, ...) with the same last-axis layout that
+        `sample_shocks()` produces, so `transition()` can be reused verbatim;
+        None for deterministic models. `weights` has shape (K,) and sums to one.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement quadrature_shocks.")
+
+    def quadrature_next_states(self, state, controls: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """Next states at every quadrature node via `transition()`. numpy only.
+
+        state: (B, state_dim); controls: values with leading dimension B.
+        Returns next states of shape (B, K, state_dim) and weights of shape (K,).
+        """
+        shocks, weights = self.quadrature_shocks()
+        weights = np.asarray(weights, dtype=np.float64)
+
+        state = np.asarray(state, dtype=np.float64)
+        if state.ndim != 2:
+            raise ValueError(f"state must have shape (B, state_dim), got {state.shape}.")
+        B, D = state.shape
+        K = int(weights.shape[0])
+
+        controls_b = {
+            k: np.asarray(v, dtype=np.float64)[:, None, ...] for k, v in controls.items()
+        }
+        shocks_b = None if shocks is None else np.asarray(shocks, dtype=np.float64)[None, ...]
+
+        next_state = np.asarray(
+            self.transition(state[:, None, :], controls_b, shocks_b), dtype=np.float64
+        )
+        return np.broadcast_to(next_state, (B, K, D)).copy(), weights
 
     @abstractmethod
     def sample_shocks(self, rng, shape):

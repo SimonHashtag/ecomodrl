@@ -4,6 +4,11 @@ from .brockmirman import BrockMirman
 from .bufferstock import BufferStock
 from .portfoliochoice import PortfolioChoice
 from .solvers import BaseEGM, PortfolioChoiceSolver
+from .model_spec import (
+    ModelSpec,
+    make_model_spec,
+    model_from_spec,
+)
 
 __all__ = [
     "EconomicModel",
@@ -13,4 +18,7 @@ __all__ = [
     "PortfolioChoice",
     "BaseEGM",
     "PortfolioChoiceSolver",
+    "ModelSpec",
+    "make_model_spec",
+    "model_from_spec",
 ]

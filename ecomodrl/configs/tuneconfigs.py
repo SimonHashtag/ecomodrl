@@ -4,11 +4,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ecomodrl.configs.runconfigs import (
-    CassKoopmansRunConfig, 
-    BrockMirmanRunConfig, 
-    BufferStockRunConfig, 
+    CassKoopmansRunConfig,
+    BrockMirmanRunConfig,
+    BufferStockRunConfig,
     PortfolioChoiceRunConfig
 )
+from ecomodrl.configs.variants import VARIANTS
 
 # ----------------------------
 # Tune configuration
@@ -32,6 +33,9 @@ class BaseTuneConfig:
     min_fidelity_seconds: int = 30
     crossover_prob: float = 0.5
     mutation_factor: float = 0.5
+
+    # Optional cap; by default tuning uses the CPUs available to this process.
+    max_tune_workers: int | None = None
     
     # Seeding different for tuning!
     base_seed: int = 100
@@ -63,6 +67,9 @@ def parse_tune_args(TuneConfig: BaseTuneConfig) -> argparse.Namespace:
     p.add_argument("--algo_name", type=str, required=True,
                    choices=["ppo", "ddpg", "td3", "sac"],
                    help="RL algorithm to tune.")
+    p.add_argument("--variant", type=str, default=argparse.SUPPRESS,
+                   choices=list(VARIANTS),
+                   help="Algorithm variant: 'mf' (model-free, default) or 'pd' (post-decision).")
     p.add_argument("--total_cost", type=int, default=argparse.SUPPRESS,
                    help="DEHB total cost budget (seconds).")
     p.add_argument("--hidden_nodes", type=int, default=argparse.SUPPRESS, 
@@ -77,6 +84,8 @@ def parse_tune_args(TuneConfig: BaseTuneConfig) -> argparse.Namespace:
                    help="Probability of crossover in DEHB.")
     p.add_argument("--mutation_factor", type=float, default=argparse.SUPPRESS, 
                    help="Mutation factor in DEHB.")
+    p.add_argument("--max_tune_workers", type=int, default=argparse.SUPPRESS,
+        help="Optional hard cap on concurrent DEHB worker processes.")
     p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)
     p.add_argument("--n_envs", type=int, default=argparse.SUPPRESS)
     p.add_argument("--max_wallclock_seconds", type=int, default=argparse.SUPPRESS)

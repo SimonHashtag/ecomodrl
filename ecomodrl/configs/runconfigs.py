@@ -15,6 +15,7 @@ from ecomodrl.envs.envs import (
     BufferStockEnv,
     PortfolioChoiceEnv,
 )
+from ecomodrl.configs.variants import VARIANTS, DEFAULT_VARIANT
 
 # ----------------------------
 # Run configuration
@@ -32,6 +33,7 @@ class BaseRunConfig:
     
     # Algorithm
     algo_name: str = "ppo"
+    variant: str = DEFAULT_VARIANT   # "mf" (model-free) | "pd" (post-decision), see configs/variants.py
     hidden_nodes: int = 128
     total_timesteps: int = 1_000_000_000
     max_wallclock_seconds: int = 600
@@ -96,7 +98,7 @@ class BufferStockRunConfig(BaseRunConfig):
     """Static BufferStock run configuration for a sweep."""
     # Environment
     env_name: str = "BufferStock"
-    max_wallclock_seconds: int = 300
+    max_wallclock_seconds: int = 600
     
     def make_params(self):
         return BufferStockParams()
@@ -123,7 +125,10 @@ def parse_run_args(RunConfig: BaseRunConfig) -> argparse.Namespace:
     p.add_argument("--algo_name", type=str, required=True,
                    choices=["ppo", "ddpg", "td3", "sac"],
                    help="RL algorithm to tune.")
-    p.add_argument("--hidden_nodes", type=int, default=argparse.SUPPRESS, 
+    p.add_argument("--variant", type=str, default=argparse.SUPPRESS,
+                   choices=list(VARIANTS),
+                   help="Algorithm variant: 'mf' (model-free, default) or 'pd' (post-decision).")
+    p.add_argument("--hidden_nodes", type=int, default=argparse.SUPPRESS,
                    help="Number of hidden nodes per layer in the policy/value networks.")
     p.add_argument("--out_dir", type=Path, default=argparse.SUPPRESS)
     p.add_argument("--n_envs", type=int, default=argparse.SUPPRESS)
@@ -136,7 +141,7 @@ def parse_run_args(RunConfig: BaseRunConfig) -> argparse.Namespace:
         help="Whether to use VecNormalize observation normalization.",
     )
     p.add_argument("--n_seeds", type=int, default=argparse.SUPPRESS)
-    
+
     args = p.parse_args()
-    
+
     return replace(RunConfig, **vars(args))

@@ -7,6 +7,7 @@ from ecomodrl.configs.parameters import (
 )
 from ecomodrl.models.casskoopmans import EconomicModel
 from ecomodrl.models.base_model import gauss_hermite_nodes
+from ecomodrl.models.array_ops import ops as _ops
 
 
 class BufferStock(EconomicModel):
@@ -54,6 +55,12 @@ class BufferStock(EconomicModel):
 
         self.m_next, self.perm_next = self._transition_arrays(self.a_grid)
         self.x_next = None
+
+    def model_spec_kwargs(self):
+        return {
+            "m_grid_size": self.m_grid_size,
+            "m_max": float(self.m_grid[-1]),
+        }
 
     @property
     def beta_eff(self):
@@ -173,3 +180,34 @@ class BufferStock(EconomicModel):
     def eval_start_states(self, M):
         positive = self.m_grid[self.m_grid > 0.0]
         return self.log_grid(positive[0], positive[-1], M)[:, None]
+
+    # ------------------------------------------------------------------
+    # Post-decision hooks
+    # ------------------------------------------------------------------
+
+    @property
+    def post_decision_dim(self) -> int:
+        return 1
+
+    def post_decision_features(self, state, controls):
+        """W takes log(1 + a) with the post-decision state a = m - c >= 0."""
+        xp = _ops(state)
+        m = xp.asarray(state, dtype=np.float64)[..., 0]
+        c = xp.asarray(controls["consumption"], dtype=np.float64)
+        return xp.log1p(xp.maximum(m - c, 0.0))[..., None]
+
+    def quadrature_shocks(self):
+        """The model's 56 quadrature nodes in the raw-shock layout of `sample_shocks`:
+        (nu, zeta, unemployment indicator). Node order mirrors `_build_shocks`
+        (unemployed nodes first, then the employed tensor product with the
+        permanent shock varying slowest), so the weights are `self.weights`.
+        `transition()` applies the tilted permanent-shock mean itself.
+        """
+        x, _ = gauss_hermite_nodes(self.n_gh_nodes)
+
+        unemp = np.stack([x, np.zeros_like(x), np.ones_like(x)], axis=-1)
+
+        nu, zeta = np.meshgrid(x, x, indexing="ij")
+        emp = np.stack([nu.ravel(), zeta.ravel(), np.zeros(nu.size)], axis=-1)
+
+        return np.concatenate([unemp, emp], axis=0), self.weights.copy()
