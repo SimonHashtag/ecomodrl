@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
-from scipy.stats import wasserstein_distance
 
 
 # =============================================================================
@@ -176,19 +175,6 @@ def simulate_states(model, policy, n_sim, burn_in=1_000, seed=0):
         seed=int(seed),
     )
 
-
-def wasserstein_euler(ee_rl, ee_egm):
-    """1-Wasserstein distance between two Euler-error distributions."""
-    a = np.asarray(ee_rl, dtype=np.float64).ravel()
-    b = np.asarray(ee_egm, dtype=np.float64).ravel()
-
-    a = a[np.isfinite(a)]
-    b = b[np.isfinite(b)]
-
-    if a.size == 0 or b.size == 0:
-        return float("nan")
-
-    return float(wasserstein_distance(a, b))
 
 
 # =============================================================================

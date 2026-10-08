@@ -60,6 +60,9 @@ PORTFOLIO_DIFF_CMAP = "RdBu_r"
 PORTFOLIO_UNIDENTIFIED_COLOR = "0.85"
 DEFAULT_SAVING_SHARE_TOL = 1e-3
 DEFAULT_MIN_IDENTIFIED_FRACTION = 0.75
+CEV_TITLE_FONTSIZE = 16
+CEV_LABEL_FONTSIZE = 15
+EULER_LABEL_FONTSIZE = 14
 
 
 def ensure_parent(path) -> None:
@@ -68,6 +71,22 @@ def ensure_parent(path) -> None:
 
 def positive_m_grid(model):
     return np.asarray(model.m_grid)[np.asarray(model.m_grid) > 0.0]
+
+
+def algorithm_label(algo: str, variant: str = "mf") -> str:
+    """Display label for an algorithm in a single-variant figure."""
+    label = str(algo).upper()
+    return f"PD-{label}" if variant == "pd" else label
+
+
+def exogenous_state_label(model, index: int = 1) -> str:
+    """Math label for an exogenous state, using model-specific notation."""
+    model_name = type(model).__name__
+    if model_name == "BrockMirman":
+        return r"$z_t$"
+    if model_name == "PortfolioChoice":
+        return fr"$z_{{{int(index)},t}}$"
+    return fr"$x_{{{int(index)}}}$"
 
 
 def exogenous_plot_slices(model):
@@ -101,7 +120,7 @@ def exogenous_plot_slices(model):
     for value, label in zip(first_values, ["low", "middle", "high"]):
         x = np.asarray([value, *fixed], dtype=np.float64)
         slices.append(x)
-        labels.append(fr"$x_1$ {label}")
+        labels.append(f"{exogenous_state_label(model, 1)} {label}")
 
     return slices, labels
 
@@ -129,7 +148,7 @@ def value_slice_indices(model):
 
     for idx, label in zip(first_indices, ["low", "middle", "high"]):
         indices.append((idx, *fixed))
-        labels.append(fr"$x_1$ {label}")
+        labels.append(f"{exogenous_state_label(model, 1)} {label}")
 
     return indices, labels
 
@@ -184,6 +203,7 @@ def plot_policy_distribution(
     save_path,
     *,
     algorithms=DEFAULT_ALGORITHMS,
+    variant="mf",
 ):
     """Plot consumption-share policies.
 
@@ -251,7 +271,7 @@ def plot_policy_distribution(
                 ax.fill_between(m, q1, q3, color=color, alpha=0.22)
                 ax.plot(m, iqm_values, color=color, linewidth=1.8)
 
-        ax.set_title(algo.upper())
+        ax.set_title(algorithm_label(algo, variant))
         ax.set_xlabel("Cash-on-hand $m$")
         ax.set_ylabel("Consumption share $c/m$")
         ax.set_ylim(y_min, y_max)
@@ -261,7 +281,7 @@ def plot_policy_distribution(
     for ax in axes[len(algorithms):]:
         ax.axis("off")
 
-    fig.suptitle("Consumption share policy: IQM and IQR across training seeds")
+    #fig.suptitle("Consumption share policy: IQM and IQR across training seeds")
     plt.tight_layout()
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)
@@ -523,6 +543,7 @@ def plot_portfolio_share_heatmaps(
     asset_index=1,
     saving_share_tol=DEFAULT_SAVING_SHARE_TOL,
     min_identified_fraction=DEFAULT_MIN_IDENTIFIED_FRACTION,
+    variant="mf",
 ):
     """Heatmaps of the IQM RL portfolio share of one risky asset.
 
@@ -583,7 +604,7 @@ def plot_portfolio_share_heatmaps(
                 0.5, 0.5, "no policies", ha="center", va="center",
                 transform=ax.transAxes, color="0.5",
             )
-            ax.set_title(algo.upper())
+            ax.set_title(algorithm_label(algo, variant))
             continue
 
         mesh = ax.pcolormesh(
@@ -593,9 +614,9 @@ def plot_portfolio_share_heatmaps(
             vmin=vmin, vmax=vmax,
             rasterized=True,
         )
-        ax.set_title(algo.upper())
+        ax.set_title(algorithm_label(algo, variant))
         ax.set_xlabel(r"Cash-on-hand $m$")
-        ax.set_ylabel(r"Predictor $x_{" + str(asset_index) + r"}$")
+        ax.set_ylabel(f"Predictor {exogenous_state_label(model, asset_index)}")
 
     for ax in axes[len(algorithms):]:
         ax.axis("off")
@@ -607,10 +628,10 @@ def plot_portfolio_share_heatmaps(
             fr"$w_{{{asset_index}}}$"
         )
 
-    fig.suptitle(
-        fr"RL portfolio share of {_risky_asset_label(asset_index)}: "
-        fr"IQM across training seeds"
-    )
+    # fig.suptitle(
+    #     fr"RL portfolio share of {_risky_asset_label(asset_index)}: "
+    #     fr"IQM across training seeds"
+    # )
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=300)
     plt.close(fig)
@@ -629,6 +650,7 @@ def plot_portfolio_share_diff_heatmaps(
     hdr_bins=60,
     saving_share_tol=DEFAULT_SAVING_SHARE_TOL,
     min_identified_fraction=DEFAULT_MIN_IDENTIFIED_FRACTION,
+    variant="mf",
 ):
     """Heatmaps of IQM RL minus EGM portfolio share (percentage points).
 
@@ -713,7 +735,7 @@ def plot_portfolio_share_diff_heatmaps(
                 0.5, 0.5, "no policies", ha="center", va="center",
                 transform=ax.transAxes, color="0.5",
             )
-            ax.set_title(algo.upper())
+            ax.set_title(algorithm_label(algo, variant))
             continue
 
         mesh = ax.pcolormesh(
@@ -723,9 +745,9 @@ def plot_portfolio_share_diff_heatmaps(
             vmin=vmin, vmax=vmax,
             rasterized=True,
         )
-        ax.set_title(algo.upper())
+        ax.set_title(algorithm_label(algo, variant))
         ax.set_xlabel(r"Cash-on-hand $m$")
-        ax.set_ylabel(r"Predictor $x_{" + str(asset_index) + r"}$")
+        ax.set_ylabel(f"Predictor {exogenous_state_label(model, asset_index)}")
 
         algo_states = states.get(algo) if states else None
         if algo_states is not None and len(algo_states):
@@ -756,10 +778,10 @@ def plot_portfolio_share_diff_heatmaps(
             fr"RL $-$ EGM portfolio share on $w_{{{asset_index}}}$ [pp]"
         )
 
-    fig.suptitle(
-        fr"RL vs EGM portfolio share of {_risky_asset_label(asset_index)}: "
-        fr"IQM deviation"
-    )
+    # fig.suptitle(
+    #     fr"RL vs EGM portfolio share of {_risky_asset_label(asset_index)}: "
+    #     fr"IQM deviation"
+    # )
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=300)
     plt.close(fig)
@@ -775,6 +797,7 @@ def plot_portfolio_share_slices(
     asset_index=1,
     saving_share_tol=DEFAULT_SAVING_SHARE_TOL,
     min_identified_fraction=DEFAULT_MIN_IDENTIFIED_FRACTION,
+    variant="mf",
 ):
     """Optional complement to the heatmaps.
 
@@ -824,7 +847,7 @@ def plot_portfolio_share_slices(
             ax.plot(
                 m, egm_lines[i],
                 color=color, linestyle="--", linewidth=1.6, alpha=0.8,
-                label=fr"EGM $x_{{{asset_index}}}$ {slice_labels[i]}",
+                label=f"EGM {exogenous_state_label(model, asset_index)} {slice_labels[i]}",
             )
 
             if policies:
@@ -857,7 +880,7 @@ def plot_portfolio_share_slices(
                 ax.fill_between(m, q1, q3, color=color, alpha=0.20)
                 ax.plot(
                     m, iqm_values, color=color, linewidth=1.8,
-                    label=fr"RL $x_{{{asset_index}}}$ {slice_labels[i]}",
+                    label=f"RL {exogenous_state_label(model, asset_index)} {slice_labels[i]}",
                 )
 
         if not policies:
@@ -866,7 +889,7 @@ def plot_portfolio_share_slices(
                 transform=ax.transAxes, color="0.5",
             )
 
-        ax.set_title(algo.upper())
+        ax.set_title(algorithm_label(algo, variant))
         ax.set_xlabel(r"Cash-on-hand $m$")
         ax.set_ylabel(fr"Portfolio share $w_{{{asset_index}}}$")
         ax.set_ylim(-0.02, 1.02)
@@ -876,10 +899,10 @@ def plot_portfolio_share_slices(
     for ax in axes[len(algorithms):]:
         ax.axis("off")
 
-    fig.suptitle(
-        fr"Portfolio share of {_risky_asset_label(asset_index)}: "
-        fr"EGM vs RL (IQM and IQR)"
-    )
+    # fig.suptitle(
+    #     fr"Portfolio share of {_risky_asset_label(asset_index)}: "
+    #     fr"EGM vs RL (IQM and IQR)"
+    # )
     plt.tight_layout()
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)
@@ -920,13 +943,10 @@ def plot_cev_distribution(
     *,
     algorithms=DEFAULT_ALGORITHMS,
     visited_m=None,
-    support_quantiles=(0.1, 99.9),
+    support_quantiles=(0.01, 99.99),
+    variant="mf",
 ):
-    """Plot CEV relative to the EGM benchmark.
-    We trim data-adaptively to the ergodic support: the plotted range is 
-    restricted to the [support_quantiles] range of the pooled visited-state 
-    distribution.
-    """
+    """Plot positive CEV relative to EGM benchmark over a wide visited-state support."""
     m_full = np.asarray(grid_axes[0], dtype=np.float64)
 
     # Data-adaptive ergodic-support trim
@@ -954,8 +974,6 @@ def plot_cev_distribution(
     )
     axes = np.atleast_1d(axes).ravel()
 
-    values_for_limits = []
-
     for ax, algo in zip(axes, algorithms):
         value_grids = rl_value_grids_by_algo.get(algo, [])
 
@@ -979,7 +997,7 @@ def plot_cev_distribution(
                     axis=0,
                 )
                 line_stack = line_stack[:, mask] * 100.0    # convert to percentage points
-
+                line_stack = np.where(line_stack > 0.0, line_stack, np.nan)
                 iqm_values, q1, q3 = iqm_and_iqr(line_stack)
 
                 color = (
@@ -995,8 +1013,6 @@ def plot_cev_distribution(
                 if label is not None:
                     legend_handles.append(line)
                     legend_labels.append(label)
-
-                values_for_limits.extend((q1, q3, iqm_values))
 
         # State distribution (drawn behind the CEV curves).
         if visited_m is not None and algo in visited_m:
@@ -1017,44 +1033,20 @@ def plot_cev_distribution(
         if legend_handles:
             ax.legend(legend_handles, legend_labels, fontsize=8, loc="best")
 
-        ax.set_title(algo.upper(), fontsize="x-large")
-        ax.set_xlabel("Cash-on-hand $m$", fontsize="x-large")
+        ax.set_title(algorithm_label(algo, variant), fontsize=CEV_TITLE_FONTSIZE)
+        ax.set_xlabel("Cash-on-hand $m$", fontsize=CEV_LABEL_FONTSIZE)
         ax.grid(alpha=0.3, which="both")
 
-    axes[0].set_ylabel(r"CEV relative to EGM, $\lambda_{\mathrm{CEV}}$ [%]", fontsize="x-large")
+    axes[0].set_ylabel(r"$\lambda\ \mathrm{in}\ \%$", fontsize=CEV_LABEL_FONTSIZE)
 
-    if values_for_limits:
-        vals = np.concatenate(
-            [np.asarray(v, dtype=np.float64).ravel() for v in values_for_limits]
-        )
-        vals = vals[np.isfinite(vals)]
-
-        if vals.size:
-            y_lo = float(np.nanmin(vals))
-            y_hi = float(np.nanmax(vals))
-            if y_lo > 0.0:
-                y_lo = max(y_lo / 1.25, np.finfo(float).tiny)
-                y_hi = max(y_hi * 1.25, y_lo * 1.01)
-                for ax in axes:
-                    ax.set_yscale("log")
-                    ax.set_ylim(y_lo, y_hi)
-            else:
-                nonzero = np.abs(vals[vals != 0.0])
-                linthresh = (
-                    float(np.nanpercentile(nonzero, 10.0))
-                    if nonzero.size else 1.0
-                )
-                span = max(abs(y_lo), abs(y_hi), linthresh)
-                padding = 0.05 * span
-                for ax in axes:
-                    ax.set_yscale("symlog", linthresh=max(linthresh, 1e-12))
-                    ax.set_ylim(y_lo - padding, y_hi + padding)
-                    ax.axhline(0.0, color="0.35", linewidth=0.8, alpha=0.7)
+    for ax in axes:
+        ax.set_yscale("log")
+        ax.set_ylim(1e-3, 1e-1)
 
     for ax in axes:
         ax.set_xlim(m_grid[0], m_grid[-1])
 
-    fig.suptitle("Consumption-equivalent gain of EGM over RL", fontsize="x-large")
+    #fig.suptitle("Consumption-equivalent gain of EGM over RL", fontsize="x-large")
     plt.tight_layout()
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=300)
@@ -1081,6 +1073,27 @@ def _regret_curve_stats(histories, egm_returns, t_grid):
     return iqm_and_iqr(reg_norm)
 
 
+def _set_regret_ylim(ax, iqr_values, linthresh: float, padding: float = 0.08) -> None:
+    """Fit a symmetric-log axis to the finite IQR envelope with visual padding."""
+    arrays = [np.ravel(np.asarray(values, dtype=np.float64)) for values in iqr_values]
+    if not arrays:
+        return
+
+    values = np.concatenate(arrays)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return
+
+    threshold = max(float(linthresh), np.finfo(np.float64).tiny)
+    transform = ax.yaxis.get_transform()
+    transformed = np.asarray(transform.transform(values), dtype=np.float64)
+    lower, upper = float(np.min(transformed)), float(np.max(transformed))
+    pad = max(float(padding) * (upper - lower), 0.1 * threshold)
+
+    inverse = transform.inverted()
+    ymin, ymax = inverse.transform([lower - pad, upper + pad])
+    ax.set_ylim(float(ymin), float(ymax))
+
 def _deterministic_euler_curve(model, arrays):
     """Grid, IQM and IQR band (q1, q3) of Euler errors over the deterministic test grid."""
     min_len = min(len(a) for a in arrays)
@@ -1091,7 +1104,7 @@ def _deterministic_euler_curve(model, arrays):
     return x, iqm_values, q1, q3
 
 
-def _euler_histogram_bins(euler_dicts, algorithms, n_bins=80, quantiles=(0.5, 99.5)):
+def _euler_histogram_bins(euler_dicts, algorithms, n_bins=80, quantiles=(0.05, 99.95)):
     """Shared histogram bins from the pooled finite Euler errors of all dicts and algorithms."""
     all_values = []
     for euler_by_algo in euler_dicts:
@@ -1129,6 +1142,7 @@ def plot_euler_error_distribution(
     deterministic=False,
     *,
     algorithms=DEFAULT_ALGORITHMS,
+    variant="mf",
 ):
 
     if deterministic:
@@ -1143,11 +1157,11 @@ def plot_euler_error_distribution(
             color = ALGO_COLORS.get(algo, "tab:blue")
 
             ax.fill_between(x, q1, q3, color=color, alpha=0.22)
-            ax.plot(x, iqm_values, color=color, linewidth=1.3, label=algo.upper())
+            ax.plot(x, iqm_values, color=color, linewidth=1.3, label=algorithm_label(algo, variant))
 
-        ax.set_xlabel("Cash-on-hand $m$")
-        ax.set_ylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
-        ax.set_title("Euler errors across deterministic test grid")
+        ax.set_xlabel("Cash-on-hand $m$", fontsize=EULER_LABEL_FONTSIZE)
+        ax.set_ylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
+        #ax.set_title("Euler errors across deterministic test grid")
         ax.grid(alpha=0.3, which="both")
         ax.legend(fontsize=8)
 
@@ -1174,13 +1188,13 @@ def plot_euler_error_distribution(
                     linewidth=0.25,
                 )
 
-                ax.set_ylabel(f"{algo.upper()}\n$n={pooled.size}$")
+                ax.set_ylabel(f"{algorithm_label(algo, variant)}\n$n={pooled.size}$", fontsize=EULER_LABEL_FONTSIZE)
 
             ax.grid(alpha=0.3)
 
-        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
-        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center")
-        fig.suptitle("Euler-error distributions across policies and test seeds")
+        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
+        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=EULER_LABEL_FONTSIZE)
+        #fig.suptitle("Euler-error distributions across policies and test seeds")
 
     plt.tight_layout()
     ensure_parent(save_path)
@@ -1208,10 +1222,10 @@ def plot_euler_error_distribution_combined(
     (IQM line + IQR band over cash-on-hand); stochastic models one histogram
     row per algorithm with bins shared across variants and algorithms.
     """
-    title = (
-        f"Euler-error distributions: {VARIANT_LABELS['pd']} (colour) "
-        f"vs {VARIANT_LABELS['mf']} (grey)"
-    )
+    # title = (
+    #     f"Euler-error distributions: {VARIANT_LABELS['pd']} (colour) "
+    #     f"vs {VARIANT_LABELS['mf']} (grey)"
+    # )
 
     if deterministic:
         rows, cols = subplot_grid(len(algorithms))
@@ -1243,9 +1257,9 @@ def plot_euler_error_distribution_combined(
         for ax in axes[len(algorithms):]:
             ax.axis("off")
 
-        fig.supxlabel("Cash-on-hand $m$")
-        fig.supylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
-        fig.suptitle(title)
+        fig.supxlabel("Cash-on-hand $m$", fontsize=EULER_LABEL_FONTSIZE)
+        fig.supylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
+        #fig.suptitle(title)
 
     else:
         rows = len(algorithms)
@@ -1280,12 +1294,12 @@ def plot_euler_error_distribution_combined(
             if not drawn:
                 ax.text(0.5, 0.5, "no Euler errors", ha="center", va="center", transform=ax.transAxes, color="0.5")
 
-            ax.set_ylabel(algo.upper())
+            ax.set_ylabel(algo.upper(), fontsize=EULER_LABEL_FONTSIZE)
             ax.grid(alpha=0.3)
 
-        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$")
-        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center")
-        fig.suptitle(title)
+        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
+        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=EULER_LABEL_FONTSIZE)
+        #fig.suptitle(title)
 
     plt.tight_layout()
     ensure_parent(save_path)
@@ -1307,14 +1321,17 @@ def plot_training_convergence(
     algorithms=DEFAULT_ALGORITHMS,
     grid_step=5.0,
     efficiency=None,
+    linthresh=1e-4,
+    variant="mf",
 ):
-    """Plot convergence as log10 of the EGM-normalized regret over training time.
+    """Plot convergence on a symmetric-log EGM-normalized-regret axis.
 
     If `efficiency` is passed, each algorithm's AULC is added to the legend.
     """
     t_grid = _wallclock_grid(wallclock_seconds, grid_step)
 
     fig, ax = plt.subplots(figsize=(9, 5))
+    iqr_values = []
 
     for algo in algorithms:
         histories = histories_by_algo.get(algo, [])
@@ -1324,22 +1341,25 @@ def plot_training_convergence(
             continue
 
         iqm_values, q1, q3 = _regret_curve_stats(histories, egm_returns, t_grid)
+        iqr_values.extend((q1, q3))
 
         color = ALGO_COLORS.get(algo, "tab:blue")
 
-        label = algo.upper()
+        label = algorithm_label(algo, variant)
         if efficiency is not None:
             aulc = efficiency.get(algo, {}).get("aulc", {})
             if aulc.get("n", 0):
-                label = f"{algo.upper()} (AULC={aulc['iqm']:.4f})"
+                label = f"{algorithm_label(algo, variant)} (AULC={aulc['iqm']:.4f})"
 
-        ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
+        ax.fill_between(t_grid, q1, q3, color=color, alpha=0.10)
         ax.plot(t_grid, iqm_values, color=color, linewidth=1.6, label=label)
 
     ax.set_xlabel("Wall-clock seconds")
-    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$", fontsize="large")
-    ax.set_yscale("log")
-    ax.set_title("Convergence of RL policies relative to EGM")
+    ax.set_ylabel(r"Normalized regret", fontsize="large")
+    ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":", zorder=0)
+    ax.set_yscale("symlog", linthresh=linthresh)
+    _set_regret_ylim(ax, iqr_values, linthresh)
+    #ax.set_title("Convergence of RL policies relative to EGM (symmetric log scale)")
     ax.legend(fontsize=9)
 
     plt.tight_layout()
@@ -1356,6 +1376,7 @@ def plot_training_convergence_combined(
     *,
     algorithms=DEFAULT_ALGORITHMS,
     grid_step=5.0,
+    linthresh=1e-4,
 ):
     """Overlay model-free (dashed) and post-decision (solid) convergence curves.
 
@@ -1366,6 +1387,7 @@ def plot_training_convergence_combined(
     t_grid = _wallclock_grid(wallclock_seconds, grid_step)
 
     fig, ax = plt.subplots(figsize=(9, 5))
+    iqr_values = []
 
     drawn_algos, drawn_variants = [], []
 
@@ -1380,8 +1402,9 @@ def plot_training_convergence_combined(
                 continue
 
             iqm_values, q1, q3 = _regret_curve_stats(histories, egm_returns, t_grid)
+            iqr_values.extend((q1, q3))
 
-            ax.fill_between(t_grid, q1, q3, color=color, alpha=0.22)
+            ax.fill_between(t_grid, q1, q3, color=color, alpha=0.10)
             ax.plot(t_grid, iqm_values, color=color, linewidth=1.6, linestyle=VARIANT_LINESTYLES[variant])
 
             if algo not in drawn_algos:
@@ -1400,12 +1423,14 @@ def plot_training_convergence_combined(
         ax.legend(handles, labels, fontsize=9)
 
     ax.set_xlabel("Wall-clock seconds")
-    ax.set_ylabel(r"$\frac{U_{\mathrm{EGM}}-U_{\mathrm{RL}}}{|U_{\mathrm{EGM}}|}$", fontsize="large")
-    ax.set_yscale("log")
-    ax.set_title(
-        f"Convergence of RL policies relative to EGM: {VARIANT_LABELS['pd']} (solid) "
-        f"vs {VARIANT_LABELS['mf']} (dashed)"
-    )
+    ax.set_ylabel(r"Normalized regret", fontsize="large")
+    ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":", zorder=0)
+    ax.set_yscale("symlog", linthresh=linthresh)
+    _set_regret_ylim(ax, iqr_values, linthresh)
+    # ax.set_title(
+    #     f"Convergence of RL policies relative to EGM (symmetric log scale): {VARIANT_LABELS['pd']} (solid) "
+    #     f"vs {VARIANT_LABELS['mf']} (dashed)"
+    # )
 
     plt.tight_layout()
     ensure_parent(save_path)

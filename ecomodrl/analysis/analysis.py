@@ -56,6 +56,7 @@ from ecomodrl.analysis.plotting import (
 from ecomodrl.analysis.latex_tables import (
     make_latex_table,
     make_combined_latex_table,
+    make_variant_comparison_latex_table,
 )
 
 
@@ -439,43 +440,6 @@ def cache_egm_value_grid(
     save_value_grid(path, grid, V)
 
 
-def cache_egm_euler_errors(
-    cfg: Union[Mapping[str, Any], Any], 
-    economic_model: Any, 
-    egm_policy: EGMPolicy,
-) -> None:
-    """Cache benchmark Euler-error reference distributions."""
-    out_dir = egm_analysis_dir(cfg)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if is_deterministic_one_state(economic_model):
-        path = out_dir / "euler_errors.npy"
-
-        if path.exists() and not cfg.overwrite:
-            return
-
-        ee = accuracy_metrics.euler_errors(
-            economic_model,
-            egm_policy,
-            n_sim=cfg.euler_n_states,
-        )
-        np.save(path, np.asarray(ee, dtype=np.float64))
-        return
-
-    for test_seed in effective_test_seeds(cfg, economic_model):
-        path = out_dir / f"egm_euler_errors_{test_seed}.npy"
-
-        if path.exists() and not cfg.overwrite:
-            continue
-
-        ee = accuracy_metrics.euler_errors(
-            economic_model,
-            egm_policy,
-            n_sim=cfg.euler_n_states,
-            seed=test_seed,
-        )
-        np.save(path, np.asarray(ee, dtype=np.float64))
-
 
 def cache_train_egm_returns(
     cfg: Union[Mapping[str, Any], Any], 
@@ -508,19 +472,6 @@ def cache_train_egm_returns(
 
     write_json(path, {str(k): float(v) for k, v in sorted(existing.items())})
 
-
-def load_egm_euler_reference(
-    cfg: Union[Mapping[str, Any], Any], 
-    economic_model: Any, 
-    test_seed: int | None
-) -> np.ndarray | None:
-    """Load cached EGM Euler-error reference."""
-    if is_deterministic_one_state(economic_model):
-        path = egm_analysis_dir(cfg) / "euler_errors.npy"
-        return np.load(path) if path.exists() else None
-
-    path = egm_analysis_dir(cfg) / f"egm_euler_errors_{int(test_seed)}.npy"
-    return np.load(path) if path.exists() else None
 
 
 # =============================================================================
@@ -724,17 +675,8 @@ def summarize_algorithm(
         "cev_regret": np.full(shape, np.nan),
         "ee_mean": np.full(shape, np.nan),
         "ee_p95": np.full(shape, np.nan),
-        "wasserstein": np.full(shape, np.nan),
     }
 
-    egm_euler_refs = {
-        ts: load_egm_euler_reference(
-            cfg,
-            economic_model,
-            None if is_deterministic_one_state(economic_model) else ts,
-        )
-        for ts in active_test_seeds
-    }
 
     n_cells = 0
 
@@ -759,10 +701,6 @@ def summarize_algorithm(
             if ee.size:
                 matrices["ee_mean"][i, j] = float(np.mean(ee))
                 matrices["ee_p95"][i, j] = float(np.percentile(ee, 95))
-
-            ref = egm_euler_refs[test_seed]
-            if ref is not None:
-                matrices["wasserstein"][i, j] = accuracy_metrics.wasserstein_euler(ee, ref)
 
             n_cells += 1
 
@@ -923,7 +861,6 @@ def run_testing(cfg: Union[Mapping[str, Any], Any]) -> None:
 
     cache_egm_value_grid(cfg, economic_model, egm_policy)
     prepare_evaluation_samples(cfg, economic_model, egm_policy)
-    cache_egm_euler_errors(cfg, economic_model, egm_policy)
     cache_train_egm_returns(cfg, economic_model, egm_policy)
 
     units = [(cfg, algo, seed) for algo in cfg.algorithms for seed in cfg.seeds]
@@ -1091,6 +1028,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         rl_policies,
         out / "policy.pdf",
         algorithms=cfg.algorithms,
+        variant=_variant(cfg),
     )
 
     plot_cev_distribution(
@@ -1101,7 +1039,8 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         out / "cev.pdf",
         algorithms=cfg.algorithms,
         visited_m=pooled_visited_m,
-        support_quantiles=(0.1, 99.9),
+        support_quantiles=(0.01, 99.99),
+        variant=_variant(cfg),
     )
 
     plot_euler_error_distribution(
@@ -1110,6 +1049,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         out / "euler_errors.pdf",
         deterministic,
         algorithms=cfg.algorithms,
+        variant=_variant(cfg),
     )
 
     # -------------------------------------------------------------------------
@@ -1121,6 +1061,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             rl_policies,
             out / "portfolio_share.pdf",
             algorithms=cfg.algorithms,
+            variant=_variant(cfg),
         )
 
         plot_portfolio_share_diff_heatmaps(
@@ -1130,6 +1071,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             out / "portfolio_share_diff.pdf",
             algorithms=cfg.algorithms,
             states=pooled_visited_states,
+            variant=_variant(cfg),
         )
 
         plot_portfolio_share_slices(
@@ -1138,6 +1080,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             rl_policies,
             out / "portfolio_share_slices.pdf",
             algorithms=cfg.algorithms,
+            variant=_variant(cfg),
         )
 
         print("[figures] portfolio-share plots saved")
@@ -1163,6 +1106,8 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         algorithms=cfg.algorithms,
         grid_step=cfg.eval_interval_seconds,
         efficiency=efficiency,
+        linthresh=getattr(cfg, "conv_tol", 1e-4),
+        variant=_variant(cfg),
     )
 
     summaries = {}
@@ -1206,6 +1151,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         summaries,
         out / "table.tex",
         algorithms=cfg.algorithms,
+        variant=_variant(cfg),
     )
 
     make_combined_latex_table(
@@ -1220,6 +1166,26 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
 # =============================================================================
 # Combined mf-vs-pd figures
 # =============================================================================
+
+def load_variant_table_summaries(cfg: Union[Mapping[str, Any], Any]) -> dict[str, dict]:
+    """Load and merge saved per-algorithm, efficiency, and complexity summaries."""
+    summaries = {}
+    efficiency = read_json(figure_dir(cfg) / "efficiency_summary.json", {})
+    complexity = read_json(figure_dir(cfg) / "complexity_summary.json", {})
+    for algo in cfg.algorithms:
+        summary = read_json(algorithm_summary_path(cfg, algo), {})
+        if not summary and algo not in efficiency and algo not in complexity:
+            continue
+        merged = dict(summary)
+        for key in ("aulc", "time_to_best", "time_to_converged"):
+            if key in efficiency.get(algo, {}):
+                merged[key] = efficiency[algo][key]
+        for key in ("flops_per_update", "flops_to_conv", "sampled_states"):
+            if key in complexity.get(algo, {}):
+                merged[key] = complexity[algo][key]
+        summaries[algo] = merged
+    return summaries
+
 
 def load_variant_figure_inputs(
     cfg: Union[Mapping[str, Any], Any],
@@ -1340,6 +1306,20 @@ def run_combined_figures(cfg: Union[Mapping[str, Any], Any]) -> None:
 
     out = combined_figure_dir(cfg)
 
+    table_summaries = {
+        variant: load_variant_table_summaries(enforce_variant_constraints(replace(cfg, variant=variant)))
+        for variant in inputs
+    }
+    if any(table_summaries.values()):
+        make_variant_comparison_latex_table(
+            cfg.model_name,
+            table_summaries,
+            out / "table.tex",
+            algorithms=cfg.algorithms,
+        )
+    else:
+        print("[combined] WARNING: no saved summaries found; combined table was not written.")
+
     plot_euler_error_distribution_combined(
         economic_model,
         {variant: data["euler"] for variant, data in inputs.items()},
@@ -1355,6 +1335,7 @@ def run_combined_figures(cfg: Union[Mapping[str, Any], Any]) -> None:
         out / "convergence.pdf",
         algorithms=cfg.algorithms,
         grid_step=cfg.eval_interval_seconds,
+        linthresh=getattr(cfg, "conv_tol", 1e-4),
     )
 
     print(f"[figures] saved -> {out}")

@@ -12,6 +12,8 @@ from ecomodrl.configs.analysisconfigs import parse_analysis_args
 from ecomodrl.configs.variants import COMBINED_VARIANT, enforce_variant_constraints
 from ecomodrl.analysis.analysis import run_analysis
 
+# Example usage: 
+# `python ecomodrl/experiments/analyze_experiments.py --env bufferstock --variant mf`
 
 ANALYSIS_CONFIGS = {
     "casskoopmans": CassKoopmansAnalysisConfig,
