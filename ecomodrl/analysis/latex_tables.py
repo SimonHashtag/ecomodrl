@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
+import math
+import warnings
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 
 from ecomodrl.configs.analysisconfigs import ALL_ALGORITHMS
+from ecomodrl.configs.variants import algo_dir_name
 
 
 ALGO_LABELS = {"ppo": "PPO", "ddpg": "DDPG", "td3": "TD3", "sac": "SAC"}
@@ -23,8 +28,33 @@ MODEL_TABLE_LABELS = {
 VARIANT_TABLE_LABELS = {"mf": "Standard", "pd": "Post-decision"}
 NUM_FMT = "%.4f"
 
+COMMON_HP_ROWS = [
+    (r"$\alpha$", "learning_rate"), (r"$d$", "drop"),
+    (r"$n_{\text{steps}}$", "steps_per_env"), (r"$M$", "batch_size"),
+    (r"$N$", "sample_reuse"),
+]
+OFFPOLICY_HP_ROWS = [(r"$\tau$", "tau")]
+SELECTED_HP_ROWS = {
+    "ppo": COMMON_HP_ROWS + [
+        (r"$c$", "clip_range"),
+        (r"$\lambda/\lambda_{\text{PD}}$", "gae_lambda"),
+        (r"$\rho_{\text{PPO}}$", "ent_coef"), (r"$w_v$", "vf_coef"),
+    ],
+    "td3": COMMON_HP_ROWS + OFFPOLICY_HP_ROWS + [
+        (r"$\sigma$", "exploration_sigma"),
+        (r"$\tilde{\sigma}$", "target_policy_noise"),
+        (r"$c_{\text{clip}}$", "target_noise_clip"),
+    ],
+    "ddpg": COMMON_HP_ROWS + OFFPOLICY_HP_ROWS + [
+        (r"$\sigma$", "exploration_sigma"),
+    ],
+    "sac": COMMON_HP_ROWS + OFFPOLICY_HP_ROWS + [
+        (r"$\rho_{\text{SAC}}$", "ent_coef"),
+    ],
+}
+
 ACCURACY_ROWS = [
-    (r"Expected Utility ($U_{\mathrm{RL}}$)", "u_rl", "max", 1.0, NUM_FMT),
+    (r"Empirical Finite-Horizon Return ($U_{\mathrm{RL}}$)", "u_rl", "max", 1.0, NUM_FMT),
     (r"Consumption Equiv. Variation ($\lambda_{\mathrm{CEV}}$ in \%)", "cev_regret", "min", 100.0, NUM_FMT),
     (r"Euler Equation Error ($\mathbb{E}[\log_{10}|\mathrm{EE}|]$)", "ee_mean", "min", 1.0, NUM_FMT),
 ]
@@ -226,3 +256,119 @@ def make_combined_latex_table(summaries_by_model: list[tuple[str, dict]], save_p
     lines += [r"    \bottomrule", r"  \end{tabular}", r"\end{frame}"]
     ensure_parent(save_path)
     Path(save_path).write_text("\n".join(lines) + "\n")
+
+
+def _selected_hp_cell(key: str, value: object) -> str:
+    if value == "auto" and key == "ent_coef":
+        return r"\text{auto}"
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"Non-finite value for {key}: {value!r}")
+    if key in {"steps_per_env", "batch_size", "sample_reuse"}:
+        if not number.is_integer():
+            raise ValueError(f"Expected an integer for {key}: {value!r}")
+        return str(int(number))
+    if number == 0:
+        return "0"
+    if key == "learning_rate" or key == "ent_coef" or abs(number) < 0.01:
+        mantissa, exponent = f"{number:.1e}".split("e")
+        if key == "ent_coef" and mantissa == "1.0":
+            return rf"10^{{{int(exponent)}}}"
+        return rf"{mantissa}\times10^{{{int(exponent)}}}"
+    places = max(0, 1 - math.floor(math.log10(abs(number))))
+    return f"{number:.{places}f}"
+
+
+def _selected_incumbent(path: Path, keys: list[str]) -> Mapping | None:
+    if not path.exists():
+        warnings.warn(f"Missing incumbent: {path}", stacklevel=2)
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read incumbent {path}: {exc}") from exc
+    config = data.get("config") if isinstance(data, Mapping) else None
+    if not isinstance(config, Mapping):
+        raise ValueError(f"Incumbent {path} has no config mapping")
+    missing = [key for key in keys if key not in config]
+    if missing:
+        raise ValueError(f"Incumbent {path} is missing parameters: {', '.join(missing)}")
+    for key in keys:
+        try:
+            _selected_hp_cell(key, config[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid {key} in incumbent {path}: {exc}") from exc
+    return config
+
+
+def make_selected_hyperparameters_latex_table(
+    algo_name: str,
+    models: list[str] | tuple[str, ...],
+    variants: list[str] | tuple[str, ...],
+    tune_results_dir: str | Path,
+    save_path: str | Path,
+) -> None:
+    """Write selected hyperparameters for one algorithm from its incumbents."""
+    algo = algo_name.lower()
+    if algo not in SELECTED_HP_ROWS:
+        raise ValueError(f"Unsupported algorithm: {algo_name}")
+    if not models or any(model not in MODEL_LABELS for model in models):
+        raise ValueError(f"Unknown or empty model selection: {models}")
+    if not variants or any(variant not in ("mf", "pd") for variant in variants):
+        raise ValueError(f"Unknown or empty variant selection: {variants}")
+
+    rows = SELECTED_HP_ROWS[algo]
+    root = Path(tune_results_dir)
+    configs = {}
+    for model in models:
+        for variant in variants:
+            path = root / model / algo_dir_name(algo, variant) / "incumbent.json"
+            configs[model, variant] = _selected_incumbent(path, [key for _, key in rows])
+
+    width = len(models) * len(variants)
+    model_headers = []
+    rules = []
+    for index, model in enumerate(models):
+        first = 2 + index * len(variants)
+        last = first + len(variants) - 1
+        model_headers.append(rf"\multicolumn{{{len(variants)}}}{{c}}{{{MODEL_LABELS[model]}}}")
+        rules.append(rf"\cmidrule(lr){{{first}-{last}}}")
+    lines = [
+        r"\begin{table}[H]",
+        r"\setlength{\tabcolsep}{4pt}",
+        r"\centering",
+        rf"\caption{{{ALGO_LABELS[algo]} -- Selected hyperparameters}}",
+        rf"\label{{tab:hp_selected_{algo}}}",
+        r"\renewcommand{\arraystretch}{1.15}",
+        r"\footnotesize",
+        r"\begin{tabular}{l" + "c" * width + "}",
+        r"\toprule",
+        " & " + " & ".join(model_headers) + r" \\",
+        "".join(rules),
+        " & " + " & ".join(variant.upper() for _ in models for variant in variants) + r" \\",
+        r"\midrule",
+    ]
+    for label, key in rows:
+        cells = []
+        for model in models:
+            for variant in variants:
+                config = configs[model, variant]
+                cells.append("--" if config is None else "$" + _selected_hp_cell(key, config[key]) + "$")
+        lines.append(label + " & " + " & ".join(cells) + r" \\")
+    notes = (r"\textbf{Notes:} MF = model-free variant; PD = post-decision variant. "
+             r"Continuous values are rounded to two significant digits. ")
+    if algo == "ppo":
+        notes += r"For PPO, $\lambda/\lambda_{\text{PD}}$ gives the smoothing parameter of the respective variant. "
+    notes += r"Hyperparameters were selected via the procedure in Section~\ref{sec:tuning}."
+    lines += [
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\par\vspace{4pt}",
+        r"\parbox{\textwidth}{\footnotesize",
+        notes,
+        r"}",
+        r"\end{table}",
+    ]
+    ensure_parent(save_path)
+    Path(save_path).write_text("\n".join(lines) + "\n", encoding="utf-8")

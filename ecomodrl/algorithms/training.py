@@ -30,17 +30,17 @@ from ecomodrl.algorithms.action_noise import make_action_noise
 # model-informed critics / bootstraps, see ecomodrl/algorithms/post_decision).
 
 ALGO_REGISTRY = {
-    "ppo":  PPO,
-    "td3":  TD3,
     "ddpg": DDPG,
+    "td3":  TD3,
     "sac":  SAC,
+    "ppo":  PPO,
 }
 
 PD_ALGO_REGISTRY = {
-    "ppo":  PDPPO,
-    "td3":  PDTD3,
     "ddpg": PDDDPG,
+    "td3":  PDTD3,
     "sac":  PDSAC,
+    "ppo":  PDPPO,
 }
 
 VARIANT_REGISTRIES = {

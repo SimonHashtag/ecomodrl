@@ -37,7 +37,7 @@ from ecomodrl.models import (
     PortfolioChoiceSolver,
 )
 
-ALL_ALGORITHMS = ("ppo", "td3", "ddpg", "sac")
+ALL_ALGORITHMS = ("ddpg", "td3", "sac", "ppo")
 
 @dataclass
 class BaseAnalysisConfig:

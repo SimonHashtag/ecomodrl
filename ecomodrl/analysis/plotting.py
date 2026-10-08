@@ -19,6 +19,7 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from scipy.ndimage import gaussian_filter
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
@@ -60,9 +61,6 @@ PORTFOLIO_DIFF_CMAP = "RdBu_r"
 PORTFOLIO_UNIDENTIFIED_COLOR = "0.85"
 DEFAULT_SAVING_SHARE_TOL = 1e-3
 DEFAULT_MIN_IDENTIFIED_FRACTION = 0.75
-CEV_TITLE_FONTSIZE = 16
-CEV_LABEL_FONTSIZE = 15
-EULER_LABEL_FONTSIZE = 14
 
 
 def ensure_parent(path) -> None:
@@ -276,13 +274,17 @@ def plot_policy_distribution(
         ax.set_ylabel("Consumption share $c/m$")
         ax.set_ylim(y_min, y_max)
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=8)
 
     for ax in axes[len(algorithms):]:
         ax.axis("off")
-
-    #fig.suptitle("Consumption share policy: IQM and IQR across training seeds")
-    plt.tight_layout()
+    if x_slices[0] is not None:
+        handles = [Line2D([0], [0], color=SLICE_COLORS[i], label=label)
+                for i, label in enumerate(slice_labels) if label]
+        labels = [handle.get_label() for handle in handles]
+        fig.legend(handles, labels, loc="lower center", ncol=len(labels), fontsize=8)
+        plt.tight_layout(rect=(0, 0.07, 1, 1))
+    else:
+        plt.tight_layout()
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)
     plt.close(fig)
@@ -947,10 +949,36 @@ def plot_cev_distribution(
     variant="mf",
 ):
     """Plot positive CEV relative to EGM benchmark over a wide visited-state support."""
+    _plot_cev_distribution(
+        model, grid_axes, V_egm, {variant: rl_value_grids_by_algo}, save_path,
+        algorithms=algorithms, visited_by_variant={variant: visited_m or {}},
+        support_quantiles=support_quantiles, variants=(variant,),
+    )
+
+
+def plot_cev_distribution_combined(
+    model, grid_axes, V_egm, rl_value_grids_by_variant, save_path, *,
+    algorithms=DEFAULT_ALGORITHMS, visited_by_variant=None,
+    support_quantiles=(0.01, 99.99),
+):
+    """Stack MF and PD CEV panels with a common visited-state support and legend."""
+    _plot_cev_distribution(
+        model, grid_axes, V_egm, rl_value_grids_by_variant, save_path,
+        algorithms=algorithms, visited_by_variant=visited_by_variant or {},
+        support_quantiles=support_quantiles, variants=VARIANTS,
+    )
+
+
+def _plot_cev_distribution(
+    model, grid_axes, V_egm, rl_value_grids_by_variant, save_path, *,
+    algorithms, visited_by_variant, support_quantiles, variants,
+):
     m_full = np.asarray(grid_axes[0], dtype=np.float64)
 
     # Data-adaptive ergodic-support trim
-    pooled = _pooled_visited(visited_m, algorithms)
+    pools = [_pooled_visited(visited_by_variant.get(variant, {}), algorithms) for variant in variants]
+    pools = [pool for pool in pools if pool is not None and pool.size]
+    pooled = np.concatenate(pools) if pools else None
     mask = np.ones(m_full.size, dtype=bool)
     if pooled is not None and pooled.size:
         lo, hi = np.nanpercentile(pooled, support_quantiles)
@@ -966,19 +994,18 @@ def plot_cev_distribution(
 
     n_algos = len(algorithms)
     fig, axes = plt.subplots(
-        1,
+        len(variants),
         n_algos,
-        figsize=(4.5 * n_algos, 4.5),
+        figsize=(4.5 * n_algos, 4.5 * len(variants)),
         sharex=True,
         sharey=True,
     )
     axes = np.atleast_1d(axes).ravel()
 
-    for ax, algo in zip(axes, algorithms):
-        value_grids = rl_value_grids_by_algo.get(algo, [])
-
-        legend_handles = []
-        legend_labels = []
+    legend_handles = {}
+    for ax, (variant, algo) in zip(axes, [(variant, algo) for variant in variants for algo in algorithms]):
+        value_grids = rl_value_grids_by_variant.get(variant, {}).get(algo, [])
+        visited_m = visited_by_variant.get(variant, {})
 
         if not value_grids:
             ax.text(
@@ -1011,8 +1038,7 @@ def plot_cev_distribution(
                 line, = ax.plot(m_grid, iqm_values, color=color, linewidth=1.7, label=label)
 
                 if label is not None:
-                    legend_handles.append(line)
-                    legend_labels.append(label)
+                    legend_handles.setdefault(label, line)
 
         # State distribution (drawn behind the CEV curves).
         if visited_m is not None and algo in visited_m:
@@ -1030,24 +1056,28 @@ def plot_cev_distribution(
                 ax2.set_zorder(ax.get_zorder() - 1)
                 ax.patch.set_visible(False)
 
-        if legend_handles:
-            ax.legend(legend_handles, legend_labels, fontsize=8, loc="best")
-
-        ax.set_title(algorithm_label(algo, variant), fontsize=CEV_TITLE_FONTSIZE)
-        ax.set_xlabel("Cash-on-hand $m$", fontsize=CEV_LABEL_FONTSIZE)
+        ax.set_title(algorithm_label(algo, variant), fontsize=18)
+        ax.set_xlabel("Cash-on-hand $m$", fontsize=17)
+        ax.tick_params(axis='both', labelsize=14)
         ax.grid(alpha=0.3, which="both")
 
-    axes[0].set_ylabel(r"$\lambda\ \mathrm{in}\ \%$", fontsize=CEV_LABEL_FONTSIZE)
+    for row in range(len(variants)):
+        axes[row * n_algos].set_ylabel(r"$\lambda\ \mathrm{in}\ \%$", fontsize=17)
 
     for ax in axes:
         ax.set_yscale("log")
-        ax.set_ylim(1e-3, 1e-1)
+        ax.set_ylim(1e-3, 1.0)
 
     for ax in axes:
         ax.set_xlim(m_grid[0], m_grid[-1])
 
     #fig.suptitle("Consumption-equivalent gain of EGM over RL", fontsize="x-large")
-    plt.tight_layout()
+    if len(legend_handles) > 1:
+        fig.legend(list(legend_handles.values()), list(legend_handles),
+                   loc="lower center", ncol=len(legend_handles), fontsize=12)
+        plt.tight_layout(rect=(0, 0.06, 1, 1))
+    else:
+        plt.tight_layout()
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=300)
     plt.close(fig)
@@ -1159,8 +1189,8 @@ def plot_euler_error_distribution(
             ax.fill_between(x, q1, q3, color=color, alpha=0.22)
             ax.plot(x, iqm_values, color=color, linewidth=1.3, label=algorithm_label(algo, variant))
 
-        ax.set_xlabel("Cash-on-hand $m$", fontsize=EULER_LABEL_FONTSIZE)
-        ax.set_ylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
+        ax.set_xlabel("Cash-on-hand $m$", fontsize=14)
+        ax.set_ylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
         #ax.set_title("Euler errors across deterministic test grid")
         ax.grid(alpha=0.3, which="both")
         ax.legend(fontsize=8)
@@ -1188,12 +1218,12 @@ def plot_euler_error_distribution(
                     linewidth=0.25,
                 )
 
-                ax.set_ylabel(f"{algorithm_label(algo, variant)}\n$n={pooled.size}$", fontsize=EULER_LABEL_FONTSIZE)
+                ax.set_ylabel(f"{algorithm_label(algo, variant)}\n$n={pooled.size}$", fontsize=14)
 
             ax.grid(alpha=0.3)
 
-        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
-        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=EULER_LABEL_FONTSIZE)
+        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
+        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=14)
         #fig.suptitle("Euler-error distributions across policies and test seeds")
 
     plt.tight_layout()
@@ -1227,6 +1257,7 @@ def plot_euler_error_distribution_combined(
     #     f"vs {VARIANT_LABELS['mf']} (grey)"
     # )
 
+    layout_rect = None
     if deterministic:
         rows, cols = subplot_grid(len(algorithms))
         fig, axes = plt.subplots(
@@ -1257,8 +1288,8 @@ def plot_euler_error_distribution_combined(
         for ax in axes[len(algorithms):]:
             ax.axis("off")
 
-        fig.supxlabel("Cash-on-hand $m$", fontsize=EULER_LABEL_FONTSIZE)
-        fig.supylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
+        fig.supxlabel("Cash-on-hand $m$", fontsize=14)
+        fig.supylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
         #fig.suptitle(title)
 
     else:
@@ -1294,14 +1325,18 @@ def plot_euler_error_distribution_combined(
             if not drawn:
                 ax.text(0.5, 0.5, "no Euler errors", ha="center", va="center", transform=ax.transAxes, color="0.5")
 
-            ax.set_ylabel(algo.upper(), fontsize=EULER_LABEL_FONTSIZE)
+            ax.set_title(algo.upper(), loc="left", fontsize=14)
             ax.grid(alpha=0.3)
 
-        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=EULER_LABEL_FONTSIZE)
-        fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=EULER_LABEL_FONTSIZE)
+        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
+        fig.text(0.035, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=14)
+        layout_rect = (0.10, 0.0, 1.0, 1.0)
         #fig.suptitle(title)
 
-    plt.tight_layout()
+    if layout_rect is None:
+        plt.tight_layout()
+    else:
+        plt.tight_layout(rect=layout_rect)
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)
     plt.close(fig)

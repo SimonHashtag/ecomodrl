@@ -101,7 +101,7 @@ python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_nam
 
 - **Checkpoints:** `./runs/CassKoopmans/PPO/seed_<n>/` — best model (`model.zip`), normalization stats (`vecnormalize.pkl`), evaluation history (`eval_history.npz`), TensorBoard event files — plus run metadata in `train_cfgs.json`.
 - **Metrics:** `runs/CassKoopmans/PPO/analysis_summary.json` — aggregated accuracy and welfare statistics.
-- **Figures and tables:** `runs/CassKoopmans/figures/` — `policy.png`, `cev.png`, `euler_errors.png`, `convergence.png`, `table.tex`, `CassKoopmans_comparison_table.tex`.
+- **Figures and tables:** `runs/CassKoopmans/figures/` — `policy_mf.pdf`, `cev_mf.pdf`, `euler_errors_mf.pdf`, `convergence_mf.pdf`, `table.tex`, `CassKoopmans_comparison_table.tex`.
 
 The post-decision variant is run and analyzed separately with `--variant pd` on both commands; its outputs get a `_PD` suffix (`runs/CassKoopmans/PPO_PD/`, `runs/CassKoopmans/figures_PD/`), while the benchmark-policy cache `runs/CassKoopmans/egm_analysis/` is shared:
 
@@ -110,7 +110,7 @@ python -m ecomodrl.experiments.casskoopmans --algo_name ppo --variant pd --n_see
 python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_name ppo --variant pd --n_seeds 4
 ```
 
-To compare both variants in one figure, run the analysis a third time with `--variant both`. This stage runs no testing and loads no checkpoints; it reads the existing per-variant outputs (`eval_history.npz`, `analysis/euler_errors.npz`) and the shared `egm_analysis/` cache and writes `runs/CassKoopmans/figures_combined/euler_errors.pdf` and `convergence.pdf` (post-decision in colour / solid, model-free in grey / dashed).
+To compare both variants in one figure, run the analysis a third time with `--variant both`. This stage runs no testing and loads no checkpoints; it reads existing per-variant analysis output and the shared `egm_analysis/` cache. It writes `runs/CassKoopmans/figures_combined/euler_errors.pdf`, `convergence.pdf`, and `cev.pdf`.
 
 ```
 python -m ecomodrl.experiments.analyze_experiments --env casskoopmans --algo_name ppo --variant both --n_seeds 4

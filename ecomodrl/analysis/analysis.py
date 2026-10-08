@@ -45,6 +45,7 @@ from ecomodrl.analysis import complexity_metrics
 from ecomodrl.analysis.plotting import (
     plot_policy_distribution,
     plot_cev_distribution,
+    plot_cev_distribution_combined,
     plot_euler_error_distribution,
     plot_euler_error_distribution_combined,
     plot_training_convergence,
@@ -1026,7 +1027,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         economic_model,
         egm_policy,
         rl_policies,
-        out / "policy.pdf",
+        out / f"policy_{_variant(cfg)}.pdf",
         algorithms=cfg.algorithms,
         variant=_variant(cfg),
     )
@@ -1036,7 +1037,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         axes_egm,
         V_egm,
         rl_value_grids,
-        out / "cev.pdf",
+        out / f"cev_{_variant(cfg)}.pdf",
         algorithms=cfg.algorithms,
         visited_m=pooled_visited_m,
         support_quantiles=(0.01, 99.99),
@@ -1046,7 +1047,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     plot_euler_error_distribution(
         economic_model,
         euler,
-        out / "euler_errors.pdf",
+        out / f"euler_errors_{_variant(cfg)}.pdf",
         deterministic,
         algorithms=cfg.algorithms,
         variant=_variant(cfg),
@@ -1059,7 +1060,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         plot_portfolio_share_heatmaps(
             economic_model,
             rl_policies,
-            out / "portfolio_share.pdf",
+            out / f"portfolio_share_{_variant(cfg)}.pdf",
             algorithms=cfg.algorithms,
             variant=_variant(cfg),
         )
@@ -1068,7 +1069,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             economic_model,
             egm_policy,
             rl_policies,
-            out / "portfolio_share_diff.pdf",
+            out / f"portfolio_share_diff_{_variant(cfg)}.pdf",
             algorithms=cfg.algorithms,
             states=pooled_visited_states,
             variant=_variant(cfg),
@@ -1078,7 +1079,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
             economic_model,
             egm_policy,
             rl_policies,
-            out / "portfolio_share_slices.pdf",
+            out / f"portfolio_share_slices_{_variant(cfg)}.pdf",
             algorithms=cfg.algorithms,
             variant=_variant(cfg),
         )
@@ -1102,7 +1103,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         histories,
         egm_returns_by_algo,
         cfg.max_wallclock_seconds,
-        out / "convergence.pdf",
+        out / f"convergence_{_variant(cfg)}.pdf",
         algorithms=cfg.algorithms,
         grid_step=cfg.eval_interval_seconds,
         efficiency=efficiency,
@@ -1198,8 +1199,10 @@ def load_variant_figure_inputs(
         histories   : {algo: [history dict]}      (load_training_history)
         egm_returns : {algo: [float]}             aligned with histories via train_egm_returns.json
         euler       : {algo: [1-D log10 arrays]}  same selection rule as run_plots_and_tables
+        value_grids : {algo: [value arrays]}     saved policy evaluations for CEV
+        visited_m   : {algo: 1-D array}          pooled simulated cash-on-hand
         skipped     : [(algo, seed, what)]        units that could not be read
-        n_units     : number of histories and Euler arrays found
+        n_units     : number of histories, Euler arrays, and value grids found
     """
     deterministic = is_deterministic_one_state(economic_model)
     active_test_seeds = effective_test_seeds(cfg, economic_model)
@@ -1207,6 +1210,8 @@ def load_variant_figure_inputs(
     histories = {algo: [] for algo in cfg.algorithms}
     history_seeds = {algo: [] for algo in cfg.algorithms}
     euler = {algo: [] for algo in cfg.algorithms}
+    value_grids = {algo: [] for algo in cfg.algorithms}
+    visited_pools = {algo: [] for algo in cfg.algorithms}
     skipped: list[tuple[str, int, str]] = []
 
     for algo in cfg.algorithms:
@@ -1225,6 +1230,19 @@ def load_variant_figure_inputs(
                 history_seeds[algo].append(seed)
             else:
                 skipped.append((algo, seed, "eval_history.npz"))
+
+            vg_path = value_grid_path(cfg, algo, seed)
+            if vg_path.exists():
+                _, V = load_value_grid(vg_path)
+                value_grids[algo].append(V)
+            else:
+                skipped.append((algo, seed, "analysis/value_grid.npz"))
+
+            visited = read_npz_dict(visited_states_path(cfg, algo, seed))
+            for test_seed in active_test_seeds:
+                key = f"seed_{test_seed}"
+                if key in visited:
+                    visited_pools[algo].append(np.asarray(visited[key])[:, 0])
 
             eulers = read_npz_dict(euler_errors_path(cfg, algo, seed))
             n_found = 0
@@ -1248,19 +1266,22 @@ def load_variant_figure_inputs(
         for algo in cfg.algorithms
     }
 
-    n_units = sum(len(v) for v in histories.values()) + sum(len(v) for v in euler.values())
+    n_units = (sum(len(v) for v in histories.values()) + sum(len(v) for v in euler.values())
+               + sum(len(v) for v in value_grids.values()))
 
     return {
         "histories": histories,
         "egm_returns": egm_returns,
         "euler": euler,
+        "value_grids": value_grids,
+        "visited_m": {algo: np.concatenate(arrays) for algo, arrays in visited_pools.items() if arrays},
         "skipped": skipped,
         "n_units": n_units,
     }
 
 
 def run_combined_figures(cfg: Union[Mapping[str, Any], Any]) -> None:
-    """Write <Env>/figures_combined/{euler_errors,convergence}.pdf overlaying mf and pd.
+    """Write combined Euler, convergence, and stacked CEV figures for mf and pd.
 
     Reads the per-variant analysis output of both variants; runs no testing and
     loads no checkpoints. Missing units are skipped with a message, a missing
@@ -1305,6 +1326,20 @@ def run_combined_figures(cfg: Union[Mapping[str, Any], Any]) -> None:
         return
 
     out = combined_figure_dir(cfg)
+
+    benchmark_path = egm_analysis_dir(cfg) / "value_grid.npz"
+    if benchmark_path.exists() and any(
+        any(data["value_grids"].values()) for data in inputs.values()
+    ):
+        axes_egm, V_egm = load_value_grid(benchmark_path)
+        plot_cev_distribution_combined(
+            economic_model, axes_egm, V_egm,
+            {variant: data["value_grids"] for variant, data in inputs.items()},
+            out / "cev.pdf", algorithms=cfg.algorithms,
+            visited_by_variant={variant: data["visited_m"] for variant, data in inputs.items()},
+        )
+    else:
+        print("[combined] WARNING: missing benchmark or policy value grids; CEV figure was not written.")
 
     table_summaries = {
         variant: load_variant_table_summaries(enforce_variant_constraints(replace(cfg, variant=variant)))
