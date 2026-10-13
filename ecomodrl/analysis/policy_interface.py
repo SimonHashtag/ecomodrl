@@ -79,12 +79,18 @@ class EGMPolicy:
         return self.model.consumption(state)
 
     def share(self, state):
+        if hasattr(self.model, "benchmark_controls"):
+            return self.model.benchmark_controls(state)["share"]
         state = np.asarray(state, dtype=np.float64)
         c = self.consumption(state)
         m = state[..., 0]
         return c / m
-    
+
     def controls(self, state):
+        # Models with further controls (e.g. a durable choice) return them all.
+        if hasattr(self.model, "benchmark_controls"):
+            return self.model.benchmark_controls(state)
+
         state = np.asarray(state, dtype=np.float64)
 
         c = self.consumption(state)

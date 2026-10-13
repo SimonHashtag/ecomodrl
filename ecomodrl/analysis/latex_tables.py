@@ -18,12 +18,14 @@ MODEL_LABELS = {
     "BrockMirman": "Brock--Mirman",
     "BufferStock": "Buffer Stock",
     "PortfolioChoice": "Portfolio Choice",
+    "DurableGoods": "Durable goods (Fella 2014)",
 }
 MODEL_TABLE_LABELS = {
     "CassKoopmans": "ck_results",
     "BrockMirman": "bm_results",
     "BufferStock": "bs_results",
     "PortfolioChoice": "pc_results",
+    "DurableGoods": "dg_results",
 }
 VARIANT_TABLE_LABELS = {"mf": "Standard", "pd": "Post-decision"}
 NUM_FMT = "%.4f"

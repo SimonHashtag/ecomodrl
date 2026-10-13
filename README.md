@@ -5,7 +5,7 @@ This repository accompanies the working paper “Deep Reinforcement Learning in 
 
 ## Models and benchmarks
 
-Four dynamic economic models are solved with deep RL and evaluated against high-accuracy numerical benchmarks:
+Five dynamic economic models are solved with deep RL and evaluated against high-accuracy numerical benchmarks:
 
 | Model | CLI name | Economics | Benchmark solver |
 |---|---|---|---|
@@ -13,8 +13,13 @@ Four dynamic economic models are solved with deep RL and evaluated against high-
 | Brock–Mirman | `brockmirman` | stochastic growth, AR(1) technology | EGM |
 | Buffer-stock saving | `bufferstock` | income risk, occasionally binding borrowing constraint | EGM |
 | Portfolio choice | `portfoliochoice` | buffer-stock saving + asset allocation | nested EGM + KKT root-solving |
+| Durable goods (Fella 2014) | `durablegoods` | durable + non-durable consumption, fixed adjustment cost, collateral constraint, Markov (Tauchen) income | VFI (Fella's VFI1) |
 
-Each model in [ecomodrl/models](ecomodrl/models/) is translated into a [Gymnasium](https://gymnasium.farama.org/) environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) - the API standard for reinforcement learning. All models are solved in [ecomodrl/experiments](ecomodrl/experiments) with four algorithms: PPO, DDPG, TD3, and SAC (the implementation of the core algorithms is based on the [stable-baselines3](https://stable-baselines3.readthedocs.io/en/master/#) package). Benchmark solutions come from (nested) endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py).
+Each model in [ecomodrl/models](ecomodrl/models/) is translated into a [Gymnasium](https://gymnasium.farama.org/) environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) - the API standard for reinforcement learning. All models are solved in [ecomodrl/experiments](ecomodrl/experiments) with four algorithms: PPO, DDPG, TD3, and SAC (the implementation of the core algorithms is based on the [stable-baselines3](https://stable-baselines3.readthedocs.io/en/master/#) package). Benchmark solutions come from (nested) endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py); the durable-goods model currently uses value function iteration (VFI), which the outputs still label "EGM".
+
+### Discrete choices
+
+The durable-goods model has a discrete choice (7 durable levels) next to the continuous savings choice. All algorithms keep the continuous action Box: the model declares `discrete_action_bins = {0: 7}`, so action coordinate 0 is split into 7 equal-width ordinal bins and the model executes the bin's level (the nearest affordable one). DDPG, TD3 and SAC act on this Box unchanged (model-free variant: their critic smooths across the bins); PPO gets a native Categorical head for the binned coordinate; the post-decision DDPG/TD3/SAC replace Q in their actor loss by its expectation over the bins. See [ecomodrl/algorithms/discrete_actions.py](ecomodrl/algorithms/discrete_actions.py) and the teaching note `Fella2014/RL_discrete.pdf`.
 
 ### Model-free and post-decision variants
 
@@ -128,14 +133,14 @@ This writes `./tune_results/<Model>/<ALGO>/incumbent.json` (override the root wi
 
 ## Full replication
 
-The CLI defaults are the paper settings: `--n_seeds 100`, `--hidden_nodes 128`, `--n_envs 10`, with wall-clock budgets of 300 s (Cass–Koopmans), 600 s (Brock–Mirman, Buffer Stock), and 1200 s (Portfolio Choice) per seed. To replicate a model's results, run tune, train, and analyze for each algorithm (`ppo`, `ddpg`, `td3`, `sac`) and each variant (`mf`, `pd`), substituting the model's CLI name in the commands above.
+The CLI defaults are the paper settings: `--n_seeds 100`, `--hidden_nodes 128`, `--n_envs 10`, with wall-clock budgets of 300 s (Cass–Koopmans), 600 s (Brock–Mirman, Buffer Stock), and 1200 s (Portfolio Choice, Durable Goods) per seed. Durable Goods additionally writes `durable_<variant>.pdf` (the discrete durable choice d'(a): benchmark vs. RL median and IQR across seeds). To replicate a model's results, run tune, train, and analyze for each algorithm (`ppo`, `ddpg`, `td3`, `sac`) and each variant (`mf`, `pd`), substituting the model's CLI name in the commands above.
 
 The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipeline: DEHB tuning (up to 4 h per algorithm and variant), training, and analysis for all four algorithms and both variants, plus the combined mf-vs-pd figures, as a single job per model on a HPC cluster.
 
 ## Extending to new models
 
-1. Implement the model as an `EconomicModel` subclass in [ecomodrl/models/](ecomodrl/models/) (see [base_model.py](ecomodrl/models/base_model.py)) and add a Gymnasium environment in [ecomodrl/envs/envs.py](ecomodrl/envs/envs.py). For the post-decision variants: Write `utility` and `controls_from_action` against the op table in [models/array_ops.py](ecomodrl/models/array_ops.py) (`xp = ops(x)`), so they accept NumPy arrays and Torch tensors alike. Override both `obs_from_state` and `state_from_obs` when the default log transform is unsuitable.
-2. For the post-decision variant, implement `post_decision_dim`, `post_decision_features(state, controls)` (the inputs of the continuation network W) and `quadrature_shocks()` (nodes and weights in the same shock layout that `sample_shocks()` produces, so the base class can reuse `transition()`). Implement `model_spec_kwargs()` for behavior-affecting constructor options that are not part of the calibration dataclass, and register the class in [models/model_spec.py](ecomodrl/models/model_spec.py).
+1. Implement the model as an `EconomicModel` subclass in [ecomodrl/models/](ecomodrl/models/) (see [base_model.py](ecomodrl/models/base_model.py)) and add a Gymnasium environment in [ecomodrl/envs/envs.py](ecomodrl/envs/envs.py). For the post-decision variants: Write `utility` and `controls_from_action` against the op table in [models/array_ops.py](ecomodrl/models/array_ops.py) (`xp = ops(x)`), so they accept NumPy arrays and Torch tensors alike. Override both `obs_from_state` and `state_from_obs` when the default log transform is unsuitable. If the reward depends on more than consumption, override `utility_from_controls(controls)`; a discrete choice is declared with `discrete_action_bins` (see above).
+2. For the post-decision variant, implement `post_decision_dim`, `post_decision_features(state, controls)` (the inputs of the continuation network W) and `quadrature_shocks()` (nodes and weights in the same shock layout that `sample_shocks()` produces, so the base class can reuse `transition()`). For a Markov exogenous state, override `quadrature_next_states(state, controls)` to return state-dependent weights of shape (B, K) and `n_quadrature_nodes` (see [models/durablegoods.py](ecomodrl/models/durablegoods.py)). Models whose benchmark or diagnostics do not fit the generic EGM path can provide `benchmark_controls(state)`, `euler_errors_on_states(states, controls_fn)` and `evaluate_policy_value(controls_fn, tol, max_iter)`. Implement `model_spec_kwargs()` for behavior-affecting constructor options that are not part of the calibration dataclass, and register the class in [models/model_spec.py](ecomodrl/models/model_spec.py).
 3. Add a economic parameter dataclass in [ecomodrl/configs/parameters.py](ecomodrl/configs/parameters.py) and run/tune/analysis configs in [ecomodrl/configs/](ecomodrl/configs/).
 4. Add entry points mirroring [experiments/casskoopmans.py](ecomodrl/experiments/casskoopmans.py) and [tune/casskoopmans.py](ecomodrl/tune/casskoopmans.py) (each ~7 lines), and register the model in [analyze_experiments.py](ecomodrl/experiments/analyze_experiments.py).
 

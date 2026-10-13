@@ -7,6 +7,7 @@ from ecomodrl.configs.analysisconfigs import (
     BrockMirmanAnalysisConfig,
     BufferStockAnalysisConfig,
     PortfolioChoiceAnalysisConfig,
+    DurableGoodsAnalysisConfig,
 )
 from ecomodrl.configs.analysisconfigs import parse_analysis_args
 from ecomodrl.configs.variants import COMBINED_VARIANT, enforce_variant_constraints
@@ -20,6 +21,7 @@ ANALYSIS_CONFIGS = {
     "brockmirman": BrockMirmanAnalysisConfig,
     "bufferstock": BufferStockAnalysisConfig,
     "portfoliochoice": PortfolioChoiceAnalysisConfig,
+    "durablegoods": DurableGoodsAnalysisConfig,
 }
 
 

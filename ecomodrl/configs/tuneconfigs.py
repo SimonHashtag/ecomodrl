@@ -7,7 +7,8 @@ from ecomodrl.configs.runconfigs import (
     CassKoopmansRunConfig,
     BrockMirmanRunConfig,
     BufferStockRunConfig,
-    PortfolioChoiceRunConfig
+    PortfolioChoiceRunConfig,
+    DurableGoodsRunConfig,
 )
 from ecomodrl.configs.variants import VARIANTS
 
@@ -60,6 +61,10 @@ class BufferStockTuneConfig(BaseTuneConfig, BufferStockRunConfig):
 
 @dataclass
 class PortfolioChoiceTuneConfig(BaseTuneConfig, PortfolioChoiceRunConfig):
+    pass
+
+@dataclass
+class DurableGoodsTuneConfig(BaseTuneConfig, DurableGoodsRunConfig):
     pass
 
 def parse_tune_args(TuneConfig: BaseTuneConfig) -> argparse.Namespace:

@@ -19,11 +19,12 @@ from ecomodrl.models.casskoopmans import CassKoopmans
 from ecomodrl.models.brockmirman import BrockMirman
 from ecomodrl.models.bufferstock import BufferStock
 from ecomodrl.models.portfoliochoice import PortfolioChoice
+from ecomodrl.models.durablegoods import DurableGoods
 
 
 _MODEL_CLASSES: dict[str, type[EconomicModel]] = {
     cls.__name__: cls
-    for cls in (CassKoopmans, BrockMirman, BufferStock, PortfolioChoice)
+    for cls in (CassKoopmans, BrockMirman, BufferStock, PortfolioChoice, DurableGoods)
 }
 
 

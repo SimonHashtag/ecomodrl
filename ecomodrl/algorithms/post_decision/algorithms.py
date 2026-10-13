@@ -39,6 +39,12 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.sac.policies import SACPolicy
 from stable_baselines3.td3.policies import TD3Policy
 
+from ecomodrl.algorithms.discrete_actions import (
+    HybridActorCriticPolicy,
+    expected_bin_q,
+    gaussian_bin_probs,
+    single_discrete_coordinate,
+)
 from ecomodrl.algorithms.post_decision.critic import (
     PostDecisionCritic,
     make_post_decision_adapter,
@@ -103,6 +109,7 @@ def _pd_td3_train(self, gradient_steps: int, batch_size: int = 100) -> None:
     self._update_learning_rate([self.actor.optimizer, self.critic.optimizer])
 
     econ = self.critic.econ
+    bins = econ.model.discrete_action_bins
     actor_losses, critic_losses = [], []
 
     def next_action_fn(next_obs):
@@ -131,7 +138,19 @@ def _pd_td3_train(self, gradient_steps: int, batch_size: int = 100) -> None:
         self.critic.optimizer.step()
 
         if self._n_updates % self.policy_delay == 0:
-            actor_loss = -self.critic.q1_forward(replay_data.observations, self.actor(replay_data.observations)).mean()
+            if bins:
+                # Binned (discrete) coordinate: Q has a zero gradient there, so ascend
+                # the expectation of Q over the bins under a Gaussian of half a bin
+                # width around the actor's output (see algorithms/discrete_actions.py).
+                obs = replay_data.observations
+                actions_pi = self.actor(obs)
+                dim, n = single_discrete_coordinate(bins)
+                probs = gaussian_bin_probs(
+                    actions_pi[:, dim], th.full_like(actions_pi[:, dim], 1.0 / n), n, squashed=False
+                )
+                actor_loss = -expected_bin_q(self.critic.q1_forward, obs, actions_pi, dim, n, probs).mean()
+            else:
+                actor_loss = -self.critic.q1_forward(replay_data.observations, self.actor(replay_data.observations)).mean()
             actor_losses.append(actor_loss.item())
 
             self.actor.optimizer.zero_grad()
@@ -179,6 +198,7 @@ class PDSAC(SAC):
         self._update_learning_rate(optimizers)
 
         econ = self.critic.econ
+        bins = econ.model.discrete_action_bins
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
 
@@ -194,6 +214,8 @@ class PDSAC(SAC):
 
             actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
             log_prob = log_prob.reshape(-1, 1)
+            # Pre-tanh Gaussian of this sample (quadrature_target below overwrites it)
+            pi_gauss = self.actor.action_dist.distribution if bins else None
 
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
@@ -225,8 +247,18 @@ class PDSAC(SAC):
             critic_loss.backward()
             self.critic.optimizer.step()
 
-            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
-            min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+            if bins:
+                # Binned (discrete) coordinate: replace Q by its expectation over the
+                # bins under the policy's own pre-tanh Gaussian for that coordinate.
+                dim, n = single_discrete_coordinate(bins)
+                probs = gaussian_bin_probs(pi_gauss.mean[:, dim], pi_gauss.stddev[:, dim], n, squashed=True)
+                min_qf_pi = expected_bin_q(
+                    lambda o, a: th.min(th.cat(self.critic(o, a), dim=1), dim=1, keepdim=True)[0],
+                    replay_data.observations, actions_pi, dim, n, probs,
+                )
+            else:
+                q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+                min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
             actor_losses.append(actor_loss.item())
 
@@ -256,6 +288,10 @@ class PDPPOPolicy(EconomicModelPolicyMixin, ActorCriticPolicy):
     a PostDecisionAdapter. It provides the quadrature transition over the
     model's shock nodes that PDPPO uses for the bootstrap.
     """
+
+
+class PDHybridPPOPolicy(EconomicModelPolicyMixin, HybridActorCriticPolicy):
+    """PDPPOPolicy with a Categorical head for binned (discrete) action coordinates."""
 
 
 class PDPPO(PPO):
@@ -371,10 +407,11 @@ class PDPPO(PPO):
 
         out = th.empty(n, device=self.device)
         for start in range(0, n, rows):
-            nxt, weights = econ.next_obs(obs_t[start:start + rows], act_t[start:start + rows])  # (b, K, D), (K,)
+            nxt, weights = econ.next_obs(obs_t[start:start + rows], act_t[start:start + rows])  # (b, K, D), (K,) or (b, K)
             b, K, D = nxt.shape
             v_next = self.policy.predict_values(nxt.reshape(b * K, D)).reshape(b, K)
-            out[start:start + b] = (v_next * weights[None, :]).sum(dim=1)
+            w = weights if weights.dim() == 2 else weights[None, :]
+            out[start:start + b] = (v_next * w).sum(dim=1)
         return out.cpu().numpy().astype(np.float32)
 
     def _pd_returns_and_advantages(self, buf: RolloutBuffer, terminated: np.ndarray) -> None:

@@ -1,0 +1,128 @@
+\newcommand{\DoNotLoadEpstopdf}{} % no .eps figures; skips a package missing in small TeX installs
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1.7cm,top=1.5cm,bottom=1.6cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage[skins]{tcolorbox}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\setlength{\abovedisplayskip}{4pt}
+\setlength{\belowdisplayskip}{4pt}
+\setlength{\abovedisplayshortskip}{2pt}
+\setlength{\belowdisplayshortskip}{2pt}
+
+% Okabe-Ito colours, as in the teaching notes
+\definecolor{okblue}{HTML}{0072B2}
+\definecolor{okgreen}{HTML}{009E73}
+\definecolor{okverm}{HTML}{D55E00}
+\definecolor{okorange}{HTML}{E69F00}
+
+\newcommand{\VV}{\mathbb{V}}
+\newcommand{\Vt}{\textcolor{okblue}{\tilde V}}
+\newcommand{\Vd}{\textcolor{okgreen}{\mathbb{V}^{d'}}}
+\newcommand{\ad}{\textcolor{okgreen}{a'^{\,d'}}}
+\newcommand{\z}{\textcolor{okverm}{z}}
+\newcommand{\ind}{\mathbf{1}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\hd}[1]{\par\vspace{5pt}{\bfseries\color{okblue!65!black}#1}\par\vspace{1pt}}
+
+\tcbset{sumbox/.style={enhanced,boxrule=0.5pt,arc=1.5pt,left=5pt,right=5pt,top=3pt,bottom=3pt,
+        colback=black!2,colframe=black!45,before skip=4pt,after skip=4pt}}
+
+\begin{document}
+
+% ============================================================== 1
+\hd{1\quad Economic model}
+\begin{gather*}
+\max_{\{c_t,\,d_{t+1},\,w_{t+1}\}}\ \E_0\sum_{t=0}^{\infty}\beta^t\,u(c_t,d_{t+1}),
+\qquad u(c,d') = \theta\log c + (1-\theta)\log(\kappa d') \tag{22}\\[2pt]
+c + w' + d' + h(d,d') = y + (1+r)\,w + d,\qquad h(d,d') = \ind\{d'\neq d\}\,\phi\,d',\qquad
+w' \ge -\xi d',\qquad d'\in D \\[2pt]
+\log y = p + e,\qquad p' = \rho\,p + \eta',\quad \eta'\sim\mathcal N(0,\sigma_\eta^2),\qquad e\overset{iid}{\sim}\mathcal N(0,\sigma_\varepsilon^2)
+\end{gather*}
+\vspace{-2pt}
+{\small
+\begin{tabularx}{\linewidth}{@{}*{9}{>{\centering\arraybackslash}X}@{}}
+\toprule
+$\beta$ & $r$ & $\theta$ & $\kappa$ & $\phi$ & $\xi$ & $\rho$ & $\sigma_\eta$ & $\sigma_\varepsilon$\\
+0.93 & 0.06 & 0.77 & 0.075 & 0.06 & 0.8 & 0.977 & 0.024 & 0.063\\
+\bottomrule
+\end{tabularx}}
+\vspace{2pt}
+
+\textbf{Timing.}\enspace enter with $(w,d,y)$ $\;\to\;$ choose $d'$, pay $h(d,d')$ $\;\to\;$ split the remaining resources into $c$ and $w'$, enjoy $u(c,d')$ $\;\to\;$ $y'$ is drawn $\;\to\;$ enter with $(w',d',y')$.
+
+\textbf{Change of variable.} Assets including borrowing capacity, $a \equiv w + \xi d$ (Eq.~5).
+Substituting $w = a-\xi d$, $w' = a'-\xi d'$:
+\begin{gather*}
+w' \ge -\xi d' \;\Longleftrightarrow\; a' \ge 0 \tag{8}\\
+c + a' = \z(d';a,d,y) \equiv y + (1+r)\,a - (1-\xi)(d'-d) - h(d,d') - r\xi d \tag{6}
+\end{gather*}
+One asset grid $[0,\bar a]$ serves every $d'$. Once $d'$ is fixed, $(a,d,y)$ enter the savings problem only through cash-on-hand $\z$.
+
+% ============================================================== 2
+\hd{2\quad The MDP}
+{\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\linewidth}{@{}l>{$}l<{$}X@{}}
+\toprule
+State & s = (a,d,y)\in[0,\bar a]\times D\times Y & $d$ is a state because $h$ depends on it; $y$ because $p$ is persistent\\
+Action & (d',a')\in D\times[0,\infty) & consumption is implied: $c = \z - a'$\\
+Feasible set & \Gamma(s) = \{(d',a') : \z(d';s) > 0,\ 0\le a' < \z(d';s)\} & a $d'$ with $\z\le 0$ is unaffordable\\
+Reward & u\big(\z(d';s)-a',\,d'\big) & the chosen durable yields services today\\
+Transition & (a,d)\to(a',d'),\quad y'\sim P(y,\cdot) & endogenous part deterministic, exogenous part Markov\\
+Discount & \beta = 0.93 & \\
+\bottomrule
+\end{tabularx}}
+\vspace{2pt}
+
+State space on the grids $G_a$ (200 points on $[0,25]$), $D$ (7 levels), $Y$ (49 income states): $|G_a\times D\times Y| = 200\cdot 7\cdot 49 = 68{,}600$, each with 7 discrete and up to 200 continuous candidates.
+
+% ============================================================== 3
+\hd{3\quad Bellman equation}
+\begin{equation*}
+\VV(a,d,y) = \max_{(d',a')\in\Gamma(a,d,y)}\ u\big(\z - a',\,d'\big) + \beta\sum_{y'\in Y}P(y,y')\,\VV(a',d',y') \tag{15}
+\end{equation*}
+Split into a continuous choice nested inside a discrete one:
+\begin{alignat*}{2}
+\Vt(a',d',y) &= \beta\,\E\big[\VV(a',d',y')\mid y\big] &\qquad& \text{continuation value} \tag{11}\\
+\Vd(a,d,y) &= \max_{0\le a' < \z}\ u(\z-a',d') + \Vt(a',d',y),\quad \z = \z(d';a,d,y) && \text{value if $d'$ is chosen; argmax } \ad \tag{16}\\
+\VV(a,d,y) &= \max_{d'\in D}\ \Vd(a,d,y) && \text{discrete choice} \tag{14}
+\end{alignat*}
+
+% ============================================================== 4
+\hd{4\quad VFI: iterate on the Bellman operator}
+$\VV^{n+1} = T\VV^n$, where $T$ is the right-hand side of (15). The loop (\code{solve}):
+
+\begin{tcolorbox}[sumbox]
+\begin{algorithmic}[0]
+\State \textbf{0}\enspace $\VV^0(a,d,y) = u(ra + y,\,d)$ \Comment{consume interest and income}
+\State \textbf{repeat} for $n = 0,1,2,\dots$
+\State \textbf{1}\enspace $\Vt(a_j,d'_k,y_i) = \beta\sum_{l}P_{il}\,\VV^n(a_j,d'_k,y_l)$ \Comment{\code{expectations}: \code{BETA * V @ P.T}}
+\State \textbf{2}\enspace \textbf{for} every state $(a_i,d,y)$, ascending in $a_i$, and every $d'\in D$: \Comment{\code{bellman_update}}
+\State \qquad $\z = \z(d';a_i,d,y)$;\quad \textbf{if} $\z\le 0$: $\Vd = -10^7$, $\ad = 0$ \Comment{unaffordable}
+\State \qquad \textbf{(a)} grid search: $j^* = \arg\max_{\,j\ge j_0,\ a_j<\z}\ u(\z-a_j,d') + \Vt(a_j,d',y)$
+\State \qquad\phantom{\textbf{(a)}} \textsc{monotone}: $j_0 \gets j^*$ for the next $a_{i+1}$ and the same $d'$ \Comment{$a'$ rises with $\z$}
+\State \qquad \textbf{(b)} \textsc{refine}: maximize $u(\z-a',d') + \Vt(a',d',y)$ on $[a_{j^*-1},\,\min(a_{j^*+1},\z)]$,
+\State \qquad\phantom{\textbf{(b)}} $\Vt$ linearly interpolated, shrinking the bracket around the best point to width $10^{-8}$
+\State \qquad $\Vd,\ \ad \gets$ best value and its maximizer;\quad $\VV^{n+1}(a_i,d,y) = \max_{d'}\Vd$
+\State \textbf{3}\enspace \textbf{until} $\lVert\VV^{n+1}-\VV^n\rVert_\infty\,/\,\lVert\VV^n\rVert_\infty < 10^{-5}$
+\State \textbf{return} $\Vd,\ \ad$ on $G_a\times D\times Y\times D$ \Comment{\code{V_cond}, \code{a_cond}}
+\end{algorithmic}
+\end{tcolorbox}
+Step 1 is done once per iteration: $\Vt$ does not depend on $(a,d)$, so inside step 2 it is a table lookup.
+\textsc{monotone} returns the same solution in less time; \textsc{refine} puts $a'$ off the grid, which is more accurate but takes longer.
+
+\end{document}

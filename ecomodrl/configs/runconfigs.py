@@ -8,12 +8,14 @@ from ecomodrl.configs.parameters import (
     BrockMirmanParams,
     BufferStockParams,
     PortfolioChoiceParams,
+    DurableGoodsParams,
 )
 from ecomodrl.envs.envs import (
     CassKoopmansEnv,
     BrockMirmanEnv,
     BufferStockEnv,
     PortfolioChoiceEnv,
+    DurableGoodsEnv,
 )
 from ecomodrl.configs.variants import VARIANTS, DEFAULT_VARIANT
 
@@ -118,6 +120,19 @@ class PortfolioChoiceRunConfig(BaseRunConfig):
 
     def env_class(self):
         return PortfolioChoiceEnv
+
+@dataclass
+class DurableGoodsRunConfig(BaseRunConfig):
+    """Static DurableGoods (Fella 2014) run configuration for a sweep."""
+    # Environment
+    env_name: str = "DurableGoods"
+    max_wallclock_seconds: int = 1200
+    
+    def make_params(self):
+        return DurableGoodsParams()
+
+    def env_class(self):
+        return DurableGoodsEnv
 
 
 def parse_run_args(RunConfig: BaseRunConfig) -> argparse.Namespace:

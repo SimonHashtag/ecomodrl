@@ -51,23 +51,27 @@ class PostDecisionAdapter:
         self.model = model
         self.reward_floor = float(reward_floor)
         self.pd_dim = int(model.post_decision_dim)
-
-        _, weights = model.quadrature_shocks()
-        self._weights = np.asarray(weights, dtype=np.float32)
-        self.n_nodes = int(self._weights.shape[0])
+        self.n_nodes = int(model.n_quadrature_nodes)
         self._weights_cache: dict[str, th.Tensor] = {}
 
-    def weights(self, device) -> th.Tensor:
-        """Quadrature weights (K,) as a float32 tensor on `device`, cached."""
+    def weights(self, weights, device) -> th.Tensor:
+        """Quadrature weights as a float32 tensor on `device`.
+
+        Fixed (K,) weights are cached per device; state-dependent (B, K) weights
+        (Markov exogenous states) are converted on every call.
+        """
+        w = np.asarray(weights, dtype=np.float32)
+        if w.ndim == 2:
+            return th.as_tensor(w, device=device)
         key = str(device)
         t = self._weights_cache.get(key)
         if t is None:
-            t = th.as_tensor(self._weights, device=device)
+            t = th.as_tensor(w, device=device)
             self._weights_cache[key] = t
         return t
 
-    def controls(self, obs: th.Tensor, actions: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
-        """Consumption (float64, (B,)) and post-decision features (float32, (B, pd_dim)).
+    def controls(self, obs: th.Tensor, actions: th.Tensor) -> tuple[dict, th.Tensor]:
+        """Controls dict (float64 tensors) and post-decision features (float32, (B, pd_dim)).
 
         Differentiable in `actions`. Mirrors `BaseEconEnv.step`: the model's
         action map, then the consumption floor EPS.
@@ -76,16 +80,17 @@ class PostDecisionAdapter:
         controls = self.model.controls_from_action(actions.to(th.float64), state=state)
         controls["consumption"] = th.clamp(controls["consumption"], min=EPS)
         feats = self.model.post_decision_features(state, controls)
-        return controls["consumption"], feats.to(th.float32)
+        return controls, feats.to(th.float32)
 
-    def utility(self, c: th.Tensor) -> th.Tensor:
-        """u(c) floored at -reward_floor (mirrors TransformReward in setup_envs), float32 (B, 1)."""
-        u = th.clamp(self.model.utility(c), min=-self.reward_floor)
+    def utility(self, controls: dict) -> th.Tensor:
+        """Period reward floored at -reward_floor (mirrors TransformReward in setup_envs), float32 (B, 1)."""
+        u = th.clamp(self.model.utility_from_controls(controls), min=-self.reward_floor)
         return u.to(th.float32).reshape(-1, 1)
 
     @th.no_grad()
     def next_obs(self, obs: th.Tensor, actions: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
-        """Next observations at every quadrature node, shape (B, K, obs_dim), and weights (K,).
+        """Next observations at every quadrature node, shape (B, K, obs_dim), and
+        weights, shape (K,) or, for Markov exogenous states, (B, K).
 
         Computed in numpy with the model's `transition()` and `obs_from_state`,
         exactly like the environment step.
@@ -97,10 +102,10 @@ class PostDecisionAdapter:
         controls = self.model.controls_from_action(a, state=state)
         controls["consumption"] = np.maximum(controls["consumption"], EPS)
 
-        next_state, _ = self.model.quadrature_next_states(state, controls)
+        next_state, weights = self.model.quadrature_next_states(state, controls)
         next_obs = self.model.obs_from_state(next_state)
 
-        return th.as_tensor(next_obs, device=obs.device), self.weights(obs.device)
+        return th.as_tensor(next_obs, device=obs.device), self.weights(weights, obs.device)
 
 
 def make_post_decision_adapter(
@@ -146,13 +151,13 @@ class PostDecisionCritic(BaseModel):
             self.q_networks.append(w_net)
 
     def forward(self, obs: th.Tensor, actions: th.Tensor) -> tuple[th.Tensor, ...]:
-        c, feats = self.econ.controls(obs, actions)
-        u = self.econ.utility(c)
+        controls, feats = self.econ.controls(obs, actions)
+        u = self.econ.utility(controls)
         return tuple(u + w_net(feats) for w_net in self.q_networks)
 
     def q1_forward(self, obs: th.Tensor, actions: th.Tensor) -> th.Tensor:
-        c, feats = self.econ.controls(obs, actions)
-        return self.econ.utility(c) + self.q_networks[0](feats)
+        controls, feats = self.econ.controls(obs, actions)
+        return self.econ.utility(controls) + self.q_networks[0](feats)
 
 
 def quadrature_target(
@@ -170,8 +175,8 @@ def quadrature_target(
     policy: the smoothed target actor for TD3/DDPG, a sampled action with its
     log-probability for SAC. Call under `torch.no_grad()`.
     """
-    c, _ = econ.controls(obs, actions)
-    u = econ.utility(c)
+    controls, _ = econ.controls(obs, actions)
+    u = econ.utility(controls)
 
     rows_per_chunk = quadrature_batch_size(econ.n_nodes)
     expected_values = []
@@ -188,7 +193,8 @@ def quadrature_target(
             q_next = q_next - ent_coef * logp.reshape(-1, 1)
 
         q_next = q_next.reshape(B, K)
-        expected_values.append((q_next * weights[None, :]).sum(dim=1, keepdim=True))
+        w = weights if weights.dim() == 2 else weights[None, :]
+        expected_values.append((q_next * w).sum(dim=1, keepdim=True))
 
     ev = th.cat(expected_values, dim=0)
     return u + gamma * ev

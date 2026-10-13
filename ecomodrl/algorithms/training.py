@@ -11,7 +11,8 @@ import torch as th
 from stable_baselines3 import PPO, TD3, DDPG, SAC
 from stable_baselines3.common.utils import set_random_seed
 
-from ecomodrl.algorithms.post_decision import PDDDPG, PDPPO, PDSAC, PDTD3
+from ecomodrl.algorithms.discrete_actions import HybridActorCriticPolicy, normalize_bins
+from ecomodrl.algorithms.post_decision import PDDDPG, PDHybridPPOPolicy, PDPPO, PDSAC, PDTD3
 from ecomodrl.analysis.accuracy_metrics import make_evaluation_sample
 from ecomodrl.configs.variants import DEFAULT_VARIANT, VARIANTS
 from ecomodrl.envs.setup_envs import build_envs
@@ -104,15 +105,25 @@ def build_model(
     verbose: int = 0,
     model_spec: ModelSpec | None = None,
     reward_floor: float | None = None,
+    discrete_action_bins: dict | None = None,
 ):
     """Instantiate the SB3 model for `algo_cfg.name` and `algo_cfg.variant`.
 
     For the post-decision variant, a model_spec is stored in
     policy_kwargs so saved checkpoints reload without the environment.
+
+    If the economic model declares `discrete_action_bins`, PPO gets a
+    Categorical head for the binned action coordinates (DDPG/TD3/SAC act on
+    the continuous Box; see algorithms/discrete_actions.py).
     """
     AlgoCls = resolve_algo_class(algo_cfg.name, algo_cfg.variant)
     algo_params = dict(algo_cfg.algo_params or {})
     policy_kwargs = dict(algo_cfg.policy_kwargs or {})
+
+    policy = algo_cfg.policy
+    if discrete_action_bins and algo_cfg.name.lower() == "ppo":
+        policy = PDHybridPPOPolicy if algo_cfg.variant == "pd" else HybridActorCriticPolicy
+        policy_kwargs["discrete_action_bins"] = normalize_bins(discrete_action_bins)
 
     if algo_cfg.variant == "pd":
         if model_spec is None or reward_floor is None:
@@ -137,7 +148,7 @@ def build_model(
         algo_params["action_noise"] = action_noise
 
     return AlgoCls(
-        policy=algo_cfg.policy,
+        policy=policy,
         env=env,
         **algo_params,
         policy_kwargs=policy_kwargs,
@@ -229,8 +240,9 @@ def train_single_seed(
             verbose=0,
             model_spec=model_spec,
             reward_floor=reward_floor,
+            discrete_action_bins=eco_model.discrete_action_bins,
         )
-        
+
         max_grad_norm = algo_cfg.algo_params.get('max_grad_norm', None) if algo_cfg.algo_params else None
         
         if algo_cfg.name.lower() in {"td3", "ddpg", "sac"} and max_grad_norm is not None:

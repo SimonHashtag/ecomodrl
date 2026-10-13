@@ -11,6 +11,7 @@ PDDDPG, PDTD3, PDSAC, PDPPO).
 """
 from ecomodrl.algorithms.post_decision.algorithms import (
     PDDDPG,
+    PDHybridPPOPolicy,
     PDPPO,
     PDPPOPolicy,
     PDSAC,
@@ -27,6 +28,7 @@ from ecomodrl.algorithms.post_decision.critic import (
 
 __all__ = [
     "PDDDPG",
+    "PDHybridPPOPolicy",
     "PDPPO",
     "PDPPOPolicy",
     "PDSAC",

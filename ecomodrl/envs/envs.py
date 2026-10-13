@@ -21,7 +21,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from ecomodrl.models import CassKoopmans, BrockMirman, BufferStock, PortfolioChoice
+from ecomodrl.models import CassKoopmans, BrockMirman, BufferStock, PortfolioChoice, DurableGoods
 
 
 EPS = 1e-8
@@ -69,7 +69,7 @@ class BaseEconEnv(gym.Env, ABC):
         controls = self.model.controls_from_action(action, state=self.state)
         controls["consumption"] = np.maximum(controls["consumption"], EPS)
 
-        reward = float(self.model.utility(controls["consumption"]))
+        reward = float(self.model.utility_from_controls(controls))
 
         shocks = self.model.sample_shocks(self.np_random, ())
         self.state = np.asarray(
@@ -115,3 +115,8 @@ class BufferStockEnv(BaseEconEnv):
     
 class PortfolioChoiceEnv(BaseEconEnv):
     MODEL_CLS = PortfolioChoice
+
+
+class DurableGoodsEnv(BaseEconEnv):
+    MODEL_CLS = DurableGoods
+

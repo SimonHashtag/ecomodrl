@@ -844,3 +844,151 @@ class PortfolioChoiceSolver:
     def smooth_fisher_burmeister(a, b, mu: float = 1e-6):
         return np.sqrt(a**2 + b**2 + 2.0 * mu) - (a + b)
     
+
+# =============================================================================
+# Durable goods (Fella 2014): VFI1 = grid search + MONOTONE + REFINE
+# =============================================================================
+# Literal port of Fella2014/VFI.py with the parameters as arguments; the
+# Bellman update runs the independent (y, d) blocks in parallel (prange), which
+# leaves every block's arithmetic, and therefore the solution, unchanged.
+
+_DG_PENALTY = -1e7      # value of an unaffordable durable choice (z <= 0)
+_DG_REFINE_TOL = 1e-8   # stop refining once the bracket is this narrow
+
+
+@njit(cache=True)
+def _dg_utility(c, d_next, theta, kappa):
+    """u(c, d') = theta log c + (1 - theta) log(kappa d'), Eq. (22)."""
+    return theta * np.log(c) + (1 - theta) * np.log(kappa * d_next)
+
+
+@njit(cache=True)
+def _dg_cash_on_hand(a, d, y, d_next, r, xi, phi):
+    """z(d'; a, d, y), Eq. (6): resources left for c + a' after choosing d'."""
+    adjustment_cost = phi * d_next * (d_next != d)
+    return y + (1 + r) * a - (1 - xi) * (d_next - d) - adjustment_cost - r * xi * d
+
+
+@njit(cache=True)
+def _dg_interp(x, xp, fp):
+    """Linear interpolation of fp(xp) at x, extrapolating linearly at both ends."""
+    i = min(max(np.searchsorted(xp, x) - 1, 0), len(xp) - 2)
+    weight = (x - xp[i]) / (xp[i + 1] - xp[i])
+    return fp[i] + weight * (fp[i + 1] - fp[i])
+
+
+@njit(cache=True)
+def _dg_refine(lo, hi, best, f_best, z, d_next, a_grid, V_tilde, theta, kappa):
+    """Fella's bracket search for u(z - a', d') + V~(a') between the grid neighbours."""
+    while hi - lo > _DG_REFINE_TOL:
+        mid = 0.5 * (lo + hi)
+        f_mid = _dg_utility(z - mid, d_next, theta, kappa) + _dg_interp(mid, a_grid, V_tilde)
+        if f_mid > f_best:  # mid is better: the max lies on mid's side of best
+            if mid < best:
+                hi = best
+            else:
+                lo = best
+            best, f_best = mid, f_mid
+        else:  # mid is worse: the max lies on best's side of mid
+            if mid < best:
+                lo = mid
+            else:
+                hi = mid
+    return best, f_best
+
+
+@njit(cache=True, parallel=True)
+def _dg_bellman_update(a_grid, d_grid, y_grid, V_tilde, theta, kappa, r, xi, phi):
+    """New V at every state (a, d, y), Eq. (15), and V^{d'}, a'^{d'} on G_a x D x Y x D'."""
+    n_a, n_d, n_y = V_tilde.shape
+    V = np.empty((n_a, n_d, n_y))
+    V_cond = np.empty((n_a, n_d, n_y, n_d))
+    a_cond = np.empty((n_a, n_d, n_y, n_d))
+    for idx in prange(n_y * n_d):
+        i_y = idx // n_d
+        i_d = idx % n_d
+        # a' rises with z only for a given d' (Prop. 1), so each d' has its own start
+        j_start = np.zeros(n_d, dtype=np.int64)
+        for i_a in range(n_a):
+            v_best = -np.inf
+            for i_dn in range(n_d):
+                d_next = d_grid[i_dn]
+                z = _dg_cash_on_hand(a_grid[i_a], d_grid[i_d], y_grid[i_y], d_next, r, xi, phi)
+                if z <= 0.0:  # d' is not affordable
+                    v, a_next = _DG_PENALTY, 0.0
+                else:
+                    # Grid search over a' in G_a with c = z - a' > 0 (MONOTONE start)
+                    j_best, v = j_start[i_dn], -np.inf
+                    for j in range(j_start[i_dn], n_a):
+                        if a_grid[j] >= z:
+                            break
+                        f = _dg_utility(z - a_grid[j], d_next, theta, kappa) + V_tilde[j, i_dn, i_y]
+                        if f > v:
+                            j_best, v = j, f
+                    a_next = a_grid[j_best]
+                    j_start[i_dn] = j_best
+                    # REFINE between the grid neighbours of the best node
+                    lo = a_grid[max(j_best - 1, 0)]
+                    hi = min(a_grid[min(j_best + 1, n_a - 1)], z)
+                    a_next, v = _dg_refine(
+                        lo, hi, a_next, v, z, d_next, a_grid, V_tilde[:, i_dn, i_y], theta, kappa
+                    )
+                V_cond[i_a, i_d, i_y, i_dn] = v
+                a_cond[i_a, i_d, i_y, i_dn] = a_next
+                v_best = max(v_best, v)
+            V[i_a, i_d, i_y] = v_best
+    return V, V_cond, a_cond
+
+
+class DurableGoodsVFI:
+    """Fella's (2014) VFI1 for the DurableGoods model.
+
+    `solve()` attaches the d'-contingent solution to the model:
+        model.vfi_a_grid : asset grid of the solution (n_a points)
+        model.V_cond     : V^{d'}(a, d, y),  shape (n_a, n_d, n_y, n_d)
+        model.a_cond     : a'^{d'}(a, d, y), shape (n_a, n_d, n_y, n_d)
+    which `DurableGoods.benchmark_controls` evaluates off the grid.
+    """
+
+    def __init__(self, econ_model, n_a: int | None = None, tol: float = 1e-5, max_iter: int = 1000):
+        self.model = econ_model
+        self.n_a = int(econ_model.vfi_grid_size if n_a is None else n_a)
+        self.tol = float(tol)
+        self.max_iter = int(max_iter)
+        self.solve_time: float | None = None
+        self.n_iter: int | None = None
+
+    def solve(self, verbose: bool = False):
+        from ecomodrl.models.durablegoods import asset_grid
+
+        m = self.model
+        p = m.params
+        a_grid = asset_grid(self.n_a, m.a_max)
+        d_grid, y_grid, P = m.d_grid, m.y_grid, m.P
+
+        start = time.perf_counter()
+
+        # Fella: initial guess V^0(a, d, y) = u(r a + y, d)
+        a, d, y = np.meshgrid(a_grid, d_grid, y_grid, indexing="ij")
+        V = _dg_utility(p.r * a + y, d, p.theta, p.kappa)
+
+        for iteration in range(1, self.max_iter + 1):
+            V_tilde = p.beta * V @ P.T  # beta E[V(a', d', y') | y], Eq. (11)
+            V_new, V_cond, a_cond = _dg_bellman_update(
+                a_grid, d_grid, y_grid, V_tilde, p.theta, p.kappa, p.r, p.xi, p.phi
+            )
+            # Fella: relative sup-norm distance
+            distance = np.max(np.abs(V_new - V)) / np.max(np.abs(V))
+            V = V_new
+            if verbose:
+                print(f"VFI iter {iteration:4d}: rel. sup-norm change {distance:.3e}")
+            if distance < self.tol:
+                break
+
+        self.solve_time = time.perf_counter() - start
+        self.n_iter = iteration
+
+        m.vfi_a_grid = a_grid
+        m.V_cond = V_cond
+        m.a_cond = a_cond
+        return V_cond, a_cond

@@ -12,7 +12,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Write selected-hyperparameter LaTeX tables.")
     parser.add_argument(
         "--models", nargs="+", choices=tuple(MODEL_LABELS), default=tuple(MODEL_LABELS),
-        help="Model directories to include (default: all four).",
+        help="Model directories to include (default: all).",
     )
     parser.add_argument(
         "--variant", choices=("mf", "pd", "both"), default="both",

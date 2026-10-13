@@ -44,6 +44,8 @@ from ecomodrl.analysis.efficiency_metrics import (
 from ecomodrl.analysis import complexity_metrics
 from ecomodrl.analysis.plotting import (
     plot_policy_distribution,
+    plot_durable_policy,
+    is_durable_model,
     plot_cev_distribution,
     plot_cev_distribution_combined,
     plot_euler_error_distribution,
@@ -1031,6 +1033,17 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         algorithms=cfg.algorithms,
         variant=_variant(cfg),
     )
+
+    if is_durable_model(economic_model):
+        plot_durable_policy(
+            economic_model,
+            egm_policy,
+            rl_policies,
+            out / f"durable_{_variant(cfg)}.pdf",
+            algorithms=cfg.algorithms,
+            variant=_variant(cfg),
+        )
+        print("[figures] durable-choice plot saved")
 
     plot_cev_distribution(
         economic_model,

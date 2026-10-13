@@ -64,6 +64,10 @@ class EconomicModel(ABC):
     min_action_share: float = 1e-3
     max_action_share: float = 1.0 - 1e-3
 
+    # Action coordinates that encode a discrete choice: {coordinate: number of
+    # equal-width ordinal bins on [-1, 1]}. None for purely continuous actions.
+    discrete_action_bins: dict[int, int] | None = None
+
     def __init__(self, params: Any | None = None):
         if params is None:
             if self.PARAMS_CLS is None:
@@ -141,6 +145,14 @@ class EconomicModel(ABC):
         if self.params.gamma == 1.0:
             return xp.log(c)
         return c ** (1.0 - self.params.gamma) / (1.0 - self.params.gamma)
+
+    def utility_from_controls(self, controls):
+        """Period reward from a controls dict. Default: utility of consumption.
+
+        Models whose utility depends on further controls (e.g. a durable stock)
+        override this. Accepts NumPy arrays or Torch tensors.
+        """
+        return self.utility(controls["consumption"])
 
     def marginal_utility(self, c):
         return np.asarray(c) ** (-self.params.gamma)
@@ -331,11 +343,18 @@ class EconomicModel(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement quadrature_shocks.")
 
+    @property
+    def n_quadrature_nodes(self) -> int:
+        """Number K of quadrature nodes per post-decision state."""
+        return int(np.asarray(self.quadrature_shocks()[1]).shape[0])
+
     def quadrature_next_states(self, state, controls: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
         """Next states at every quadrature node via `transition()`. numpy only.
 
         state: (B, state_dim); controls: values with leading dimension B.
         Returns next states of shape (B, K, state_dim) and weights of shape (K,).
+        Models with a Markov exogenous state override this and return
+        state-dependent weights of shape (B, K) (rows sum to one).
         """
         shocks, weights = self.quadrature_shocks()
         weights = np.asarray(weights, dtype=np.float64)

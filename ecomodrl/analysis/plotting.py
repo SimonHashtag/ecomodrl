@@ -47,6 +47,7 @@ MODEL_LABELS = {
     "BrockMirman": "Brock--Mirman",
     "BufferStock": "Buffer Stock",
     "PortfolioChoice": "Portfolio Choice",
+    "DurableGoods": "Durable Goods",
 }
 
 EGM_COLOR = "0.45"
@@ -71,6 +72,38 @@ def positive_m_grid(model):
     return np.asarray(model.m_grid)[np.asarray(model.m_grid) > 0.0]
 
 
+def is_durable_model(model) -> bool:
+    """True for models with a discrete durable choice (DurableGoods)."""
+    return getattr(model, "durable_levels", None) is not None
+
+
+def policy_plot_grid(model):
+    """First-state grid of the policy figures.
+
+    DurableGoods keeps a = 0 (the borrowing limit is a regular, often visited
+    state there) and stops at the largest initial / evaluation assets: RL never
+    starts above them, and households decumulate from there.
+    """
+    if is_durable_model(model):
+        a = np.asarray(model.m_grid, dtype=np.float64)
+        return a[a <= model.init_a_max]
+    return positive_m_grid(model)
+
+
+def state_axis_label(model) -> str:
+    """Label of the first (endogenous) state."""
+    if is_durable_model(model):
+        return "Assets $a$"
+    return "Cash-on-hand $m$"
+
+
+def share_axis_label(model) -> str:
+    """Label of the consumption-share policy."""
+    if is_durable_model(model):
+        return "Consumption share $c/z$"
+    return "Consumption share $c/m$"
+
+
 def algorithm_label(algo: str, variant: str = "mf") -> str:
     """Display label for an algorithm in a single-variant figure."""
     label = str(algo).upper()
@@ -84,6 +117,8 @@ def exogenous_state_label(model, index: int = 1) -> str:
         return r"$z_t$"
     if model_name == "PortfolioChoice":
         return fr"$z_{{{int(index)},t}}$"
+    if model_name == "DurableGoods":
+        return (r"$d$", r"$p$", r"$e$")[int(index) - 1]
     return fr"$x_{{{int(index)}}}$"
 
 
@@ -210,7 +245,7 @@ def plot_policy_distribution(
         - IQM RL policy;
         - IQR band across training seeds.
     """
-    m = positive_m_grid(model)
+    m = policy_plot_grid(model)
     x_slices, slice_labels = exogenous_plot_slices(model)
     
     egm_shares = []
@@ -270,8 +305,8 @@ def plot_policy_distribution(
                 ax.plot(m, iqm_values, color=color, linewidth=1.8)
 
         ax.set_title(algorithm_label(algo, variant))
-        ax.set_xlabel("Cash-on-hand $m$")
-        ax.set_ylabel("Consumption share $c/m$")
+        ax.set_xlabel(state_axis_label(model))
+        ax.set_ylabel(share_axis_label(model))
         ax.set_ylim(y_min, y_max)
         ax.grid(alpha=0.3)
 
@@ -289,6 +324,96 @@ def plot_policy_distribution(
     fig.savefig(save_path, dpi=140)
     plt.close(fig)
     
+
+# =============================================================================
+# Durable choice (models with discrete durable levels)
+# =============================================================================
+
+def plot_durable_policy(
+    model,
+    egm_policy,
+    rl_policies_by_algo,
+    save_path,
+    *,
+    algorithms=DEFAULT_ALGORITHMS,
+    variant="mf",
+):
+    """Plot the discrete durable choice d'(a).
+
+    Each panel shows, for the same exogenous slices as the policy figure:
+        - the benchmark choice (dashed step function);
+        - the median RL choice across training seeds (step function);
+        - the Q25--Q75 band across training seeds.
+    Medians and quartiles are ordinal statistics (method "inverted_cdf"), so
+    they always lie on a durable level. Slices are drawn with small vertical
+    offsets so that coinciding choices stay visible.
+    """
+    a = policy_plot_grid(model)
+    levels = np.asarray(model.durable_levels, dtype=np.float64)
+    spacing = float(np.min(np.diff(levels))) if levels.size > 1 else 1.0
+    x_slices, slice_labels = exogenous_plot_slices(model)
+    offsets = [(i - (len(x_slices) - 1) / 2) * 0.06 * spacing for i in range(len(x_slices))]
+
+    egm_choices = [
+        np.asarray(egm_policy.controls(states_for_m_slice(a, x))["durable"], dtype=np.float64)
+        for x in x_slices
+    ]
+
+    rl_quantiles = {}
+    for algo in algorithms:
+        policies = rl_policies_by_algo.get(algo, [])
+        if not policies:
+            continue
+        per_slice = []
+        for x in x_slices:
+            states = states_for_m_slice(a, x)
+            stack = np.stack(
+                [np.asarray(policy.controls(states)["durable"], dtype=np.float64) for policy in policies],
+                axis=0,
+            )
+            per_slice.append(np.quantile(stack, [0.25, 0.5, 0.75], axis=0, method="inverted_cdf"))
+        rl_quantiles[algo] = per_slice
+
+    rows, cols = subplot_grid(len(algorithms))
+    fig, axes = plt.subplots(rows, cols, figsize=(4.5 * cols, 3.5 * rows), sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax, algo in zip(axes, algorithms):
+        for i, egm_d in enumerate(egm_choices):
+            ax.step(a, egm_d + offsets[i], where="post", color=SLICE_COLORS[i],
+                    linestyle="--", linewidth=1.6, alpha=0.8)
+
+        quantiles = rl_quantiles.get(algo)
+        if quantiles is None:
+            ax.text(0.5, 0.5, "no policies", ha="center", va="center", transform=ax.transAxes, color="0.5")
+        else:
+            for i, (q1, median, q3) in enumerate(quantiles):
+                ax.fill_between(a, q1 + offsets[i], q3 + offsets[i], step="post", color=SLICE_COLORS[i], alpha=0.22)
+                ax.step(a, median + offsets[i], where="post", color=SLICE_COLORS[i], linewidth=1.8)
+
+        ax.set_title(algorithm_label(algo, variant))
+        ax.set_xlabel(state_axis_label(model))
+        ax.set_ylabel("Durable choice $d'$")
+        ax.set_yticks(levels)
+        ax.set_yticklabels([f"{level:.2f}" for level in levels], fontsize=7)
+        ax.set_ylim(levels[0] - 0.5 * spacing, levels[-1] + 0.5 * spacing)
+        ax.grid(alpha=0.3)
+
+    for ax in axes[len(algorithms):]:
+        ax.axis("off")
+
+    handles = [Line2D([0], [0], color=SLICE_COLORS[i], label=label) for i, label in enumerate(slice_labels) if label]
+    handles += [
+        Line2D([0], [0], color="0.3", linestyle="--", label="EGM"),
+        Line2D([0], [0], color="0.3", label="RL median"),
+        Patch(facecolor="0.3", alpha=0.22, label="RL IQR"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=len(handles), fontsize=8)
+    plt.tight_layout(rect=(0, 0.07, 1, 1))
+    ensure_parent(save_path)
+    fig.savefig(save_path, dpi=140)
+    plt.close(fig)
+
 
 # =============================================================================
 # Portfolio-share policy plots
@@ -1057,7 +1182,7 @@ def _plot_cev_distribution(
                 ax.patch.set_visible(False)
 
         ax.set_title(algorithm_label(algo, variant), fontsize=18)
-        ax.set_xlabel("Cash-on-hand $m$", fontsize=17)
+        ax.set_xlabel(state_axis_label(model), fontsize=17)
         ax.tick_params(axis='both', labelsize=14)
         ax.grid(alpha=0.3, which="both")
 

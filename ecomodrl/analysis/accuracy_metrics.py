@@ -110,6 +110,19 @@ def euler_errors(
             max_shock_nodes=max_shock_nodes,
         )
 
+    # Models with their own Euler-error definition (e.g. DurableGoods: the savings
+    # Euler equation given the discrete durable choice, Markov income).
+    euler_hook = getattr(model, "euler_errors_on_states", None)
+    if euler_hook is not None:
+        states = _test_states_simulated(
+            model=model,
+            policy=policy,
+            n_sim=int(n_sim),
+            burn_in=int(burn_in),
+            seed=int(seed),
+        )
+        return euler_hook(states, lambda s: _policy_controls(policy, s))
+
     if model.weights is None:
         states = _test_states_deterministic(model, int(n_sim))
     else:
@@ -309,6 +322,12 @@ def policy_value_on_grid(
             max_shock_nodes=max_shock_nodes,
         )
 
+    # Models with their own policy evaluation (e.g. DurableGoods: utility of the
+    # full controls, Markov income, interpolation in assets only).
+    value_hook = getattr(model, "evaluate_policy_value", None)
+    if value_hook is not None:
+        return value_hook(lambda s: _policy_controls(policy, s), tol=tol, max_iter=max_iter)
+
     axes = _value_grid_axes(model)
     states = _state_mesh_from_axes(axes)
 
@@ -479,7 +498,7 @@ def eval_return_grid(model, policy, evaluation_sample):
         controls = _policy_controls(policy, state)
         c = np.asarray(controls["consumption"], dtype=np.float64)
 
-        U += disc * model.utility(np.maximum(c, 1e-12))
+        U += disc * model.utility_from_controls({**controls, "consumption": np.maximum(c, 1e-12)})
         disc *= model.beta_eff
 
         shock_t = None if shocks is None else shocks[:, t]

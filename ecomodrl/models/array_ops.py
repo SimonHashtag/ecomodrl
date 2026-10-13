@@ -71,6 +71,19 @@ class _NumpyOps:
     def sum_keepdims(x):
         return x.sum(axis=-1, keepdims=True)
 
+    floor = staticmethod(np.floor)
+    abs = staticmethod(np.abs)
+    expm1 = staticmethod(np.expm1)
+
+    @staticmethod
+    def argmin(x):
+        return np.argmin(x, axis=-1)
+
+    @staticmethod
+    def take(table, idx):
+        """Gather `table[idx]` from a 1-D numpy constant."""
+        return np.asarray(table)[idx]
+
 
 class _TorchOps:
     """Torch implementation of the shared operation table, using float64."""
@@ -159,6 +172,32 @@ class _TorchOps:
     @staticmethod
     def sum_keepdims(x):
         return x.sum(dim=-1, keepdim=True)
+
+    @staticmethod
+    def floor(x):
+        import torch as th
+        return th.floor(x)
+
+    @staticmethod
+    def abs(x):
+        import torch as th
+        return th.abs(x)
+
+    @staticmethod
+    def expm1(x):
+        import torch as th
+        return th.expm1(x)
+
+    @staticmethod
+    def argmin(x):
+        import torch as th
+        return th.argmin(x, dim=-1)
+
+    @staticmethod
+    def take(table, idx):
+        """Gather `table[idx]` from a 1-D numpy constant onto the device of `idx`."""
+        import torch as th
+        return th.as_tensor(np.asarray(table, dtype=np.float64), device=idx.device)[idx]
 
 
 def ops(*xs):

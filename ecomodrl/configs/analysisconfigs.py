@@ -26,6 +26,7 @@ from ecomodrl.configs.runconfigs import (
     BrockMirmanRunConfig,
     BufferStockRunConfig,
     PortfolioChoiceRunConfig,
+    DurableGoodsRunConfig,
 )
     
 from ecomodrl.models import (
@@ -35,6 +36,8 @@ from ecomodrl.models import (
     PortfolioChoice,
     BaseEGM,
     PortfolioChoiceSolver,
+    DurableGoods,
+    DurableGoodsVFI,
 )
 
 ALL_ALGORITHMS = ("ddpg", "td3", "sac", "ppo")
@@ -157,6 +160,21 @@ class PortfolioChoiceAnalysisConfig(PortfolioChoiceRunConfig, BaseAnalysisConfig
 
     def make_egm_solver(self, model):
         return PortfolioChoiceSolver(model)
+
+
+@dataclass
+class DurableGoodsAnalysisConfig(DurableGoodsRunConfig, BaseAnalysisConfig):
+    """Post-training analysis configuration for Durable Goods (Fella 2014).
+
+    The benchmark is Fella's VFI1 (labelled EGM in the outputs, as for the
+    other models).
+    """
+
+    def make_economic_model(self):
+        return DurableGoods(self.make_params())
+
+    def make_egm_solver(self, model):
+        return DurableGoodsVFI(model)
 
 
 def _parse_algorithm_selection(algo_names: list[str]) -> tuple[str, ...]:

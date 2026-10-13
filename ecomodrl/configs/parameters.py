@@ -253,3 +253,91 @@ class PortfolioChoiceParams:
         object.__setattr__(self, "xi_R", xi_R)
         object.__setattr__(self, "sigma_R", sigma_R)
         object.__setattr__(self, "n_risky", K)
+
+@dataclass(frozen=True)
+class DurableGoodsParams:
+    """
+    Canonical configuration for the durable-goods model of Fella (2014), Table 1.
+
+    The household chooses a durable stock d' from a finite set D and next-period
+    assets a' (wealth plus borrowing capacity, a = w + xi d):
+
+        max E sum_t beta^t [theta log c_t + (1 - theta) log(kappa d_{t+1})]
+        c + a' = z(d'; a, d, y) = y + (1 + r) a - (1 - xi)(d' - d) - h(d, d') - r xi d
+        h(d, d') = 1{d' != d} phi d',     a' >= 0,     d' in D
+
+    with log income y = p + e, p a persistent AR(1) and e iid, both discretized by
+    Tauchen (1986).
+
+    Attributes
+    ----------
+    gamma : float
+        Kept at 1.0 (log utility); used by the CEV formula.
+    beta : float
+        Discount factor β in (0, 1).
+    r : float
+        Net interest rate r (> -1).
+    theta : float
+        Weight of non-durable consumption in utility, in (0, 1).
+    kappa : float
+        Service flow per unit of durable stock (> 0).
+    phi : float
+        Fixed adjustment cost: pay phi * d' whenever d' != d (≥ 0).
+    xi : float
+        Collateralizable share of the durable, in [0, 1).
+    rho, sigma_eta : float
+        Persistence and innovation std. dev. of the AR(1) component p.
+    sigma_eps : float
+        Std. dev. of the iid component e.
+    n_p, n_e : int
+        Tauchen nodes for p and e.
+    tauchen_width : float
+        Tauchen grids cover +/- tauchen_width unconditional std. devs.
+    n_d : int
+        Number of durable levels (equally spaced on [d_min, d_max]).
+    d_min, d_max : float
+        Durable grid bounds (d_min > 0 keeps log(kappa d') finite).
+    """
+    gamma: float = 1.0
+    beta: float = 0.93
+    r: float = 0.06
+    theta: float = 0.77
+    kappa: float = 0.075
+    phi: float = 0.06
+    xi: float = 0.8
+    rho: float = 0.977
+    sigma_eta: float = 0.024
+    sigma_eps: float = 0.063
+    n_p: int = 7
+    n_e: int = 7
+    tauchen_width: float = 3.0
+    n_d: int = 7
+    d_min: float = 0.01
+    d_max: float = 10.0
+
+    # -------- Validation --------
+    def __post_init__(self):
+        if self.gamma != 1.0:
+            raise ValueError("gamma must be 1.0 (the model has log utility)")
+        if not (0 < self.beta < 1):
+            raise ValueError("beta (β) must be in (0, 1)")
+        if not (self.r > -1.0):
+            raise ValueError("r must be > -1")
+        if not (0 < self.theta < 1):
+            raise ValueError("theta must be in (0, 1)")
+        if not (self.kappa > 0):
+            raise ValueError("kappa must be > 0")
+        if not (self.phi >= 0):
+            raise ValueError("phi must be ≥ 0")
+        if not (0 <= self.xi < 1):
+            raise ValueError("xi must be in [0, 1)")
+        if not (abs(self.rho) < 1):
+            raise ValueError("|rho| must be < 1")
+        if not (self.sigma_eta > 0 and self.sigma_eps > 0):
+            raise ValueError("sigma_eta and sigma_eps must be > 0")
+        if not (self.n_p >= 2 and self.n_e >= 2 and self.n_d >= 2):
+            raise ValueError("n_p, n_e and n_d must be ≥ 2")
+        if not (self.tauchen_width > 0):
+            raise ValueError("tauchen_width must be > 0")
+        if not (0 < self.d_min < self.d_max):
+            raise ValueError("durable grid needs 0 < d_min < d_max")
