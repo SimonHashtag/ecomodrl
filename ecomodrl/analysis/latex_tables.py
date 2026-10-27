@@ -56,7 +56,7 @@ SELECTED_HP_ROWS = {
 ACCURACY_ROWS = [
     (r"Empirical Finite-Horizon Return ($U_{\mathrm{RL}}$)", "u_rl", "max", 1.0, NUM_FMT),
     (r"Consumption Equiv. Variation ($\lambda_{\mathrm{CEV}}$ in \%)", "cev_regret", "min", 100.0, NUM_FMT),
-    (r"Euler Equation Error ($\mathbb{E}[\log_{10}|\mathrm{EE}|]$)", "ee_mean", "min", 1.0, NUM_FMT),
+    (r"Intertemporal Optimality Error ($\mathbb{E}[\log_{10}|\mathcal{E}|]$)", "ee_mean", "min", 1.0, NUM_FMT),
 ]
 EFFICIENCY_ROWS = [
     (r"Area Under Learning Curve (AULC)", "aulc", "min", 1.0, "%.4f"),
@@ -336,7 +336,7 @@ def make_selected_hyperparameters_latex_table(
         rules.append(rf"\cmidrule(lr){{{first}-{last}}}")
     lines = [
         r"\begin{table}[H]",
-        r"\setlength{\tabcolsep}{4pt}",
+        r"\setlength{\tabcolsep}{2pt}",
         r"\centering",
         rf"\caption{{{ALGO_LABELS[algo]} -- Selected hyperparameters}}",
         rf"\label{{tab:hp_selected_{algo}}}",

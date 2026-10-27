@@ -43,9 +43,9 @@ class PortfolioChoice(EconomicModel):
 
     PARAMS_CLS = PortfolioChoiceParams
 
-    min_action_share = 1e-6
+    min_action_share = 1e-3
     max_action_share = 1.0
-    simplex_scale = 1.1
+    simplex_scale = 1.05
 
     # Number of scrambled-Sobol nodes (plus their antithetic partners) used by
     # the post-decision quadrature; see `quadrature_shocks`.

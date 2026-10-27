@@ -12,9 +12,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pickle
+import tempfile
+from zipfile import BadZipFile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 import multiprocessing as mp
@@ -100,6 +103,11 @@ def combined_figure_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
 def egm_analysis_dir(cfg: Union[Mapping[str, Any], Any]) -> Path:
     """Directory for benchmark-policy analysis output."""
     return model_results_dir(cfg) / "egm_analysis"
+
+
+def egm_policy_path(cfg: Union[Mapping[str, Any], Any]) -> Path:
+    """Path to the cached solved EGM policy."""
+    return egm_analysis_dir(cfg) / "egm_policy.npz"
 
 
 def evaluation_sample_path(
@@ -205,7 +213,7 @@ def write_npz_dict(path: Path, arrays: dict[str, np.ndarray]) -> None:
     np.savez(path, **arrays)
 
 
-def save_value_grid(path: Path, grid, V: np.ndarray) -> None:
+def save_value_grid(path: Path, grid, V: np.ndarray, *, metadata=None) -> None:
     """Save a value function on a model grid.
 
     Grid convention
@@ -230,6 +238,8 @@ def save_value_grid(path: Path, grid, V: np.ndarray) -> None:
 
     axes = grid if isinstance(grid, tuple) else (grid,)
     data = {"V": np.asarray(V)}
+    if metadata is not None:
+        data["cache_metadata"] = np.asarray(json.dumps(metadata, sort_keys=True))
 
     for i, axis in enumerate(axes):
         data[f"axis_{i}"] = np.asarray(axis)
@@ -261,19 +271,194 @@ def load_value_grid(path: Path):
     return tuple(axes), V
 
 
+_CACHE_VERSION = 4
+_EVALUATION_CONFIG = ("eval_m_grid_size", "eval_horizon", "euler_n_states", "eval_seed_offset", "burn_in")
+_SOLVER_CACHE_SETTINGS = ("max_iter", "tol", "conv", "min_share", "root_interval", "portfolio_tol")
+
+
+def _json_value(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Cannot serialize cache metadata: {type(value).__name__}")
+
+
+def _normalized_metadata(metadata) -> dict:
+    return json.loads(json.dumps(metadata, default=_json_value, sort_keys=True))
+
+
+def _array_hashes(axes) -> list[str]:
+    return [
+        hashlib.sha256(np.asarray(axis, dtype=np.float64).tobytes()).hexdigest()
+        for axis in axes
+    ]
+    
+
+def analysis_cache_metadata(cfg, economic_model) -> dict:
+    """Shared value/return identity; checkpoints add their file identity."""
+    benchmark_model = make_benchmark_model(cfg, economic_model)
+    metadata = egm_policy_cache_metadata(benchmark_model, cfg.make_egm_solver(benchmark_model))
+    metadata["value_axes_sha256"] = _array_hashes(analysis_value_axes(economic_model))
+    metadata["evaluation_model_spec"] = economic_model.model_spec_kwargs()
+    metadata["value_evaluation"] = {"tol": 1e-5, "max_iter": 10_000, "max_shock_nodes": None}
+    metadata["evaluation"] = {name: getattr(cfg, name, None) for name in _EVALUATION_CONFIG}
+    return _normalized_metadata(metadata)
+
+
+def egm_policy_cache_metadata(model, solver) -> dict:
+    """Cache identity for the model grids and numerical solver settings.
+
+    Bump _CACHE_VERSION when the solver or value-boundary rule changes.
+    """
+    return _normalized_metadata({
+        "version": _CACHE_VERSION,
+        "model": type(model).__name__,
+        "parameters": vars(model.params),
+        "model_spec": model.model_spec_kwargs(),
+        "policy_axes_sha256": _array_hashes(model.policy_axes),
+        "asset_axis_sha256": _array_hashes((model.a_grid,))[0],
+        "solver": type(solver).__name__,
+        "solver_settings": {name: getattr(solver, name) for name in _SOLVER_CACHE_SETTINGS
+                            if hasattr(solver, name)},
+    })
+
+
+def _save_egm_policy_cache(path: Path, policy_model, metadata: dict) -> None:
+    """Save all policy arrays needed to reconstruct an EGM benchmark."""
+    arrays = {
+        "cache_metadata": np.asarray(json.dumps(metadata, sort_keys=True)),
+        "policy": np.asarray(policy_model.policy),
+    }
+    for i, axis in enumerate(policy_model.policy_axes):
+        arrays[f"axis_{i}"] = np.asarray(axis)
+
+    if hasattr(policy_model, "share_policy_grid"):
+        arrays["share_policy"] = np.asarray(policy_model.share_policy_grid)
+        arrays["portfolio_policy"] = np.asarray(policy_model.portfolio_policy_grid)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=f".{path.stem}.", suffix=".npz", delete=False
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+        np.savez(temporary, **arrays)
+    temporary_path.replace(path)
+
+
+def _load_egm_policy_cache(path: Path, policy_model, solver) -> None:
+    """Load and validate a cached policy into a freshly built policy model."""
+    with np.load(path) as data:
+        axes = policy_model.policy_axes
+        if (sum(key.startswith("axis_") for key in data.files) != len(axes)
+                or any(not np.array_equal(data[f"axis_{i}"], axis) for i, axis in enumerate(axes))):
+            raise ValueError("Cached EGM policy has incompatible policy axes.")
+
+        shapes = {"policy": policy_model.policy_shape}
+        targets = {"policy": ("policy", "policy")}
+        if hasattr(policy_model, "share_policy_grid"):
+            shapes.update(share_policy=policy_model.policy_shape,
+                          portfolio_policy=policy_model.policy_shape + (policy_model.n_assets,))
+            targets.update(share_policy=("share_policy_grid", "share_policy"),
+                           portfolio_policy=("portfolio_policy_grid", "portfolio_policy"))
+
+        arrays = {}
+        for name, shape in shapes.items():
+            arrays[name] = np.asarray(data[name], dtype=float).copy()
+            if arrays[name].shape != shape or not np.isfinite(arrays[name]).all():
+                raise ValueError(f"Cached EGM policy {name} has invalid shape or values.")
+
+        if "share_policy" in arrays and (
+            np.any((arrays["share_policy"] < 0) | (arrays["share_policy"] > 1))
+            or np.any(arrays["portfolio_policy"] < 0)
+            or not np.allclose(arrays["portfolio_policy"].sum(axis=-1), 1, atol=1e-8, rtol=0)
+        ):
+            raise ValueError("Cached PortfolioChoice policies violate portfolio bounds.")
+
+        for name, array in arrays.items():
+            model_attribute, solver_attribute = targets[name]
+            setattr(policy_model, model_attribute, array)
+            setattr(solver, solver_attribute, array)
+            
+
+def _read_cache_metadata(path: Path):
+    try:
+        with np.load(path) as data:
+            return json.loads(str(data["cache_metadata"].item()))
+    except (ValueError, OSError, KeyError, TypeError, AttributeError, BadZipFile):
+        return None
+
+
+def value_grid_cache_is_current(path, metadata) -> bool:
+    return path.exists() and _read_cache_metadata(path) == metadata
+
+
+def _checkpoint_metadata(checkpoint: Path, normalize_obs: bool = False) -> dict:
+    """Identify checkpoint and observation-normalization files without loading them."""
+    def identity(path):
+        if not path.exists():
+            return None
+        stat = path.stat()
+        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+    return {"checkpoint": identity(checkpoint),
+            "vecnormalize": identity(checkpoint.with_name("vecnormalize.pkl")),
+            "normalize_obs": normalize_obs}
+
+
+def _value_grid_matches_analysis(path, metadata, normalize_obs: bool = False) -> bool:
+    """Check numerical settings and checkpoint identity before plotting cached values."""
+    saved = _read_cache_metadata(path) if path.exists() else None
+    expected = {**metadata, **_checkpoint_metadata(path.parent.parent / "model.zip", normalize_obs)}
+    return (saved is not None and expected["checkpoint"] is not None
+            and all(saved.get(key) == value for key, value in expected.items()))
+
+
 # =============================================================================
 # Model and policy helpers
 # =============================================================================
 
+def make_benchmark_model(cfg, model, *, rqmc_nodes=None):
+    """Build the benchmark policy grid, independently of reporting/value axes."""
+    if not is_portfolio_model(model):
+        return model
+    return cfg.make_economic_model(
+        rqmc_nodes=model.pd_rqmc_nodes if rqmc_nodes is None else rqmc_nodes,
+        m_grid_size=201, rs_grid_size=201, z_grid_size=31,
+        m_span=(model.theta_low, 200.0), rs_span=(0.0, 200.0), z_width=6.0,
+    )
+
+
+def analysis_value_axes(model):
+    """Value axes shared by EGM and RL; reporting keeps the original model grid.
+
+    Portfolio values need a wider cash range than policies because wealth can
+    grow over repeated transitions. Use existing cubic cash/linear predictor
+    spacing; the lower endpoint includes unemployment income.
+    """
+    if is_portfolio_model(model):
+        return (model.make_m_grid(301, (model.theta_low, 1000.0)),
+                *model.make_z_grids(points=61, width=6.0))
+    return accuracy_metrics._value_grid_axes(model)
+
+
 def solve_egm_model(cfg: Union[Mapping[str, Any], Any]):
-    """Construct and solve the economic model with its configured solver."""
+    """Construct and solve, or load, the configured EGM benchmark."""
     model = cfg.make_economic_model()
-    solver = cfg.make_egm_solver(model)
+    policy_model = make_benchmark_model(cfg, model)
+    solver = cfg.make_egm_solver(policy_model)
+    cache_path = egm_policy_path(cfg)
+    metadata = egm_policy_cache_metadata(policy_model, solver)
+
+    if not cfg.overwrite and value_grid_cache_is_current(cache_path, metadata):
+        try:
+            _load_egm_policy_cache(cache_path, policy_model, solver)
+            return model, solver
+        except (OSError, ValueError, KeyError, TypeError, BadZipFile):
+            pass
+
     solver.solve(verbose=False)
-
-    if hasattr(solver, "policy"):
-        model.policy = solver.policy
-
+    _save_egm_policy_cache(cache_path, policy_model, metadata)
     return model, solver
 
 
@@ -390,6 +575,9 @@ def prepare_evaluation_samples(
     seeds = effective_test_seeds(cfg, economic_model)
 
     egm_returns_path = out_dir / "egm_returns.json"
+    metadata = analysis_cache_metadata(cfg, economic_model)
+    metadata_path = out_dir / "egm_returns.metadata.json"
+    refresh = cfg.overwrite or read_json(metadata_path, {}) != metadata
     egm_returns = {
         int(k): float(v)
         for k, v in read_json(egm_returns_path, {}).items()
@@ -398,7 +586,7 @@ def prepare_evaluation_samples(
     for test_seed in seeds:
         path = evaluation_sample_path(cfg, test_seed)
 
-        if cfg.overwrite or not path.exists():
+        if refresh or not path.exists():
             sample = accuracy_metrics.make_evaluation_sample(
                 economic_model,
                 seed=test_seed,
@@ -408,7 +596,7 @@ def prepare_evaluation_samples(
             with open(path, "wb") as f:
                 pickle.dump(sample, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-        if cfg.overwrite or test_seed not in egm_returns:
+        if refresh or test_seed not in egm_returns:
             with open(path, "rb") as f:
                 sample = pickle.load(f)
 
@@ -420,6 +608,7 @@ def prepare_evaluation_samples(
         egm_returns_path,
         {str(k): float(v) for k, v in sorted(egm_returns.items())},
     )
+    write_json(metadata_path, metadata)
 
 
 def cache_egm_value_grid(
@@ -427,18 +616,20 @@ def cache_egm_value_grid(
     economic_model: Any, 
     egm_policy: EGMPolicy,
 ) -> None:
-    """Cache the benchmark value function on the model grid."""
+    """Cache the benchmark value function on the shared evaluation grid."""
     path = egm_analysis_dir(cfg) / "value_grid.npz"
+    metadata = analysis_cache_metadata(cfg, economic_model)
 
-    if path.exists() and not cfg.overwrite:
+    if value_grid_cache_is_current(path, metadata) and not cfg.overwrite:
         return
 
     grid, V = accuracy_metrics.policy_value_on_grid(
         economic_model, 
         egm_policy,
         tol=1e-5,
+        grid_axes=analysis_value_axes(economic_model),
     )
-    save_value_grid(path, grid, V)
+    save_value_grid(path, grid, V, metadata=metadata)
 
 
 
@@ -453,12 +644,15 @@ def cache_train_egm_returns(
     common-random-number sample used during training-time evaluation.
     """
     path = egm_analysis_dir(cfg) / "train_egm_returns.json"
+    metadata = analysis_cache_metadata(cfg, economic_model)
+    metadata_path = path.with_suffix(".metadata.json")
+    refresh = cfg.overwrite or read_json(metadata_path, {}) != metadata
     existing = {
         int(k): float(v)
         for k, v in read_json(path, {}).items()
     }
 
-    missing = [s for s in cfg.seeds if cfg.overwrite or s not in existing]
+    missing = [s for s in cfg.seeds if refresh or s not in existing]
 
     for train_seed in missing:
         sample = accuracy_metrics.make_evaluation_sample(
@@ -472,6 +666,7 @@ def cache_train_egm_returns(
         )
 
     write_json(path, {str(k): float(v) for k, v in sorted(existing.items())})
+    write_json(metadata_path, metadata)
 
 
 
@@ -540,12 +735,25 @@ def analyze_policy_checkpoint(
 
     # 1. Grid Bellman value for CEV maps.
     vg_path = value_grid_path(cfg, algo, train_seed)
-    if cfg.overwrite or not vg_path.exists():
-        grid, V = accuracy_metrics.policy_value_on_grid(economic_model, policy, tol=1e-5)
-        save_value_grid(vg_path, grid, V)
+    metadata = analysis_cache_metadata(cfg, economic_model)
+    checkpoint = checkpoint_dir(cfg, algo, train_seed) / "model.zip"
+    metadata.update(_checkpoint_metadata(checkpoint, cfg.normalize_obs))
+    metadata["variant"] = _variant(cfg)
+    metadata_path = out_dir / "cache_metadata.json"
+    refresh = cfg.overwrite or read_json(metadata_path, {}) != metadata
+    if refresh or not value_grid_cache_is_current(vg_path, metadata):
+        grid, V = accuracy_metrics.policy_value_on_grid(
+            economic_model, policy, tol=1e-5, grid_axes=analysis_value_axes(economic_model))
+        save_value_grid(vg_path, grid, V, metadata=metadata)
+        refresh = True
 
     rl_axes, V_rl_grid = load_value_grid(vg_path)
-    _, V_egm_grid = load_value_grid(egm_analysis_dir(cfg) / "value_grid.npz")
+    egm_axes, V_egm_grid = load_value_grid(egm_analysis_dir(cfg) / "value_grid.npz")
+    if (len(rl_axes) != len(egm_axes)
+            or any(not np.array_equal(rl_axis, egm_axis)
+                   for rl_axis, egm_axis in zip(rl_axes, egm_axes))
+            or V_rl_grid.shape != V_egm_grid.shape):
+        raise RuntimeError("RL and benchmark value caches use different grids; rerun numerical analysis.")
 
     # 2. Test returns, CEV regret, Euler errors, and visited states.
     values_path = test_values_path(cfg, algo, train_seed)
@@ -565,9 +773,9 @@ def analyze_policy_checkpoint(
         key = str(test_seed)
         array_key = f"seed_{test_seed}"
 
-        need_values = cfg.overwrite or key not in values
-        need_eulers = cfg.overwrite or array_key not in eulers
-        need_visited = cfg.overwrite or array_key not in visited
+        need_values = refresh or key not in values
+        need_eulers = refresh or array_key not in eulers
+        need_visited = refresh or array_key not in visited
 
         states_full = None
         if need_values or need_visited:
@@ -576,6 +784,7 @@ def analyze_policy_checkpoint(
                     economic_model,
                     policy,
                     n_sim=cfg.euler_n_states,
+                    burn_in=cfg.burn_in,
                     seed=test_seed,
                 ),
                 dtype=np.float64,
@@ -615,6 +824,7 @@ def analyze_policy_checkpoint(
                 economic_model,
                 policy,
                 n_sim=cfg.euler_n_states,
+                burn_in=cfg.burn_in,
                 seed=test_seed,
             )
             eulers[array_key] = np.asarray(ee, dtype=np.float64)
@@ -632,6 +842,7 @@ def analyze_policy_checkpoint(
 
     if changed_visited:
         write_npz_dict(visited_path, visited)
+    write_json(metadata_path, metadata)
 
 
 # =============================================================================
@@ -857,8 +1068,8 @@ def run_testing(cfg: Union[Mapping[str, Any], Any]) -> None:
 
     check_required_checkpoints(cfg)
 
-    economic_model, _ = solve_egm_model(cfg)
-    egm_policy = EGMPolicy(economic_model)
+    economic_model, solver = solve_egm_model(cfg)
+    egm_policy = EGMPolicy(solver.model)
 
     cache_egm_value_grid(cfg, economic_model, egm_policy)
     prepare_evaluation_samples(cfg, economic_model, egm_policy)
@@ -902,8 +1113,6 @@ def run_testing(cfg: Union[Mapping[str, Any], Any]) -> None:
                         flush=True,
                     )
 
-    economic_model, _ = solve_egm_model(cfg)
-
     for algo in cfg.algorithms:
         summarize_algorithm(cfg, economic_model, algo)
         print(f"[analysis] wrote summary for {cfg.model_name}/{algo}")
@@ -944,8 +1153,12 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     """Create figures and LaTeX tables from saved analysis output."""
     print(f"\n========== Figures: {cfg.model_name} ({_variant(cfg)}) ==========")
 
-    economic_model, _ = solve_egm_model(cfg)
-    egm_policy = EGMPolicy(economic_model)
+    economic_model, solver = solve_egm_model(cfg)
+    egm_policy = EGMPolicy(solver.model)
+
+    metadata = analysis_cache_metadata(cfg, economic_model)
+    if not value_grid_cache_is_current(egm_analysis_dir(cfg) / "value_grid.npz", metadata):
+        raise RuntimeError("Benchmark value cache is stale. Run numerical analysis before plotting CEV.")
 
     axes_egm, V_egm = load_value_grid(egm_analysis_dir(cfg) / "value_grid.npz")
     deterministic = is_deterministic_one_state(economic_model)
@@ -970,7 +1183,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
                 continue
 
             vg_path = value_grid_path(cfg, algo, seed)
-            if vg_path.exists():
+            if _value_grid_matches_analysis(vg_path, metadata, cfg.normalize_obs):
                 _, V = load_value_grid(vg_path)
                 rl_value_grids[algo].append(V)
 
@@ -1040,7 +1253,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
         out / f"cev_{_variant(cfg)}.pdf",
         algorithms=cfg.algorithms,
         visited_m=pooled_visited_m,
-        support_quantiles=(0.01, 99.99),
+        support_quantiles=cfg.support_quantiles,
         variant=_variant(cfg),
     )
 
@@ -1115,7 +1328,7 @@ def run_plots_and_tables(cfg: Union[Mapping[str, Any], Any]) -> None:
     for algo in cfg.algorithms:
         path = algorithm_summary_path(cfg, algo)
         if path.exists():
-            summaries[algo] = read_json(path, {})
+            summaries[algo] = read_json(algorithm_summary_path(cfg, algo), {})
 
     # Merge efficiency stats into the per-algorithm summaries for the table.
     for algo in cfg.algorithms:
@@ -1207,6 +1420,8 @@ def load_variant_figure_inputs(
     deterministic = is_deterministic_one_state(economic_model)
     active_test_seeds = effective_test_seeds(cfg, economic_model)
 
+    metadata = analysis_cache_metadata(cfg, economic_model)
+
     histories = {algo: [] for algo in cfg.algorithms}
     history_seeds = {algo: [] for algo in cfg.algorithms}
     euler = {algo: [] for algo in cfg.algorithms}
@@ -1232,11 +1447,11 @@ def load_variant_figure_inputs(
                 skipped.append((algo, seed, "eval_history.npz"))
 
             vg_path = value_grid_path(cfg, algo, seed)
-            if vg_path.exists():
+            if _value_grid_matches_analysis(vg_path, metadata, cfg.normalize_obs):
                 _, V = load_value_grid(vg_path)
                 value_grids[algo].append(V)
             else:
-                skipped.append((algo, seed, "analysis/value_grid.npz"))
+                skipped.append((algo, seed, "analysis/value_grid.npz (missing or stale)"))
 
             visited = read_npz_dict(visited_states_path(cfg, algo, seed))
             for test_seed in active_test_seeds:
@@ -1328,7 +1543,7 @@ def run_combined_figures(cfg: Union[Mapping[str, Any], Any]) -> None:
     out = combined_figure_dir(cfg)
 
     benchmark_path = egm_analysis_dir(cfg) / "value_grid.npz"
-    if benchmark_path.exists() and any(
+    if value_grid_cache_is_current(benchmark_path, analysis_cache_metadata(cfg, economic_model)) and any(
         any(data["value_grids"].values()) for data in inputs.values()
     ):
         axes_egm, V_egm = load_value_grid(benchmark_path)
@@ -1337,6 +1552,7 @@ def run_combined_figures(cfg: Union[Mapping[str, Any], Any]) -> None:
             {variant: data["value_grids"] for variant, data in inputs.items()},
             out / "cev.pdf", algorithms=cfg.algorithms,
             visited_by_variant={variant: data["visited_m"] for variant, data in inputs.items()},
+            support_quantiles=cfg.support_quantiles,
         )
     else:
         print("[combined] WARNING: missing benchmark or policy value grids; CEV figure was not written.")

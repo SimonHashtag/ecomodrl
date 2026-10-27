@@ -55,6 +55,9 @@ class BaseAnalysisConfig:
     
     # Evaluation
     euler_n_states: int = 100
+    burn_in: int = 1000
+
+    support_quantiles: tuple[float, float] = (0.01, 99.99)  # Percentiles of visited states to display in plots
 
     # Parallelism
     max_workers: int | None = None
@@ -151,9 +154,11 @@ class PortfolioChoiceAnalysisConfig(PortfolioChoiceRunConfig, BaseAnalysisConfig
     """Post-training analysis configuration for Portfolio Choice."""
     
     #max_workers: int | None = 1  # Limit parallelism for Portfolio Choice due to numba
+    burn_in: int = 0
+    support_quantiles: tuple[float, float] = (0, 90)
 
-    def make_economic_model(self):
-        return PortfolioChoice(self.make_params())
+    def make_economic_model(self, **kwargs):
+        return PortfolioChoice(self.make_params(), **kwargs)
 
     def make_egm_solver(self, model):
         return PortfolioChoiceSolver(model)

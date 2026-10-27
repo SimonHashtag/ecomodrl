@@ -115,12 +115,12 @@ def measure_policy_flops(model, algo: str, batch: int = 256) -> float:
     return float(fcm.get_total_flops()) / float(batch)
 
 
-def _auto_forward_steps(model, algo: str, *, cycles: int = 4, floor: int = 256) -> int:
+def _auto_forward_steps(model, algo: str, *, cycles: int = 2, floor: int = 256) -> int:
     """Smallest env-step budget that reliably triggers several update phases.
     
     model : SB3 RL model (loaded from a checkpoint, so the actual hyperparameters are used)
     algo  : algorithm name (lowercase)
-    cycles: number of update phases to trigger (default 4)
+    cycles: number of update phases to trigger (default 2)
     floor : minimum number of forward env steps to use (default 256)
 
     FLOPs per optimizer step is deterministic (fixed matmuls on a `batch_size`
