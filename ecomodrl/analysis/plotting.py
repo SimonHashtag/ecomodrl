@@ -78,10 +78,12 @@ def algorithm_label(algo: str, variant: str = "mf") -> str:
 def exogenous_state_label(model, index: int = 1) -> str:
     """Math label for an exogenous state, using model-specific notation."""
     model_name = type(model).__name__
-    if model_name == "BrockMirman" or len(model.exogenous_grids) == 1:
-        return r"$z_t$"
+    if model_name == "PortfolioChoice" and len(model.exogenous_grids) == 1:
+        return r"$x_t$"
     if model_name == "PortfolioChoice":
-        return fr"$z_{{{int(index)},t}}$"
+        return fr"$x_{{{int(index)},t}}$"
+    if model_name == "BrockMirman":
+        return r"$z_t$"
     return fr"$x_{{{int(index)}}}$"
 
 
@@ -585,10 +587,13 @@ def plot_portfolio_share_heatmaps(
 
     if mesh is not None:
         cbar = fig.colorbar(mesh, ax=axes.tolist(), shrink=0.9)
-        cbar.set_label(
-            fr"IQM RL portfolio share on "
-            fr"$w_{{{asset_index}}}$"
-        )
+        if model.exogenous_dim == 1:
+            cbar.set_label(r"IQM RL portfolio share $w$")
+        else:
+            cbar.set_label(
+                fr"IQM RL portfolio share "
+                fr"$w_{{{asset_index}}}$"
+            )
 
     # fig.suptitle(
     #     fr"RL portfolio share of {_risky_asset_label(asset_index)}: "
@@ -736,14 +741,13 @@ def plot_portfolio_share_diff_heatmaps(
 
     if mesh is not None:
         cbar = fig.colorbar(mesh, ax=axes.tolist(), shrink=0.9)
-        cbar.set_label(
-            fr"RL $-$ EGM portfolio share on $w_{{{asset_index}}}$ [pp]"
-        )
+        if model.exogenous_dim == 1:
+            cbar.set_label(r"RL $-$ EGM portfolio share $w$ [pp]")
+        else:
+            cbar.set_label(
+                fr"RL $-$ EGM portfolio share $\omega_{{{asset_index}}}$ [pp]"
+            )
 
-    # fig.suptitle(
-    #     fr"RL vs EGM portfolio share of {_risky_asset_label(asset_index)}: "
-    #     fr"IQM deviation"
-    # )
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=300)
     plt.close(fig)
@@ -853,19 +857,26 @@ def plot_portfolio_share_slices(
 
         ax.set_title(algorithm_label(algo, variant))
         ax.set_xlabel(r"Cash-on-hand $m$")
-        ax.set_ylabel(fr"Portfolio share $w_{{{asset_index}}}$")
+        if model.exogenous_dim == 1:
+            ax.set_ylabel(r"Portfolio share $w$")
+        else:
+            ax.set_ylabel(fr"Portfolio share $w{{{asset_index}}}$")
         ax.set_ylim(-0.02, 1.02)
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=7, ncol=2)
-
     for ax in axes[len(algorithms):]:
         ax.axis("off")
+
+    handles = [Line2D([0], [0], color=SLICE_COLORS[i],
+                      label=f"{exogenous_state_label(model, asset_index)} {label}")
+               for i, label in enumerate(slice_labels)]
+    fig.legend(handles, [handle.get_label() for handle in handles],
+               loc="lower center", ncol=len(handles), fontsize=8)
 
     # fig.suptitle(
     #     fr"Portfolio share of {_risky_asset_label(asset_index)}: "
     #     fr"EGM vs RL (IQM and IQR)"
     # )
-    plt.tight_layout()
+    plt.tight_layout(rect=(0, 0.07, 1, 1))
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)
     plt.close(fig)

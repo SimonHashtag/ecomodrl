@@ -56,7 +56,7 @@ SELECTED_HP_ROWS = {
 ACCURACY_ROWS = [
     (r"Empirical Finite-Horizon Return ($U_{\mathrm{RL}}$)", "u_rl", "max", 1.0, NUM_FMT),
     (r"Consumption Equiv. Variation ($\lambda_{\mathrm{CEV}}$ in \%)", "cev_regret", "min", 100.0, NUM_FMT),
-    (r"Intertemporal Optimality Error ($\mathbb{E}[\log_{10}|\mathcal{E}|]$)", "ee_mean", "min", 1.0, NUM_FMT),
+    (r"Intertemporal Optimality Error ($\log_{10}|\mathcal{E}|$)", "ee_mean", "min", 1.0, NUM_FMT),
 ]
 EFFICIENCY_ROWS = [
     (r"Area Under Learning Curve (AULC)", "aulc", "min", 1.0, "%.4f"),
@@ -73,7 +73,7 @@ COMBINED_EFFICIENCY_ROWS = [(key, direction, scale, fmt) for _, key, direction, 
 COMBINED_COMPLEXITY_ROWS = [(key, direction, scale, fmt) for _, key, direction, scale, fmt in COMPLEXITY_ROWS]
 COMBINED_ROW_LABELS = {
     "u_rl": r"$U_{\mathrm{RL}}$", "cev_regret": r"$\lambda_{\mathrm{CEV}}$ (\%)",
-    "ee_mean": r"$\mathbb{E}[\log_{10}|\mathrm{EE}|]$", "aulc": r"AULC",
+    "ee_mean": r"$\log_{10}|\mathcal{E}|$", "aulc": r"AULC",
     "time_to_best": r"$t_{\mathrm{best}}$ [s]", "time_to_converged": r"$t_{\varepsilon}$ [s]",
     "flops_per_update": r"FLOPs/upd. ($\log_{10}$)",
     "flops_to_conv": r"FLOPs$_{\mathrm{near-best}}$ ($\log_{10}$)",

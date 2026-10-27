@@ -424,7 +424,7 @@ def make_benchmark_model(cfg, model, *, rqmc_nodes=None):
         return model
     return cfg.make_economic_model(
         rqmc_nodes=model.pd_rqmc_nodes if rqmc_nodes is None else rqmc_nodes,
-        m_grid_size=201, rs_grid_size=201, z_grid_size=31,
+        m_grid_size=401, rs_grid_size=401, z_grid_size=121,
         m_span=(model.theta_low, 200.0), rs_span=(0.0, 200.0), z_width=6.0,
     )
 
@@ -438,7 +438,7 @@ def analysis_value_axes(model):
     """
     if is_portfolio_model(model):
         return (model.make_m_grid(301, (model.theta_low, 1000.0)),
-                *model.make_z_grids(points=61, width=6.0))
+                *model.make_z_grids(points=121, width=6.0))
     return accuracy_metrics._value_grid_axes(model)
 
 
