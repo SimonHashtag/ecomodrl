@@ -631,9 +631,9 @@ def _portfolio_shock_indices(model, max_shock_nodes=None):
     """Select RQMC nodes for portfolio diagnostics.
 
     Full RQMC integration can be expensive for RL policies. By default, use at
-    most `model.analysis_rqmc_nodes` if present, otherwise 1024. Use a prefix
-    of the Sobol sequence so power-of-two sample sizes retain their nested
-    low-discrepancy balance.
+    most `model.analysis_rqmc_nodes` if present, otherwise 1024. Select a prefix
+    of the original Sobol points and their partners in the second half of the
+    pool. Odd limits are rounded down to preserve complete antithetic pairs.
     """
     M = int(model._M_rqmc)
 
@@ -641,11 +641,14 @@ def _portfolio_shock_indices(model, max_shock_nodes=None):
         max_shock_nodes = int(getattr(model, "analysis_rqmc_nodes", min(M, 1024)))
 
     max_shock_nodes = int(max_shock_nodes)
+    if max_shock_nodes < 2:
+        raise ValueError("max_shock_nodes must be at least 2 for antithetic pairs.")
 
     if max_shock_nodes >= M:
         return np.arange(M)
 
-    return np.arange(max_shock_nodes)
+    n_pairs = max_shock_nodes // 2
+    return np.concatenate([np.arange(n_pairs), M // 2 + np.arange(n_pairs)])
 
 
 def _portfolio_next_shock_arrays(model, z, shock_idx):

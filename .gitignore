@@ -148,3 +148,9 @@ dmypy.json
 
 # conda
 .conda
+
+# codex
+/tmp
+/tests
+/diagnostics
+/docs
