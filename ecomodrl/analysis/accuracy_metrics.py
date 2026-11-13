@@ -14,7 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import NdBSpline
+from scipy.sparse import csr_matrix, vstack
 
 
 # =============================================================================
@@ -88,7 +89,7 @@ def euler_errors(
     model,
     policy,
     n_sim,
-    burn_in=1_000,
+    burn_in=0,
     seed=0,
     *,
     max_shock_nodes=None,
@@ -98,7 +99,8 @@ def euler_errors(
     For standard one-control models this computes
     log10 |1 - c_implied / c_policy|.
 
-    For portfolio-choice models this computes a joint Euler/KKT diagnostic.
+    For portfolio-choice models this computes the log10 maximum of
+    assetwise consumption-equivalent Euler/KKT residuals
     """
     if _is_portfolio_choice(model):
         return _portfolio_euler_errors(
@@ -164,7 +166,7 @@ def _test_states_simulated(model, policy, n_sim, burn_in, seed):
     return states[burn_in:-1]
 
 
-def simulate_states(model, policy, n_sim, burn_in=1_000, seed=0):
+def simulate_states(model, policy, n_sim, burn_in=0, seed=0):
     """Return the states used by `euler_errors`."""
 
     return _test_states_simulated(
@@ -174,7 +176,6 @@ def simulate_states(model, policy, n_sim, burn_in=1_000, seed=0):
         burn_in=int(burn_in),
         seed=int(seed),
     )
-
 
 
 # =============================================================================
@@ -271,6 +272,73 @@ def iqm_ci_crossed(
 # Bellman policy evaluation on the grid
 # =============================================================================
 
+def _value_grid_axes(model):
+    """Use the model's state grids, excluding zero cash for CRRA utility."""
+    cash = np.asarray(model.m_grid)
+    return (cash[cash > 0],) + tuple(model.exogenous_grids)
+
+
+def _linear_interpolation_matrix(axes, coordinates):
+    """Sparse linear interpolation weights, clamping each coordinate to its axis."""
+    points = np.asarray(coordinates, dtype=float).reshape(-1, len(axes))
+    if not np.isfinite(points).all():
+        raise RuntimeError("Value interpolation received nonfinite coordinates.")
+    points = np.clip(points, [axis[0] for axis in axes], [axis[-1] for axis in axes])
+    knots = tuple(np.r_[axis[0], axis, axis[-1]] for axis in axes)
+    weights = NdBSpline.design_matrix(points, knots, k=1, extrapolate=False)
+    # SciPy omits trailing columns when no point touches the upper grid cells.
+    weights.resize((len(points), int(np.prod([len(axis) for axis in axes]))))
+    return weights
+
+
+def interpolate_value(axes, values, coordinates):
+    """Linear/multilinear values with constant continuation outside every axis."""
+    coordinates = np.asarray(coordinates, dtype=float)
+    weights = _linear_interpolation_matrix(axes, coordinates)
+    return (weights @ np.asarray(values).ravel()).reshape(coordinates.shape[:-1])
+
+
+def _expected_interpolation_matrix(axes, next_states, mass):
+    """Average the shock-weighted interpolation rows for each current state."""
+    n_shocks = len(mass)
+    n_states = np.asarray(next_states).size // (len(axes) * n_shocks)
+    expectation = csr_matrix(
+        (np.tile(mass, n_states), np.arange(n_states * n_shocks),
+         np.arange(n_states + 1) * n_shocks),
+        shape=(n_states, n_states * n_shocks),
+    )
+    return expectation @ _linear_interpolation_matrix(axes, next_states)
+
+
+def _policy_continuation_matrix(model, axes, states, controls, max_shock_nodes):
+    """Precompute E[value_kernel(s') V(s')] under the fixed policy."""
+    consumption = np.asarray(controls["consumption"], dtype=float)
+    n_states = consumption.size
+    if _is_portfolio_choice(model):
+        weights = np.maximum(np.asarray(controls["portfolio_weights"], dtype=float), 0)
+        weights /= np.maximum(weights.sum(axis=-1, keepdims=True), 1e-14)
+        shock_idx = _portfolio_shock_indices(model, max_shock_nodes)
+        kernel = model.value_kernel()[shock_idx] / len(shock_idx)
+        mass = np.r_[(1-model.unemp_prob)*kernel, model.unemp_prob*kernel]
+        rows = []
+        # Construct interpolation rows for all predictors at one cash node together.
+        for state_row, consumption_row, weight_row in zip(states, consumption, weights):
+            next_states = np.asarray([
+                _portfolio_next_states_for_value(model, state, max(state[0]-c, 0), w, shock_idx)
+                for state, c, w in zip(state_row.reshape(-1, model.state_dim),
+                                       consumption_row.ravel(), weight_row.reshape(-1, model.n_assets))
+            ])
+            rows.append(_expected_interpolation_matrix(axes, next_states, mass))
+        return vstack(rows, format="csr")
+
+    next_states, _ = model.next_state_distribution(states, states[..., 0]-consumption)
+    next_states = np.asarray(next_states)
+    n_shocks = next_states.reshape(n_states, -1, len(axes)).shape[1]
+    kernel = np.broadcast_to(np.asarray(model.value_kernel()), (n_shocks,))
+    quadrature = np.ones(n_shocks) if model.weights is None else np.asarray(model.weights)
+    return _expected_interpolation_matrix(axes, next_states, kernel * quadrature)
+
+
 def policy_value_on_grid(
     model,
     policy,
@@ -278,80 +346,32 @@ def policy_value_on_grid(
     max_iter=10_000,
     *,
     max_shock_nodes=None,
+    grid_axes=None,
 ):
-    """Iterate the Bellman equation under a fixed policy.
+    """Solve V = u(c) + beta E[value_kernel(s') V(s')] for a fixed policy.
 
-    Standard models
-    ---------------
-    Computes
-
-        V(s) = u(c(s)) + beta E[value_kernel(s') V(s')]
-
-    using the model's true quadrature distribution.
-
-    PortfolioChoice
-    ---------------
-    Uses the same true normalized Bellman equation, but transitions depend on
-    both consumption and portfolio weights. Therefore the portfolio-specific
-    branch evaluates the full policy controls.
-
-    Important
-    ---------
-    This function uses the true shock distribution and structural beta. It does
-    not use the tilted simulation transition or beta_eff.
+    Use the true shock distribution and structural beta. Coordinates outside
+    the evaluation axes are clamped to their nearest endpoint. By default the
+    axes are the model's state grids, excluding zero cash.
     """
-    if _is_portfolio_choice(model):
-        return _portfolio_policy_value_on_grid(
-            model=model,
-            policy=policy,
-            tol=tol,
-            max_iter=max_iter,
-            max_shock_nodes=max_shock_nodes,
-        )
-
-    axes = _value_grid_axes(model)
+    axes = _value_grid_axes(model) if grid_axes is None else tuple(grid_axes)
     states = _state_mesh_from_axes(axes)
-
-    c = np.asarray(_consumption(policy, states), dtype=np.float64)
-    a = states[..., 0] - c
-
-    next_states, _ = model.next_state_distribution(states, a)
-    u = model.utility(c)
-
-    V = np.zeros_like(u, dtype=np.float64)
-    beta = model.params.beta
-
+    controls = _policy_controls(policy, states)
+    utility = model.utility(np.maximum(controls["consumption"], 1e-12)).reshape(-1)
+    continuation = _policy_continuation_matrix(model, axes, states, controls, max_shock_nodes)
+    value = np.zeros(utility.size)
     for _ in range(int(max_iter)):
-        V_next = _interpolate_value(V, axes, next_states)
-        EV = model.integrate(model.value_kernel() * V_next)
-
-        V_new = u + beta * EV
-        error = np.max(np.abs(V_new - V))
-        V = V_new.copy()
-
-        if error < tol:
+        updated = utility + model.params.beta * (continuation @ value)
+        delta = float(np.max(np.abs(updated-value)))
+        value = updated
+        if not np.all(np.isfinite(value)):
+            raise RuntimeError("Fixed-policy Bellman evaluation produced nonfinite values.")
+        if delta < tol:
             break
-
+    else:
+        raise RuntimeError(f"Fixed-policy Bellman evaluation did not converge: delta={delta:.3e}.")
     display_grid = axes[0] if len(axes) == 1 else axes
-    return display_grid, V
-
-
-def _value_grid_axes(model):
-    """Axes for grid-based value evaluation.
-
-    The order matches state order:
-
-        (m_grid, x1_grid, ..., xd_grid)
-
-    For constrained models, m=0 is removed to avoid utility at zero
-    consumption.
-    """
-    m_axis = model.m_grid
-
-    if _is_constrained(model) and m_axis[0] <= 0.0:
-        m_axis = m_axis[1:]
-
-    return (m_axis,) + tuple(model.exogenous_grids)
+    return display_grid, value.reshape(states.shape[:-1])
 
 
 def _state_mesh_from_axes(axes):
@@ -365,46 +385,6 @@ def _state_mesh_from_axes(axes):
     """
     meshes = np.meshgrid(*axes, indexing="ij")
     return np.stack(meshes, axis=-1)
-
-
-def _interpolate_value(V, axes, next_states):
-    """Interpolate V at next-state coordinates.
-
-    axes:
-        tuple of grids in state order, e.g. (m_grid, z_grid)
-
-    next_states:
-        array with final dimension equal to len(axes).
-    """
-    next_states = np.asarray(next_states, dtype=np.float64)
-
-    if len(axes) == 1:
-        values = np.interp(
-            next_states[..., 0].ravel(),
-            axes[0],
-            V,
-        )
-        return values.reshape(next_states.shape[:-1])
-
-    coords = _clip_to_axes(next_states, axes)
-
-    interp = RegularGridInterpolator(
-        axes,
-        V,
-        bounds_error=False,
-        fill_value=None,
-    )
-
-    return interp(coords)
-
-
-def _clip_to_axes(coords, axes):
-    coords = np.asarray(coords, dtype=np.float64).copy()
-
-    for j, grid in enumerate(axes):
-        coords[..., j] = np.clip(coords[..., j], grid[0], grid[-1])
-
-    return coords
 
 
 # =============================================================================
@@ -519,18 +499,10 @@ def cev_on_states(model, grid_axes, V_rl, V_egm, states):
     Computes the state-wise CEV on the shared value grid and averages 
     it over the provided simulated/ergodic states.
     """
-    lam = cev(model, V_rl, V_egm, discount=model.params.beta)
-
     axes = grid_axes if isinstance(grid_axes, tuple) else (grid_axes,)
     states = np.asarray(states, dtype=np.float64)
-
-    if len(axes) == 1:
-        vals = np.interp(states[..., 0].ravel(), axes[0], lam)
-    else:
-        interp = RegularGridInterpolator(
-            axes, lam, bounds_error=False, fill_value=None,
-        )
-        vals = interp(_clip_to_axes(states, axes))
+    vals = cev(model, interpolate_value(axes, V_rl, states),
+               interpolate_value(axes, V_egm, states), discount=model.params.beta)
 
     vals = np.asarray(vals, dtype=np.float64)
     vals = vals[np.isfinite(vals)]
@@ -551,34 +523,15 @@ def _portfolio_euler_errors(
     *,
     max_shock_nodes=None,
 ):
-    """Euler/KKT residuals for portfolio-choice models.
+    """Joint consumption/portfolio errors on the policy's own simulated states.
 
-    The diagnostic combines:
+    For each asset, q_j = beta * g_j / u'(c) = E[M' R'_j]. The Euler-implied
+    consumption is c_j = inv_u_prime(beta * g_j) = c * q_j**(-1/gamma).
+    Positive holdings require q_j = 1; zero holdings require q_j <= 1.
+    Accordingly, residuals are abs(1-c_j/c) for held assets and
+    max(1-c_j/c, 0) for unheld assets. Zero saving makes all conditions one-sided.
 
-    1. consumption Euler residual,
-
-        |1 - c_implied / c_policy|,
-
-       where
-
-        u'(c_implied) = beta * w' g,
-
-       and
-
-        g_j = E[ u'(c') / Gamma'^gamma * R'_j ];
-
-    2. portfolio KKT residual for no-shorting simplex weights,
-
-        w_j >= 0,
-        xi - g_j >= 0,
-        w_j (xi - g_j) = 0,
-
-       evaluated with a Fisher-Burmeister residual and xi = max_j g_j.
-
-    Returns
-    -------
-    ndarray
-        log10 joint residuals.
+    Return one log10 maximum asset residual per state; exact zeros give -inf.
     """
     states = _test_states_simulated(
         model=model,
@@ -599,10 +552,6 @@ def _portfolio_euler_errors(
         m = float(state[0])
         rs = max(m - c, 0.0)
 
-        if c <= 0.0 or m <= 0.0:
-            errors[i] = np.nan
-            continue
-
         # Euler/KKT equations do not bind in the consume-all region.
         if c / max(m, 1e-300) > 0.999:
             errors[i] = np.nan
@@ -615,8 +564,7 @@ def _portfolio_euler_errors(
             )
 
         w = np.asarray(controls["portfolio_weights"], dtype=np.float64)
-        w = np.clip(w, 0.0, None)
-        w = w / np.maximum(w.sum(), 1e-14)
+        w = w / w.sum()
 
         g = _portfolio_sdf_moments(
             model=model,
@@ -627,21 +575,11 @@ def _portfolio_euler_errors(
             shock_idx=shock_idx,
         )
 
-        gbar = float(np.dot(w, g))
-
-        if not np.isfinite(gbar) or gbar <= 0.0:
-            errors[i] = np.nan
-            continue
-
-        c_implied = float(model.inv_marginal_utility(model.params.beta * gbar))
-        consumption_error = abs(1.0 - c_implied / c)
-
-        errors[i] = consumption_error
-
-    errors = errors[np.isfinite(errors) & (errors > 0.0)]
-
-    if errors.size == 0:
-        return np.array([], dtype=np.float64)
+        c_implied = np.asarray(model.inv_marginal_utility(model.params.beta * g))
+        discrepancy = 1.0 - c_implied / c
+        held = (rs / m) * w > 1e-10
+        asset_errors = np.where(held, np.abs(discrepancy), np.maximum(discrepancy, 0.0))
+        errors[i] = np.max(asset_errors)
 
     return np.log10(errors)
 
@@ -693,9 +631,9 @@ def _portfolio_shock_indices(model, max_shock_nodes=None):
     """Select RQMC nodes for portfolio diagnostics.
 
     Full RQMC integration can be expensive for RL policies. By default, use at
-    most `model.analysis_rqmc_nodes` if present, otherwise 1024. Use a prefix
-    of the Sobol sequence so power-of-two sample sizes retain their nested
-    low-discrepancy balance.
+    most `model.analysis_rqmc_nodes` if present, otherwise 1024. Select a prefix
+    of the original Sobol points and their partners in the second half of the
+    pool. Odd limits are rounded down to preserve complete antithetic pairs.
     """
     M = int(model._M_rqmc)
 
@@ -703,11 +641,14 @@ def _portfolio_shock_indices(model, max_shock_nodes=None):
         max_shock_nodes = int(getattr(model, "analysis_rqmc_nodes", min(M, 1024)))
 
     max_shock_nodes = int(max_shock_nodes)
+    if max_shock_nodes < 2:
+        raise ValueError("max_shock_nodes must be at least 2 for antithetic pairs.")
 
     if max_shock_nodes >= M:
         return np.arange(M)
 
-    return np.arange(max_shock_nodes)
+    n_pairs = max_shock_nodes // 2
+    return np.concatenate([np.arange(n_pairs), M // 2 + np.arange(n_pairs)])
 
 
 def _portfolio_next_shock_arrays(model, z, shock_idx):
@@ -742,126 +683,6 @@ def _portfolio_next_shock_arrays(model, z, shock_idx):
 # =============================================================================
 # Portfolio-choice Bellman evaluation
 # =============================================================================
-
-def _make_value_interpolator(axes, V):
-    """Create a value interpolator."""
-    if len(axes) == 1:
-        return np.asarray(V, dtype=np.float64)
-
-    return RegularGridInterpolator(
-        axes,
-        V,
-        bounds_error=False,
-        fill_value=None,
-    )
-
-
-def _eval_value_interpolator(interp, axes, next_states):
-    """Evaluate V at next-state coordinates."""
-    next_states = np.asarray(next_states, dtype=np.float64)
-
-    if len(axes) == 1:
-        values = np.interp(
-            next_states[..., 0].ravel(),
-            axes[0],
-            interp,
-        )
-        return values.reshape(next_states.shape[:-1])
-
-    coords = _clip_to_axes(next_states, axes)
-    return interp(coords)
-
-
-def _portfolio_policy_value_on_grid(
-    model,
-    policy,
-    tol=1e-8,
-    max_iter=10_000,
-    *,
-    max_shock_nodes=None,
-):
-    """Bellman policy evaluation for PortfolioChoice.
-
-    This is memory-conscious: it loops over grid points and uses the selected
-    RQMC nodes locally, rather than constructing a huge global transition array.
-
-    Bellman equation
-    ----------------
-    V(m,z) =
-        u(c)
-        + beta E[
-            (G psi')^(1-gamma)
-            ((1-p) V(m'_emp,z') + p V(m'_unemp,z'))
-          ].
-
-    The expectation is under the true shock distribution.
-    """
-    axes = _value_grid_axes(model)
-    states = _state_mesh_from_axes(axes)
-
-    grid_shape = states.shape[:-1]
-    states_flat = states.reshape(-1, model.state_dim)
-
-    controls = _policy_controls(policy, states)
-
-    c = np.asarray(controls["consumption"], dtype=np.float64)
-    u = model.utility(np.maximum(c, 1e-12))
-
-    c_flat = c.reshape(-1)
-    u_flat = u.reshape(-1)
-
-    if "portfolio_weights" not in controls:
-        raise KeyError(
-            "PortfolioChoice value evaluation requires "
-            "controls['portfolio_weights']."
-        )
-
-    w = np.asarray(controls["portfolio_weights"], dtype=np.float64)
-    w = np.clip(w, 0.0, None)
-    w = w / np.maximum(w.sum(axis=-1, keepdims=True), 1e-14)
-    w_flat = w.reshape(-1, model.n_assets)
-
-    shock_idx = _portfolio_shock_indices(model, max_shock_nodes)
-    kernel = model.value_kernel()[shock_idx]
-
-    p_unemp = float(model.unemp_prob)
-    beta = float(model.params.beta)
-
-    V = np.zeros(grid_shape, dtype=np.float64)
-    V_new_flat = np.empty(states_flat.shape[0], dtype=np.float64)
-
-    for _ in range(int(max_iter)):
-        value_interp = _make_value_interpolator(axes, V)
-
-        for i, state in enumerate(states_flat):
-            m = float(state[0])
-            rs = max(m - float(c_flat[i]), 0.0)
-
-            next_emp, next_unemp = _portfolio_next_states_for_value(
-                model=model,
-                state=state,
-                rs=rs,
-                w=w_flat[i],
-                shock_idx=shock_idx,
-            )
-
-            V_emp = _eval_value_interpolator(value_interp, axes, next_emp)
-            V_unemp = _eval_value_interpolator(value_interp, axes, next_unemp)
-
-            continuation = kernel * ((1.0 - p_unemp) * V_emp + p_unemp * V_unemp)
-            EV = float(np.mean(continuation))
-
-            V_new_flat[i] = u_flat[i] + beta * EV
-
-        V_new = V_new_flat.reshape(grid_shape)
-        error = np.max(np.abs(V_new - V))
-        V = V_new.copy()
-
-        if error < tol:
-            break
-
-    display_grid = axes[0] if len(axes) == 1 else axes
-    return display_grid, V
 
 
 def _portfolio_next_states_for_value(model, state, rs, w, shock_idx):

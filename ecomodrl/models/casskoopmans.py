@@ -33,7 +33,7 @@ class CassKoopmans(EconomicModel):
 
         self.m_next = self.cash_on_hand(self.a_grid)
         self.x_next = None
-        self.R_next = self.gross_interest_rate(self.a_grid)
+        self.R_next = self.gross_return_on_capital(self.a_grid)
 
     def model_spec_kwargs(self):
         return {"grid_size": self.grid_size}
@@ -51,7 +51,7 @@ class CassKoopmans(EconomicModel):
     def cash_on_hand(self, k, z=1.0):
         return self.production(k, z) + (1.0 - self.params.delta) * np.asarray(k)
 
-    def gross_interest_rate(self, a, z=1.0):
+    def gross_return_on_capital(self, a, z=1.0):
         return (
             z
             * self.params.A
@@ -75,7 +75,7 @@ class CassKoopmans(EconomicModel):
 
     def next_state_distribution(self, state, a):
         m_next = self.cash_on_hand(a)
-        return np.asarray(m_next)[..., None], {"R_next": self.gross_interest_rate(a)}
+        return np.asarray(m_next)[..., None], {"R_next": self.gross_return_on_capital(a)}
 
     def sample_shocks(self, rng, shape):
         return None

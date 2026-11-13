@@ -88,7 +88,7 @@ class BrockMirman(CassKoopmans):
         z_next = self._z_next(z, eps)
 
         self.m_next = self.cash_on_hand(a, z_next)
-        self.R_next = self.gross_interest_rate(a, z_next)
+        self.R_next = self.gross_return_on_capital(a, z_next)
         self.x_next = np.broadcast_to(z_next, self.m_next.shape)[..., None]
 
         m_lo = self.cash_on_hand(self.a_grid[0], self.z_grid[0])
@@ -111,7 +111,7 @@ class BrockMirman(CassKoopmans):
         next_state = np.stack([m_next, z_next], axis=-1)
 
         return next_state, {
-            "R_next": self.gross_interest_rate(a_bc, z_next),
+            "R_next": self.gross_return_on_capital(a_bc, z_next),
         }
 
     def sample_shocks(self, rng, shape):

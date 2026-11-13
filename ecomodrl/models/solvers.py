@@ -8,7 +8,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 from numba import njit, prange
 from numba.typed import List
-from scipy.optimize import root
+from scipy.optimize import brentq, least_squares
 
 from ecomodrl.models.base_model import EconomicModel
 from ecomodrl.models.portfoliochoice import PortfolioChoice
@@ -24,7 +24,7 @@ class BaseEGM:
         self,
         econ_model: EconomicModel,
         max_iter: int = 1000,
-        tol: float = 1e-6,
+        tol: float = 1e-10,
     ):
         self.model = econ_model
         self.max_iter = int(max_iter)
@@ -78,7 +78,10 @@ class BaseEGM:
                 f"(sup-norm diff = {diff:.2e})"
             )
 
-        return policy_old
+        raise RuntimeError(
+            f"EGM did not converge after {self.max_iter} iterations "
+            f"(sup-norm diff = {diff:.2e})."
+        )
 
     def _egm_step(self, policy_old):
         c_next = self._interp_policy(
@@ -153,6 +156,9 @@ class BaseEGM:
         c_endo = np.asarray(c_endo, dtype=float)
 
         kink = self.model.interpolation_kink()
+
+        if kink is None:
+            kink = (0.0, 0.0)
 
         if kink is not None:
             m_kink, c_kink = kink
@@ -501,7 +507,9 @@ class PortfolioChoiceSolver:
     """Nested EGM/root solver for PortfolioChoice.
 
     Consumption is updated by EGM.
-    Portfolio weights are updated by local root solving of SDF/KKT conditions.
+    Portfolio weights satisfy unsmoothed SDF/KKT conditions on the simplex,
+    including exact corner solutions. Failed local solves never reuse stale
+    weights, and an unconverged outer iteration is not published as a policy.
 
     After solve:
         model.share_policy_grid
@@ -514,12 +522,11 @@ class PortfolioChoiceSolver:
     def __init__(
         self,
         econ_model: PortfolioChoice,
-        max_iter: int = 100,
+        max_iter: int = 500,
         tol: float = 1e-5,
         conv: float = 1e-5,
         min_share: float = 1e-6,
-        root_interval: int = 15,
-        mu_fb: float = 1e-4,
+        root_interval: int = 5,
     ):
         self.model = econ_model
         self.max_iter = int(max_iter)
@@ -527,34 +534,14 @@ class PortfolioChoiceSolver:
         self.conv = float(conv)
         self.min_share = float(min_share)
         self.root_interval = int(root_interval)
-        self.mu_fb = float(mu_fb)
+        self.portfolio_tol = min(self.tol, 1e-7)
+        self.converged = False
+        self.iterations = 0
+        self.max_portfolio_residual = np.inf
 
         self.share_policy: np.ndarray | None = None
         self.portfolio_policy: np.ndarray | None = None
         self.solve_time: float | None = None
-
-    # ------------------------------------------------------------------
-    # Simplex parameterization used internally by the root solver
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def logits_to_weights(logits: np.ndarray) -> np.ndarray:
-        """ALR inverse with last asset as pivot.
-
-        Internal root-solver parameterization only. Returned weights are in
-        model asset order [safe, risky_1, ..., risky_N].
-        """
-        x = np.asarray(logits, dtype=np.float64)
-        e = np.exp(np.clip(x, -50.0, 50.0))
-        denom = max(1.0 + float(np.sum(e)), 1e-300)
-        return np.concatenate([e / denom, np.array([1.0 / denom])])
-
-    @staticmethod
-    def weights_to_logits(w: np.ndarray) -> np.ndarray:
-        w = np.asarray(w, dtype=np.float64)
-        w = np.clip(w, 1e-15, None)
-        w = w / w.sum()
-        return np.log(w[:-1]) - np.log(w[-1])
 
     # ------------------------------------------------------------------
     # Solve
@@ -564,6 +551,7 @@ class PortfolioChoiceSolver:
         import time
 
         start = time.time()
+        self.converged = False
 
         m = self.model
         m_grid = m.m_grid
@@ -599,54 +587,46 @@ class PortfolioChoiceSolver:
         c_buf = np.empty(len(rs_grid), dtype=np.float64)
         endogenous_m_buf = np.empty(len(rs_grid), dtype=np.float64)
 
+        # Predictors and shock returns do not depend on the iterated policy.
+        transitions = {}
+        for z_idx in itertools.product(*z_indices):
+            z_vec = np.array([z_grids[j][idx] for j, idx in enumerate(z_idx)])
+            z_next, R_next = m.zs_R_next(z_vec)
+            base_z_flat, z_w = _precompute_z_interp(
+                np.ascontiguousarray(z_next), z_typed, z_inv_typed, strides,
+            )
+            transitions[z_idx] = (np.ascontiguousarray(R_next), base_z_flat, z_w)
+
+        def local_kwargs(rs, transition, policy_flat):
+            returns, base, weights = transition
+            return dict(
+                rs=float(rs), R_next=returns, share_flat=policy_flat,
+                shape=shape, strides=strides, m_grid=m_grid_c,
+                inv_m_deltas=inv_m_deltas, base_z_flat=base,
+                z_corner_offs=z_corner_offs, z_w=weights,
+            )
+
         for iteration in range(self.max_iter):
             share_old = share.copy()
             w_old = w_rs.copy()
 
-            share_c = np.ascontiguousarray(share, dtype=np.float64)
+            share_c = np.ascontiguousarray(share_old, dtype=np.float64)
             share_flat = share_c.ravel()
-
-            mu_now = max(1e-8, self.mu_fb * (0.5 ** (iteration // 2)))
+            full_update = iteration % self.root_interval == 0
 
             for z_idx in itertools.product(*z_indices):
-                z_vec = np.array(
-                    [z_grids[j][idx] for j, idx in enumerate(z_idx)],
-                    dtype=np.float64,
-                )
-
-                z_next, R_next = m.zs_R_next(z_vec)
-
-                z_next_c = np.ascontiguousarray(z_next, dtype=np.float64)
-                R_next_c = np.ascontiguousarray(R_next, dtype=np.float64)
-
-                base_z_flat, z_w = _precompute_z_interp(
-                    z_next_c,
-                    z_typed,
-                    z_inv_typed,
-                    strides,
-                )
+                R_next_c, base_z_flat, z_w = transitions[z_idx]
 
                 for i_rs, rs in enumerate(rs_grid):
-                    if rs <= self.min_share:
-                        w_star = np.full(m.n_assets, 1.0 / m.n_assets)
+                    w0 = w_rs[(i_rs, *z_idx, slice(None))]
+                    kwargs = local_kwargs(rs, transitions[z_idx], share_flat)
+                    if rs == 0.0:
+                        g_zero = self._portfolio_moments(w0, **kwargs)
+                        w_star = np.zeros(m.n_assets)
+                        w_star[int(np.argmax(g_zero))] = 1.0
                     else:
-                        w0 = w_rs[(i_rs, *z_idx, slice(None))]
-
-                        if iteration % self.root_interval == 0:
-                            w_star = self._solve_portfolio_weights(
-                                rs=float(rs),
-                                w0=w0,
-                                R_next=R_next_c,
-                                share_flat=share_flat,
-                                shape=shape,
-                                strides=strides,
-                                m_grid=m_grid_c,
-                                inv_m_deltas=inv_m_deltas,
-                                base_z_flat=base_z_flat,
-                                z_corner_offs=z_corner_offs,
-                                z_w=z_w,
-                                mu_now=mu_now,
-                            )
+                        if full_update:
+                            w_star = self._solve_portfolio_weights(w0=w0, **kwargs)
                         else:
                             w_star = w0
 
@@ -687,18 +667,32 @@ class PortfolioChoiceSolver:
                 m_endo = endogenous_m_buf[order]
                 c_endo = c_buf[order]
 
-                share_endo = np.clip(c_endo / np.maximum(m_endo, 1e-14), self.min_share, 1.0)
-
-                share[(slice(None), *z_idx)] = np.interp(
+                c_on_grid = np.interp(
                     m_grid,
                     np.concatenate([[0.0], m_endo]),
-                    np.concatenate([[1.0], share_endo]),
+                    np.concatenate([[0.0], c_endo]),
+                )
+                share[(slice(None), *z_idx)] = np.clip(
+                    c_on_grid / np.maximum(m_grid, 1e-14), self.min_share, 1.0,
                 )
 
-            if iteration % self.root_interval == 0:
+            self.iterations = iteration + 1
+            if full_update:
                 da = float(np.max(np.abs(share - share_old)))
                 dw = float(np.max(np.abs(w_rs - w_old)))
                 converged = da <= self.conv and dw <= self.conv
+
+                if converged:
+                    residual = 0.0
+                    for z_idx, transition in transitions.items():
+                        for i_rs, rs in enumerate(rs_grid):
+                            w = w_rs[(i_rs, *z_idx, slice(None))]
+                            g = self._portfolio_moments(
+                                w, **local_kwargs(rs, transition, share.ravel()),
+                            )
+                            residual = max(residual, self._portfolio_residual(w, g))
+                    self.max_portfolio_residual = residual
+                    converged = residual <= max(self.conv, self.portfolio_tol)
 
                 if verbose:
                     print(
@@ -709,7 +703,15 @@ class PortfolioChoiceSolver:
                     )
 
                 if converged:
+                    self.converged = True
                     break
+
+        if not self.converged:
+            raise RuntimeError(
+                f"PortfolioChoice EGM did not converge after {self.max_iter} "
+                f"iterations (share change={da:.3e}, weight change={dw:.3e}, "
+                f"internal optimality error={self.max_portfolio_residual:.3e})."
+            )
 
         w_mz = self._weights_rs_to_mz(
             rs_grid=rs_grid,
@@ -737,83 +739,119 @@ class PortfolioChoiceSolver:
 
         return share, w_mz
 
-    def _solve_portfolio_weights(
-        self,
-        *,
-        rs,
-        w0,
-        R_next,
-        share_flat,
-        shape,
-        strides,
-        m_grid,
-        inv_m_deltas,
-        base_z_flat,
-        z_corner_offs,
-        z_w,
-        mu_now,
-    ):
+    def _portfolio_moments(self, w, *, rs, R_next, share_flat, shape,
+                           strides, m_grid, inv_m_deltas, base_z_flat,
+                           z_corner_offs, z_w):
         m = self.model
-
-        g0 = _sdf_moments_fast(
-            float(rs),
-            R_next,
-            w0,
-            m._theta_vals,
-            m.Gamma_next,
-            m.SDF_factor,
-            m.theta_low,
-            m.unemp_prob,
-            m.params.gamma,
-            self.min_share,
-            share_flat,
-            shape,
-            strides,
-            m_grid,
-            inv_m_deltas,
-            base_z_flat,
-            z_corner_offs,
-            z_w,
+        return _sdf_moments_fast(
+            float(rs), R_next, w, m._theta_vals, m.Gamma_next, m.SDF_factor,
+            m.theta_low, m.unemp_prob, m.params.gamma, self.min_share,
+            share_flat, shape, strides, m_grid, inv_m_deltas, base_z_flat,
+            z_corner_offs, z_w,
         )
 
-        x0 = np.concatenate([self.weights_to_logits(w0), [float(np.max(g0))]])
+    @staticmethod
+    def _portfolio_residual(w, g):
+        """Dimensionless simplex feasibility and exact KKT certificate."""
+        w, g = np.asarray(w), np.asarray(g)
+        if not np.all(np.isfinite(w)) or not np.all(np.isfinite(g)):
+            return np.inf
+        scale = max(float(np.max(np.abs(g))), 1e-300)
+        gaps = (g - np.dot(w, g)) / scale
+        return max(
+            abs(float(w.sum()) - 1.0), max(-float(w.min()), 0.0),
+            max(float(gaps.max()), 0.0), float(np.max(np.abs(w * gaps))),
+        )
 
-        def residuals(x):
-            logits = x[:-1]
-            xi = x[-1]
-            w = self.logits_to_weights(logits)
+    def _solve_simplex_weights(self, moments, w0):
+        """Optimize on physical weights, retaining exact asset corners.
 
-            g = _sdf_moments_fast(
-                float(rs),
-                R_next,
-                w,
-                m._theta_vals,
-                m.Gamma_next,
-                m.SDF_factor,
-                m.theta_low,
-                m.unemp_prob,
-                m.params.gamma,
-                self.min_share,
-                share_flat,
-                shape,
-                strides,
-                m_grid,
-                inv_m_deltas,
-                base_z_flat,
-                z_corner_offs,
-                z_w,
-            )
+        A pairwise transfer has derivative g_receiver - g_donor. Endpoint
+        tests and a bracketed root solve each constrained transfer exactly.
+        Pairwise coordinate improvement is followed by an unsmoothed, bounded
+        complementarity fallback if its optimality certificate stalls.
+        """
+        w = np.clip(np.asarray(w0, dtype=float), 0.0, None)
+        if w.sum() <= 0:
+            w[:] = 1.0
+        w /= w.sum()
+        n = len(w)
+        xtol = min(self.portfolio_tol * 0.01, 1e-10)
 
-            return self.smooth_fisher_burmeister(w, xi - g, mu=mu_now)
+        if n == 2:
+            def gap(risky):
+                g = moments(np.array([1.0 - risky, risky]))
+                return float(g[1] - g[0])
 
-        sol = root(residuals, x0, method="hybr", tol=self.tol)
+            if gap(0.0) <= 0.0:
+                result = np.array([1.0, 0.0])
+            elif gap(1.0) >= 0.0:
+                result = np.array([0.0, 1.0])
+            else:
+                risky = brentq(gap, 0.0, 1.0, xtol=xtol, rtol=1e-12)
+                result = np.array([1.0 - risky, risky])
+            if self._portfolio_residual(result, moments(result)) <= self.portfolio_tol:
+                return result
+            raise RuntimeError("One-risky-asset portfolio solve failed its KKT check.")
 
-        if not sol.success:
-            return np.asarray(w0, dtype=np.float64)
+        for _ in range(100 * n):
+            g = moments(w)
+            if self._portfolio_residual(w, g) <= self.portfolio_tol:
+                return w
+            receiver = int(np.argmax(g))
+            active = np.flatnonzero(w > 0.0)
+            donor = int(active[np.argmin(g[active])])
+            if receiver == donor:
+                break
+            available = float(w[donor])
 
-        w = self.logits_to_weights(sol.x[:-1])
-        w = np.clip(w, 0.0, None)
-        return w / np.maximum(w.sum(), 1e-14)
+            def gap(transfer):
+                candidate = w.copy()
+                candidate[receiver] += transfer
+                candidate[donor] -= transfer
+                values = moments(candidate)
+                return float(values[receiver] - values[donor])
+
+            if gap(available) >= 0.0:
+                transfer = available
+            else:
+                transfer = brentq(gap, 0.0, available, xtol=xtol, rtol=1e-12)
+            if transfer <= 0.0:
+                break
+            w[receiver] += transfer
+            w[donor] -= transfer
+
+        scale = max(float(np.max(np.abs(moments(w)))), 1e-300)
+
+        def complementarity(x):
+            weights, multiplier = x[:-1], x[-1]
+            slack = multiplier - moments(weights) / scale
+            fb = np.sqrt(weights * weights + slack * slack) - weights - slack
+            return np.concatenate([fb, [weights.sum() - 1.0]])
+
+        # Bounds act on actual weights, so unlike ALR logits this can identify
+        # an inactive asset without infinite parameters or smoothing bias.
+        x0 = np.concatenate([w, [np.max(moments(w)) / scale]])
+        result = least_squares(
+            complementarity, x0,
+            bounds=(np.concatenate([np.zeros(n), [-np.inf]]),
+                    np.concatenate([np.ones(n), [np.inf]])),
+            xtol=1e-12, ftol=1e-12, gtol=1e-12, max_nfev=1000,
+        )
+        candidate = np.clip(result.x[:-1], 0.0, None)
+        candidate[candidate < self.portfolio_tol * 0.01] = 0.0
+        candidate /= candidate.sum()
+        error = self._portfolio_residual(candidate, moments(candidate))
+        if result.success and error <= self.portfolio_tol:
+            return candidate
+        raise RuntimeError(
+            f"Portfolio simplex solve failed its optimality check (error={error:.3e})."
+        )
+
+    def _solve_portfolio_weights(self, *, w0, **kwargs):
+        return self._solve_simplex_weights(
+            lambda w: self._portfolio_moments(w, **kwargs), w0,
+        )
 
     def _weights_rs_to_mz(self, *, rs_grid, m_grid, z_grids, share, w_rs):
         """Map weights from (rs,z) to (m,z) using rs = m * (1-share(m,z))."""
@@ -840,7 +878,3 @@ class PortfolioChoiceSolver:
 
         return w_flat.reshape(tuple(len(g) for g in grids) + (m.n_assets,))
 
-    @staticmethod
-    def smooth_fisher_burmeister(a, b, mu: float = 1e-6):
-        return np.sqrt(a**2 + b**2 + 2.0 * mu) - (a + b)
-    

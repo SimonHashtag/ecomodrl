@@ -19,7 +19,6 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
 from scipy.ndimage import gaussian_filter
 
 from ecomodrl.algorithms.training import ALGO_REGISTRY
@@ -27,7 +26,7 @@ from ecomodrl.analysis.efficiency_metrics import (
     last_value_carried_forward,
     normalized_regret,
 )
-from ecomodrl.analysis.accuracy_metrics import iqm
+from ecomodrl.analysis.accuracy_metrics import cev, interpolate_value, iqm
 from ecomodrl.configs.variants import VARIANTS, VARIANT_LABELS
 
 
@@ -62,7 +61,6 @@ PORTFOLIO_UNIDENTIFIED_COLOR = "0.85"
 DEFAULT_SAVING_SHARE_TOL = 1e-3
 DEFAULT_MIN_IDENTIFIED_FRACTION = 0.75
 
-
 def ensure_parent(path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -80,10 +78,12 @@ def algorithm_label(algo: str, variant: str = "mf") -> str:
 def exogenous_state_label(model, index: int = 1) -> str:
     """Math label for an exogenous state, using model-specific notation."""
     model_name = type(model).__name__
+    if model_name == "PortfolioChoice" and len(model.exogenous_grids) == 1:
+        return r"$x_t$"
+    if model_name == "PortfolioChoice":
+        return fr"$x_{{{int(index)},t}}$"
     if model_name == "BrockMirman":
         return r"$z_t$"
-    if model_name == "PortfolioChoice":
-        return fr"$z_{{{int(index)},t}}$"
     return fr"$x_{{{int(index)}}}$"
 
 
@@ -129,44 +129,6 @@ def states_for_m_slice(m_grid, x_slice):
 
     x = np.broadcast_to(np.asarray(x_slice), (len(m_grid), len(x_slice)))
     return np.column_stack([m_grid, x])
-
-
-def value_slice_indices(model):
-    """Index tuple for selecting a line over m from V(m, x1, ..., xd)."""
-    if model.exogenous_dim == 0:
-        return [()], [""]
-
-    grids = model.exogenous_grids
-
-    first_indices = [0, len(grids[0]) // 2, len(grids[0]) - 1]
-    fixed = tuple(len(g) // 2 for g in grids[1:])
-
-    indices = []
-    labels = []
-
-    for idx, label in zip(first_indices, ["low", "middle", "high"]):
-        indices.append((idx, *fixed))
-        labels.append(f"{exogenous_state_label(model, 1)} {label}")
-
-    return indices, labels
-
-
-def select_value_line(V, exog_index):
-    """Select V(m, fixed exogenous state)."""
-    if exog_index == ():
-        return V
-
-    return V[(slice(None), *exog_index)]
-
-
-def cev_map(model, V_rl, V_egm):
-    gamma = model.params.gamma
-
-    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
-        if gamma == 1.0:
-            return np.exp((V_egm - V_rl) * (1.0 - model.params.beta)) - 1.0
-
-        return (V_egm / V_rl) ** (1.0 / (1.0 - gamma)) - 1.0
 
 
 def subplot_grid(n):
@@ -625,10 +587,13 @@ def plot_portfolio_share_heatmaps(
 
     if mesh is not None:
         cbar = fig.colorbar(mesh, ax=axes.tolist(), shrink=0.9)
-        cbar.set_label(
-            fr"IQM RL portfolio share on "
-            fr"$w_{{{asset_index}}}$"
-        )
+        if model.exogenous_dim == 1:
+            cbar.set_label(r"IQM RL portfolio share $w$")
+        else:
+            cbar.set_label(
+                fr"IQM RL portfolio share "
+                fr"$w_{{{asset_index}}}$"
+            )
 
     # fig.suptitle(
     #     fr"RL portfolio share of {_risky_asset_label(asset_index)}: "
@@ -776,14 +741,13 @@ def plot_portfolio_share_diff_heatmaps(
 
     if mesh is not None:
         cbar = fig.colorbar(mesh, ax=axes.tolist(), shrink=0.9)
-        cbar.set_label(
-            fr"RL $-$ EGM portfolio share on $w_{{{asset_index}}}$ [pp]"
-        )
+        if model.exogenous_dim == 1:
+            cbar.set_label(r"RL $-$ EGM portfolio share $w$ [pp]")
+        else:
+            cbar.set_label(
+                fr"RL $-$ EGM portfolio share $\omega_{{{asset_index}}}$ [pp]"
+            )
 
-    # fig.suptitle(
-    #     fr"RL vs EGM portfolio share of {_risky_asset_label(asset_index)}: "
-    #     fr"IQM deviation"
-    # )
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=300)
     plt.close(fig)
@@ -893,19 +857,26 @@ def plot_portfolio_share_slices(
 
         ax.set_title(algorithm_label(algo, variant))
         ax.set_xlabel(r"Cash-on-hand $m$")
-        ax.set_ylabel(fr"Portfolio share $w_{{{asset_index}}}$")
+        if model.exogenous_dim == 1:
+            ax.set_ylabel(r"Portfolio share $w$")
+        else:
+            ax.set_ylabel(fr"Portfolio share $w{{{asset_index}}}$")
         ax.set_ylim(-0.02, 1.02)
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=7, ncol=2)
-
     for ax in axes[len(algorithms):]:
         ax.axis("off")
+
+    handles = [Line2D([0], [0], color=SLICE_COLORS[i],
+                      label=f"{exogenous_state_label(model, asset_index)} {label}")
+               for i, label in enumerate(slice_labels)]
+    fig.legend(handles, [handle.get_label() for handle in handles],
+               loc="lower center", ncol=len(handles), fontsize=8)
 
     # fig.suptitle(
     #     fr"Portfolio share of {_risky_asset_label(asset_index)}: "
     #     fr"EGM vs RL (IQM and IQR)"
     # )
-    plt.tight_layout()
+    plt.tight_layout(rect=(0, 0.07, 1, 1))
     ensure_parent(save_path)
     fig.savefig(save_path, dpi=140)
     plt.close(fig)
@@ -945,10 +916,10 @@ def plot_cev_distribution(
     *,
     algorithms=DEFAULT_ALGORITHMS,
     visited_m=None,
-    support_quantiles=(0.01, 99.99),
+    support_quantiles=(0.1, 99.9),
     variant="mf",
 ):
-    """Plot positive CEV relative to EGM benchmark over a wide visited-state support."""
+    """Plot positive CEV on a fixed logarithmic percentage scale."""
     _plot_cev_distribution(
         model, grid_axes, V_egm, {variant: rl_value_grids_by_algo}, save_path,
         algorithms=algorithms, visited_by_variant={variant: visited_m or {}},
@@ -959,7 +930,7 @@ def plot_cev_distribution(
 def plot_cev_distribution_combined(
     model, grid_axes, V_egm, rl_value_grids_by_variant, save_path, *,
     algorithms=DEFAULT_ALGORITHMS, visited_by_variant=None,
-    support_quantiles=(0.01, 99.99),
+    support_quantiles=(0.1, 99.9),
 ):
     """Stack MF and PD CEV panels with a common visited-state support and legend."""
     _plot_cev_distribution(
@@ -973,8 +944,7 @@ def _plot_cev_distribution(
     model, grid_axes, V_egm, rl_value_grids_by_variant, save_path, *,
     algorithms, visited_by_variant, support_quantiles, variants,
 ):
-    m_full = np.asarray(grid_axes[0], dtype=np.float64)
-
+    m_full = positive_m_grid(model)
     # Data-adaptive ergodic-support trim
     pools = [_pooled_visited(visited_by_variant.get(variant, {}), algorithms) for variant in variants]
     pools = [pool for pool in pools if pool is not None and pool.size]
@@ -989,8 +959,11 @@ def _plot_cev_distribution(
         mask = np.ones(m_full.size, dtype=bool)
 
     m_grid = m_full[mask]
+    display_bounds = (float(m_grid[0]), float(m_grid[-1]))
 
-    exog_indices, slice_labels = value_slice_indices(model)
+    exog_slices, slice_labels = exogenous_plot_slices(model)
+    slice_states = [states_for_m_slice(m_grid, x) for x in exog_slices]
+    benchmark_lines = [interpolate_value(grid_axes, V_egm, states) for states in slice_states]
 
     n_algos = len(algorithms)
     fig, axes = plt.subplots(
@@ -1013,19 +986,16 @@ def _plot_cev_distribution(
                 transform=ax.transAxes, color="0.5",
             )
         else:
-            cev_stack = np.stack(
-                [cev_map(model, V_rl, V_egm) for V_rl in value_grids],
-                axis=0,
-            )
-
-            for i, exog_idx in enumerate(exog_indices):
-                line_stack = np.stack(
-                    [select_value_line(cev_arr, exog_idx) for cev_arr in cev_stack],
-                    axis=0,
-                )
-                line_stack = line_stack[:, mask] * 100.0    # convert to percentage points
-                line_stack = np.where(line_stack > 0.0, line_stack, np.nan)
+            for i, (states, benchmark) in enumerate(zip(slice_states, benchmark_lines)):
+                with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+                    line_stack = np.stack([
+                        cev(model, interpolate_value(grid_axes, V_rl, states), benchmark,
+                            discount=model.params.beta)
+                        for V_rl in value_grids
+                    ]) * 100.0
+                line_stack = np.where(np.isfinite(line_stack), line_stack, np.nan)
                 iqm_values, q1, q3 = iqm_and_iqr(line_stack)
+                iqm_values = np.where(iqm_values > 0.0, iqm_values, np.nan)
 
                 color = (
                     ALGO_COLORS.get(algo, "tab:blue")
@@ -1044,7 +1014,9 @@ def _plot_cev_distribution(
         if visited_m is not None and algo in visited_m:
             visited = np.asarray(visited_m[algo], dtype=np.float64)
             visited = visited[np.isfinite(visited)]
-            visited = visited[(visited >= m_grid[0]) & (visited <= m_grid[-1])]
+            visited = visited[
+                (visited >= display_bounds[0]) & (visited <= display_bounds[1])
+            ]
 
             if visited.size:
                 ax2 = ax.twinx()
@@ -1066,10 +1038,10 @@ def _plot_cev_distribution(
 
     for ax in axes:
         ax.set_yscale("log")
-        ax.set_ylim(1e-3, 1.0)
+        ax.set_ylim(1e-3, 50.0)
 
     for ax in axes:
-        ax.set_xlim(m_grid[0], m_grid[-1])
+        ax.set_xlim(*display_bounds)
 
     #fig.suptitle("Consumption-equivalent gain of EGM over RL", fontsize="x-large")
     if len(legend_handles) > 1:
@@ -1190,7 +1162,7 @@ def plot_euler_error_distribution(
             ax.plot(x, iqm_values, color=color, linewidth=1.3, label=algorithm_label(algo, variant))
 
         ax.set_xlabel("Cash-on-hand $m$", fontsize=14)
-        ax.set_ylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
+        ax.set_ylabel(r"$\log_{10}|\mathcal{E}_t|$", fontsize=14)
         #ax.set_title("Euler errors across deterministic test grid")
         ax.grid(alpha=0.3, which="both")
         ax.legend(fontsize=8)
@@ -1222,7 +1194,7 @@ def plot_euler_error_distribution(
 
             ax.grid(alpha=0.3)
 
-        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
+        axes[-1].set_xlabel(r"$\log_{10}|\mathcal{E}_t|$", fontsize=14)
         fig.text(0.02, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=14)
         #fig.suptitle("Euler-error distributions across policies and test seeds")
 
@@ -1289,7 +1261,7 @@ def plot_euler_error_distribution_combined(
             ax.axis("off")
 
         fig.supxlabel("Cash-on-hand $m$", fontsize=14)
-        fig.supylabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
+        fig.supylabel(r"$\log_{10}|\mathcal{E}_t|$", fontsize=14)
         #fig.suptitle(title)
 
     else:
@@ -1328,7 +1300,7 @@ def plot_euler_error_distribution_combined(
             ax.set_title(algo.upper(), loc="left", fontsize=14)
             ax.grid(alpha=0.3)
 
-        axes[-1].set_xlabel(r"$\log_{10}|1 - c^{\mathrm{implied}}/c|$", fontsize=14)
+        axes[-1].set_xlabel(r"$\log_{10}|\mathcal{E}_t|$", fontsize=14)
         fig.text(0.035, 0.5, "Relative frequency", rotation="vertical", va="center", fontsize=14)
         layout_rect = (0.10, 0.0, 1.0, 1.0)
         #fig.suptitle(title)
