@@ -742,10 +742,10 @@ def plot_portfolio_share_diff_heatmaps(
     if mesh is not None:
         cbar = fig.colorbar(mesh, ax=axes.tolist(), shrink=0.9)
         if model.exogenous_dim == 1:
-            cbar.set_label(r"RL $-$ EGM portfolio share $w$ [pp]")
+            cbar.set_label(r"Portfolio share difference [pp]")
         else:
             cbar.set_label(
-                fr"RL $-$ EGM portfolio share $\omega_{{{asset_index}}}$ [pp]"
+                fr"Portfolio share difference of $\omega_{{{asset_index}}}$ [pp]"
             )
 
     ensure_parent(save_path)

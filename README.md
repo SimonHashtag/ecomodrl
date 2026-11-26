@@ -1,7 +1,7 @@
 # EcoModRL
 This repository accompanies the working paper “Deep Reinforcement Learning in Dynamic Economic Models: An Empirical Study”. The project evaluates deep reinforcement learning (RL) as a numerical solution method for dynamic economic models, with systematic algorithm comparisons and benchmark solutions.
 
-> Working paper: *link forthcoming*
+> Working paper: [https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7748705](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7748705)
 
 ## Models and benchmarks
 
@@ -12,9 +12,9 @@ Four dynamic economic models are solved with deep RL and evaluated against high-
 | Cass–Koopmans | `casskoopmans` | deterministic growth | EGM |
 | Brock–Mirman | `brockmirman` | stochastic growth, AR(1) technology | EGM |
 | Buffer-stock saving | `bufferstock` | income risk, occasionally binding borrowing constraint | EGM |
-| Portfolio choice | `portfoliochoice` | buffer-stock saving + asset allocation | nested EGM + KKT root-solving |
+| Portfolio choice | `portfoliochoice` | buffer-stock saving + asset allocation | EGM + KKT root-solving |
 
-Each model in [ecomodrl/models](ecomodrl/models/) is translated into a [Gymnasium](https://gymnasium.farama.org/) environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) - the API standard for reinforcement learning. All models are solved in [ecomodrl/experiments](ecomodrl/experiments) with four algorithms: PPO, DDPG, TD3, and SAC (the implementation of the core algorithms is based on the [stable-baselines3](https://stable-baselines3.readthedocs.io/en/master/#) package). Benchmark solutions come from (nested) endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py).
+Each model in [ecomodrl/models](ecomodrl/models/) is translated into a [Gymnasium](https://gymnasium.farama.org/) environment ([ecomodrl/envs/envs.py](ecomodrl/envs/envs.py)) - the API standard for reinforcement learning. All models are solved in [ecomodrl/experiments](ecomodrl/experiments) with four algorithms: PPO, DDPG, TD3, and SAC (the implementation of the core algorithms is based on the [stable-baselines3](https://stable-baselines3.readthedocs.io/en/master/#) package). Benchmark solutions come from endogenous grid method (EGM) solvers in [ecomodrl/models/solvers.py](ecomodrl/models/solvers.py).
 
 ### Model-free and post-decision variants
 
@@ -144,11 +144,15 @@ The SLURM scripts in [ecomodrl/cluster/](ecomodrl/cluster/) run the entire pipel
 If you use this code, please cite the working paper:
 
 ```bibtex
-@techreport{Haastert.2026,
-  title       = {Deep Reinforcement Learning in Dynamic Economic Models: An Empirical Study},
-  author      = {Haastert, Simon and Micheel, Ruven},
-  year        = {2026},
-  institution = {Working paper},
+@misc{Haastert.2026,
+  type = {{{SSRN Scholarly Paper}}},
+  title = {Deep Reinforcement Learning in Dynamic Economic Models: An Empirical Study},
+  author = {Haastert, Simon G. and Micheel, Ruven},
+  year = 2026,
+  number = {7748705},
+  eprint = {7748705},
+  publisher = {Social Science Research Network},
+  address = {Rochester, NY},
 }
 ```
 
